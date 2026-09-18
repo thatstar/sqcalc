@@ -10,6 +10,7 @@ project(
 option(SQC_BUILD_TESTS "Build the sqcalc tests" ON)
 option(SQC_USE_SYSTEM_FINUFFT "Use an installed FINUFFT instead of external/finufft" OFF)
 option(SQC_ENABLE_CUDA "Build the cuFFT based GPU backend (cufinufft)" OFF)
+option(SQC_ENABLE_HDF5 "Write grid data as HDF5 instead of text" ON)
 set(SQC_FINUFFT_ROOT "" CACHE PATH "Prefix of an installed FINUFFT (SQC_USE_SYSTEM_FINUFFT=ON)")
 set(SQC_CUDA_ARCHITECTURES "" CACHE STRING "CUDA compute capability to build for (default: detected)")
 
@@ -28,6 +29,16 @@ endif()
 set(CMAKE_Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mod")
 
 find_package(OpenMP REQUIRED COMPONENTS Fortran CXX)
+
+if(SQC_ENABLE_HDF5)
+  find_package(HDF5 COMPONENTS Fortran)
+  if(TARGET HDF5::HDF5)
+    set(SQC_HAVE_HDF5 ON)
+    message(STATUS "sqcalc: HDF5 output enabled (${HDF5_VERSION})")
+  else()
+    message(STATUS "sqcalc: HDF5 not found, --grid-format hdf5 will be unavailable")
+  endif()
+endif()
 
 # ---------------------------------------------------------------------------
 # FFT backend for FINUFFT.
@@ -136,6 +147,11 @@ if(SQC_ENABLE_CUDA)
   target_sources(sqcalc_lib PRIVATE src/sqc_cufinufft.f90 src/sqc_gpu.f90)
   target_link_libraries(sqcalc_lib PUBLIC cufinufft CUDA::cudart)
   target_compile_definitions(sqcalc_lib PUBLIC SQC_ENABLE_CUDA)
+endif()
+if(SQC_HAVE_HDF5)
+  target_sources(sqcalc_lib PRIVATE src/sqc_hdf5.f90)
+  target_link_libraries(sqcalc_lib PUBLIC HDF5::HDF5)
+  target_compile_definitions(sqcalc_lib PUBLIC SQC_HAVE_HDF5)
 endif()
 target_link_libraries(sqcalc_lib PUBLIC OpenMP::OpenMP_Fortran ${_sqc_finufft_target})
 target_include_directories(sqcalc_lib PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/mod")

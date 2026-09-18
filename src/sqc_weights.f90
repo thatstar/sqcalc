@@ -27,6 +27,7 @@ module sqc_weights
       procedure :: grow => scheme_grow
       procedure :: set_mapping => scheme_set_mapping
       procedure :: has_mapping => scheme_has_mapping
+      procedure :: mapped_types => scheme_mapped_types
       procedure :: amplitude => scheme_amplitude
       procedure :: amplitude_of_element => scheme_amplitude_of_element
       procedure :: label => scheme_label
@@ -108,6 +109,19 @@ contains
       class(weight_scheme_t), intent(in) :: self
       mapped = self%ntypes > 0
    end function scheme_has_mapping
+
+   !> Number of mapped LAMMPS type ids (0 when no mapping was given).
+   !!
+   !! The per-type arrays are only allocated once a mapping is supplied, so all
+   !! consumers must ask here instead of looking at size(symbols) directly.
+   pure integer function scheme_mapped_types(self) result(n)
+      class(weight_scheme_t), intent(in) :: self
+      if (allocated(self%symbols)) then
+         n = size(self%symbols)
+      else
+         n = 0
+      end if
+   end function scheme_mapped_types
 
    !> Scattering amplitude of one LAMMPS type id at momentum transfer q.
    pure real(rk) function scheme_amplitude(self, type_id, q) result(weight)

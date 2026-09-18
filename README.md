@@ -48,6 +48,7 @@ sqcalc -i DUMP [options] OUTPUT
 | `-t, --threads N` | OpenMP threads (default: all available) |
 | `--qmin`, `--qmax`, `--nq` | q range and number of shells (defaults 0, 20 1/A, 500) |
 | `--grid FILE` | also write S(q) on every reciprocal lattice point |
+| `--grid-format NAME` | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5 |
 | `--method NAME` | `nufft` (default) or `direct` (O(N * Nmodes) reference) |
 | `--device NAME` | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`) |
 | `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
@@ -76,6 +77,9 @@ sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
 # float32 GPU transform: about 2.5x faster than float64 on a consumer GPU,
 # accurate to a few 1e-6 in S(q)
 sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --precision single S_q_gpu32.dat
+
+# reciprocal grid into HDF5 (much faster to write than the text table)
+sqcalc -i traj.dump -m 1:Si,2:O -w unit --grid S_q_grid.h5 S_q.dat
 ```
 
 ## GPU execution (cuFFT)
@@ -139,6 +143,37 @@ averaged over the trajectory:
 ```
 
 Both tables exclude the trivial q = 0 mode.
+
+### HDF5 grid output
+
+When `--grid` names a `.h5`/`.hdf5` file (or `--grid-format hdf5` is given) the
+results are written as HDF5 instead of text.  This needs HDF5 to have been found
+at configure time (`-DSQC_ENABLE_HDF5=OFF` disables it).  Every dataset is a
+plain one dimensional array, so no reader has to care about dimension ordering:
+
+```
+/shell/q        nq      doubles   shell centers [1/A]
+/shell/S        nq      doubles   S(q) averaged over the shell
+/shell/count    nq      int64     reciprocal lattice points per shell
+/grid/qx,qy,qz  nmodes  doubles   reciprocal lattice vector [1/A]
+/grid/h,k,l     nmodes  int32     Miller indices
+/grid/S         nmodes  doubles   S(q) at that reciprocal lattice point
+```
+
+File attributes carry the run metadata: `nframes`, `natoms`, `nmodes`, `nq`,
+`qmin`, `qmax`, `eps`, `cell` (3x3), `weight`, `norm`, `device`, `precision`
+and `mapping`.
+
+```python
+import h5py, numpy as np
+with h5py.File("S_q_grid.h5") as f:
+    q = np.column_stack([f["grid/qx"][:], f["grid/qy"][:], f["grid/qz"][:]])
+    s = f["grid/S"][:]
+    cell = f.attrs["cell"]          # 3x3 matrix
+```
+
+Writing 3.65M grid points costs ~0.05 s as HDF5 versus ~5 s as text (the text
+file is 252 MB, the HDF5 file 160 MB).
 
 ## Conventions
 

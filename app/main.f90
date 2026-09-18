@@ -11,6 +11,9 @@ program sqcalc
 #ifdef SQC_ENABLE_CUDA
    use sqc_gpu, only: cufinufft_structure_factor_t
 #endif
+#ifdef SQC_HAVE_HDF5
+   use sqc_hdf5, only: hdf5_write_results
+#endif
    use, intrinsic :: iso_fortran_env, only: error_unit, output_unit
    use omp_lib, only: omp_set_num_threads, omp_get_max_threads
    implicit none
@@ -157,6 +160,13 @@ program sqcalc
    elapsed = wall1 - wall0
 
    ! --- write the results ------------------------------------------------
+#ifndef SQC_HAVE_HDF5
+   if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
+      write (error_unit, '(a)') 'sqcalc: this build has no HDF5 support; '// &
+         'configure with -DSQC_ENABLE_HDF5=ON or use --grid-format text'
+      stop 17
+   end if
+#endif
    call open_output(opts%output, shell_unit, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -164,16 +174,28 @@ program sqcalc
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
-      call open_output(opts%grid_output, grid_unit, ierr, message)
-      if (ierr /= 0) then
-         write (error_unit, '(a)') 'sqcalc: '//trim(message)
-         stop 12
+      if (opts%grid_format /= grid_format_hdf5) then
+         call open_output(opts%grid_output, grid_unit, ierr, message)
+         if (ierr /= 0) then
+            write (error_unit, '(a)') 'sqcalc: '//trim(message)
+            stop 12
+         end if
       end if
    end if
    call method%write_results(shell_unit, grid_unit, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       stop 13
+   end if
+   if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
+#ifdef SQC_HAVE_HDF5
+      call hdf5_write_results(opts%grid_output, method, opts%scheme, natoms, ref_a, eps_used, &
+                              device_name(opts), precision_name(opts), ierr, message)
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 18
+      end if
+#endif
    end if
    if (shell_unit /= output_unit) close (shell_unit)
    if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
@@ -201,7 +223,7 @@ contains
       end do
       do t = 1, size(seen)
          if (.not. seen(t)) cycle
-         if (t > size(scheme%symbols)) then
+         if (t > scheme%mapped_types()) then
             write (error_unit, '(a,i0,a)') 'sqcalc: atom type ', t, &
                ' appears in the dump but is missing from the element mapping'
             stop 14
@@ -242,7 +264,7 @@ contains
       write (error_unit, '(a,a)') '  weights    : ', trim(opt%scheme%label())
       if (opt%scheme%has_mapping()) then
          write (error_unit, '(a)', advance='no') '  mapping    : '
-         do i = 1, size(opt%scheme%symbols)
+         do i = 1, opt%scheme%mapped_types()
             symbol = opt%scheme%symbols(i)
             if (len_trim(symbol) == 0) cycle
             write (error_unit, '(a,i0,a,a,a)', advance='no') ' ', i, ':', trim(symbol), ','
@@ -306,6 +328,28 @@ contains
          end if
       end select
    end function method_description
+
+   !> Name of the device used for the transform (written to HDF5 metadata).
+   function device_name(opt) result(text)
+      type(options_t), intent(in) :: opt
+      character(len=:), allocatable :: text
+      if (opt%device == device_gpu) then
+         text = 'gpu'
+      else
+         text = 'cpu'
+      end if
+   end function device_name
+
+   !> Name of the transform precision (written to HDF5 metadata).
+   function precision_name(opt) result(text)
+      type(options_t), intent(in) :: opt
+      character(len=:), allocatable :: text
+      if (opt%device == device_gpu .and. opt%precision == precision_single) then
+         text = 'single'
+      else
+         text = 'double'
+      end if
+   end function precision_name
 
    !> Current line number of the concrete reader (for error messages).
    integer function reader_line(r) result(line)

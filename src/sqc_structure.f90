@@ -26,6 +26,7 @@ module sqc_structure
                           mode_cmcl, type1
    use, intrinsic :: iso_c_binding, only: c_ptr, c_null_ptr, c_double, c_double_complex, &
                                           c_int, c_int64_t, c_associated
+   use omp_lib, only: omp_get_max_threads, omp_get_thread_num
    implicit none
    private
 
@@ -82,6 +83,8 @@ module sqc_structure
       integer(lk), allocatable :: gidx(:)
       !> Accumulated numerator and denominator of S(q) per shell.
       real(rk), allocatable :: num(:), den(:)
+      !> Scratch: |rho(q)|^2 of each kept mode for the current frame.
+      real(rk), allocatable :: mode_values(:)
       !> Number of (frame, mode) contributions per shell.
       integer(lk), allocatable :: shell_count(:)
       !> Accumulated numerator and denominator per grid point.
@@ -93,6 +96,10 @@ module sqc_structure
    contains
       procedure :: configure => sf_configure
       procedure :: write_results => sf_write_results
+      procedure :: accumulate_modes => sf_accumulate_modes
+      procedure :: accumulate_values => sf_accumulate_values
+      procedure :: shell_value => sf_shell_value
+      procedure :: grid_value => sf_grid_value
       procedure(sf_setup_iface), deferred :: method_setup
       procedure(sf_accumulate_iface), deferred :: accumulate_frame
    end type structure_factor_t
@@ -151,6 +158,9 @@ module sqc_structure
    type, extends(structure_factor_t) :: direct_structure_factor_t
       !> LAMMPS type id of each atom.
       integer(ik), allocatable :: type_of(:)
+      !> Atoms grouped by type (species_first(t) .. species_first(t+1)-1).
+      integer(ik), allocatable :: atom_of(:)
+      integer(ik), allocatable :: species_first(:)
       !> Cartesian coordinates of the current frame.
       real(rk), allocatable :: cart(:, :)
       !> Scratch space for |rho|^2 per kept mode.
@@ -174,12 +184,9 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(ik), allocatable :: type_counts(:)
-      real(rk), allocatable :: qvec_all(:, :), qlen_all(:), qlen_keep(:), qvec_keep(:, :)
-      integer, allocatable :: hkl_all(:, :), hkl_keep(:, :)
-      integer(lk), allocatable :: gidx_all(:), gidx_keep(:)
       real(rk) :: q(3), ql, dmode, length_a
-      integer :: i, p1, p2, p3, h(3), n_keep, t, maxtype
-      integer(lk) :: nmax, g
+      integer :: i, p1, p2, p3, h(3), n_keep, t, maxtype, pass
+      integer(lk) :: g
 
       ierr = 0
       message = ''
@@ -188,7 +195,7 @@ contains
       do i = 1, frame%natoms
          maxtype = max(maxtype, int(frame%type_id(i)))
       end do
-      self%ntypes = max(maxtype, size(scheme%symbols))
+      self%ntypes = max(maxtype, scheme%mapped_types())
 
       ! Count atoms of each type id in the reference frame.
       allocate (type_counts(max(self%ntypes, 1)))
@@ -227,28 +234,38 @@ contains
          return
       end if
 
-      nmax = self%gridpoints
-      allocate (hkl_all(3, nmax), qvec_all(3, nmax), qlen_all(nmax), gidx_all(nmax))
+      ! Enumerate the reciprocal grid twice: the first pass only counts the
+      ! modes inside the q range, the second fills the arrays sized for them.
+      ! This avoids full-grid temporary arrays (which would double the peak
+      ! memory of large grids).
       n_keep = 0
-      do p3 = 1, self%modes(3)
-         h(3) = p3 - (self%modes(3) + 1)/2
-         do p2 = 1, self%modes(2)
-            h(2) = p2 - (self%modes(2) + 1)/2
-            do p1 = 1, self%modes(1)
-               h(1) = p1 - (self%modes(1) + 1)/2
-               if (all(h == 0)) cycle
-               q = frame%cell%b(:, 1)*real(h(1), rk) + frame%cell%b(:, 2)*real(h(2), rk) &
-                   + frame%cell%b(:, 3)*real(h(3), rk)
-               ql = sqrt(sum(q*q))
-               if (ql > self%qmax) cycle
-               if (ql < self%qmin) cycle
-               n_keep = n_keep + 1
-               hkl_all(:, n_keep) = h
-               qvec_all(:, n_keep) = q
-               qlen_all(n_keep) = ql
-               g = int(p1, lk) + int(self%modes(1), lk)*(int(p2, lk) - 1 &
-                   + int(self%modes(2), lk)*(int(p3, lk) - 1))
-               gidx_all(n_keep) = g
+      do pass = 1, 2
+         if (pass == 2) then
+            self%nmodes = n_keep
+            allocate (self%hkl(3, n_keep), self%qvec(3, n_keep), self%qlen(n_keep), &
+                      self%gidx(n_keep))
+            n_keep = 0
+         end if
+         do p3 = 1, self%modes(3)
+            h(3) = p3 - (self%modes(3) + 1)/2
+            do p2 = 1, self%modes(2)
+               h(2) = p2 - (self%modes(2) + 1)/2
+               do p1 = 1, self%modes(1)
+                  h(1) = p1 - (self%modes(1) + 1)/2
+                  if (all(h == 0)) cycle
+                  q = frame%cell%b(:, 1)*real(h(1), rk) + frame%cell%b(:, 2)*real(h(2), rk) &
+                      + frame%cell%b(:, 3)*real(h(3), rk)
+                  ql = sqrt(sum(q*q))
+                  if (ql > self%qmax .or. ql < self%qmin) cycle
+                  n_keep = n_keep + 1
+                  if (pass == 2) then
+                     self%hkl(:, n_keep) = h
+                     self%qvec(:, n_keep) = q
+                     self%qlen(n_keep) = ql
+                     self%gidx(n_keep) = int(p1, lk) + int(self%modes(1), lk) &
+                        *(int(p2, lk) - 1 + int(self%modes(2), lk)*(int(p3, lk) - 1))
+                  end if
+               end do
             end do
          end do
       end do
@@ -257,20 +274,6 @@ contains
          message = 'no reciprocal lattice points fall inside the requested q range'
          return
       end if
-      self%nmodes = n_keep
-      allocate (hkl_keep(3, n_keep), qvec_keep(3, n_keep), qlen_keep(n_keep), &
-                gidx_keep(n_keep))
-      do i = 1, n_keep
-         hkl_keep(:, i) = hkl_all(:, i)
-         qvec_keep(:, i) = qvec_all(:, i)
-         qlen_keep(i) = qlen_all(i)
-         gidx_keep(i) = gidx_all(i)
-      end do
-      deallocate (hkl_all, qvec_all, qlen_all, gidx_all)
-      call move_alloc(hkl_keep, self%hkl)
-      call move_alloc(qvec_keep, self%qvec)
-      call move_alloc(qlen_keep, self%qlen)
-      call move_alloc(gidx_keep, self%gidx)
 
       ! Shell assignment and per-mode normalization.
       self%shell_dq = (self%qmax - self%qmin)/real(self%nq, rk)
@@ -285,9 +288,11 @@ contains
          self%shell(i) = min(max(self%shell(i), 1), self%nq)
       end do
       allocate (self%num(self%nq), self%den(self%nq), self%shell_count(self%nq))
+      allocate (self%mode_values(self%nmodes))
       self%num = 0.0_rk
       self%den = 0.0_rk
       self%shell_count = 0
+      self%mode_values = 0.0_rk
       if (self%want_grid) then
          allocate (self%gnum(self%gridpoints), self%gden(self%gridpoints))
          self%gnum = 0.0_rk
@@ -332,6 +337,93 @@ contains
       end if
    end function mode_denominator
 
+   !> Add |rho|^2 of the current frame to the shell (and grid) accumulators.
+   !!
+   !! `amps` is indexed like the flat reciprocal grid, i.e. amps(gidx(i)) is the
+   !! amplitude of the i-th kept mode.
+   subroutine sf_accumulate_modes(self, amps)
+      class(structure_factor_t), intent(inout) :: self
+      complex(c_double_complex), intent(in) :: amps(:)
+      integer :: im
+      integer(lk) :: g
+
+      !$omp parallel do schedule(static)
+      do im = 1, int(self%nmodes)
+         g = self%gidx(im)
+         self%mode_values(im) = real(amps(g)*conjg(amps(g)), rk)
+      end do
+      !$omp end parallel do
+      call self%accumulate_values(self%mode_values)
+   end subroutine sf_accumulate_modes
+
+   !> Add |rho|^2 values of the kept modes to the shell and grid accumulators.
+   !!
+   !! The shell reduction runs in parallel with one accumulator per thread; the
+   !! optional per-grid-point accumulation is a plain serial pass (it is a small
+   !! fraction of the frame cost and avoids grid-sized thread copies).
+   subroutine sf_accumulate_values(self, values)
+      class(structure_factor_t), intent(inout) :: self
+      real(rk), intent(in) :: values(:)
+      real(rk), allocatable :: local_num(:, :)
+      integer :: im, sh, tid, nthreads
+      integer(lk) :: g
+
+      nthreads = 1
+      !$ nthreads = omp_get_max_threads()
+      allocate (local_num(self%nq, nthreads))
+      local_num = 0.0_rk
+
+      !$omp parallel private(im, sh, tid)
+      tid = 1
+      !$ tid = omp_get_thread_num() + 1
+      !$omp do schedule(static)
+      do im = 1, int(self%nmodes)
+         sh = self%shell(im)
+         local_num(sh, tid) = local_num(sh, tid) + values(im)
+      end do
+      !$omp end do
+      !$omp end parallel
+
+      do tid = 1, nthreads
+         do sh = 1, self%nq
+            self%num(sh) = self%num(sh) + local_num(sh, tid)
+         end do
+      end do
+      deallocate (local_num)
+
+      if (self%want_grid) then
+         do im = 1, int(self%nmodes)
+            g = self%gidx(im)
+            self%gnum(g) = self%gnum(g) + values(im)
+         end do
+      end if
+      self%nframes = self%nframes + 1
+   end subroutine sf_accumulate_values
+
+   !> Normalized S(q) of one shell.
+   pure real(rk) function sf_shell_value(self, shell) result(value)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: shell
+      real(rk) :: frames
+
+      frames = real(max(self%nframes, 1_lk), rk)
+      value = 0.0_rk
+      if (self%den(shell) > 0.0_rk) value = self%num(shell)/(frames*self%den(shell))
+   end function sf_shell_value
+
+   !> Normalized S(q) of one kept reciprocal lattice mode.
+   pure real(rk) function sf_grid_value(self, mode) result(value)
+      class(structure_factor_t), intent(in) :: self
+      integer(lk), intent(in) :: mode
+      real(rk) :: frames
+      integer(lk) :: g
+
+      frames = real(max(self%nframes, 1_lk), rk)
+      value = 0.0_rk
+      g = self%gidx(mode)
+      if (self%gden(g) > 0.0_rk) value = self%gnum(g)/(frames*self%gden(g))
+   end function sf_grid_value
+
    !> Write the 1D shell table and (optionally) the reciprocal grid table.
    subroutine sf_write_results(self, shell_unit, grid_unit, ierr, message)
       class(structure_factor_t), intent(in) :: self
@@ -349,10 +441,9 @@ contains
       frames = real(max(self%nframes, 1_lk), rk)
       if (shell_unit /= no_unit) then
          write (shell_unit, '(a)') '# q S(q)'
-         do s = 1, self%nq
+      do s = 1, self%nq
             qc = self%qmin + (real(s, rk) - 0.5_rk)*self%shell_dq
-            value = 0.0_rk
-            if (self%den(s) > 0.0_rk) value = self%num(s)/(frames*self%den(s))
+            value = self%shell_value(s)
             write (shell_unit, '(f14.6,2x,es20.12)') qc, value
          end do
       end if
@@ -360,9 +451,7 @@ contains
       if (grid_unit /= no_unit .and. self%want_grid) then
          write (grid_unit, '(a)') '# qx qy qz S(q)'
          do i = 1, self%nmodes
-            g = self%gidx(i)
-            value = 0.0_rk
-            if (self%gden(g) > 0.0_rk) value = self%gnum(g)/(frames*self%gden(g))
+            value = self%grid_value(i)
             write (grid_unit, '(3(f14.8,2x),es20.12)') self%qvec(1, i), self%qvec(2, i), &
                self%qvec(3, i), value
          end do
@@ -393,10 +482,13 @@ contains
       allocate (self%xa(frame%natoms), self%ya(frame%natoms), self%za(frame%natoms))
       allocate (self%strengths(frame%natoms))
       allocate (self%fk(self%gridpoints))
-      allocate (self%total(self%gridpoints))
       self%strengths = (0.0_rk, 0.0_rk)
       self%fk = (0.0_rk, 0.0_rk)
-      self%total = (0.0_rk, 0.0_rk)
+      ! The species sum is only needed when the amplitudes depend on q.
+      if (self%q_dependent) then
+         allocate (self%total(self%gridpoints))
+         self%total = (0.0_rk, 0.0_rk)
+      end if
 
       call finufft_default_opts(self%opts)
       self%opts%modeord = mode_cmcl
@@ -503,23 +595,24 @@ contains
          return
       end if
 
-      ! One transform per species, summed with its scattering amplitude.
-      self%total = (0.0_rk, 0.0_rk)
-      do isp = 1, size(self%species_type)
-         do i = 1, frame%natoms
-            if (self%species_of(i) == isp) then
-               self%strengths(i) = (1.0_rk, 0.0_rk)
-            else
-               self%strengths(i) = (0.0_rk, 0.0_rk)
+      if (self%q_dependent) then
+         ! X-ray form factors depend on q, so each species needs its own
+         ! transform before they are combined with f_alpha(|q|).
+         self%total = (0.0_rk, 0.0_rk)
+         do isp = 1, size(self%species_type)
+            do i = 1, frame%natoms
+               if (self%species_of(i) == isp) then
+                  self%strengths(i) = (1.0_rk, 0.0_rk)
+               else
+                  self%strengths(i) = (0.0_rk, 0.0_rk)
+               end if
+            end do
+            ier = finufft_execute(self%plan, self%strengths, self%fk)
+            if (ier /= 0) then
+               ierr = 1
+               write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
+               return
             end if
-         end do
-         ier = finufft_execute(self%plan, self%strengths, self%fk)
-         if (ier /= 0) then
-            ierr = 1
-            write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
-            return
-         end if
-         if (self%q_dependent) then
             !$omp parallel do schedule(static)
             do im = 1, int(self%nmodes)
                g = self%gidx(im)
@@ -528,27 +621,24 @@ contains
                                  *self%fk(g)
             end do
             !$omp end parallel do
-         else
-            amp = self%amp_const(isp)
-            !$omp parallel do schedule(static)
-            do im = 1, int(self%nmodes)
-               g = self%gidx(im)
-               self%total(g) = self%total(g) &
-                               + cmplx(amp, 0.0_rk, c_double_complex)*self%fk(g)
-            end do
-            !$omp end parallel do
+         end do
+         call self%accumulate_modes(self%total)
+      else
+         ! Unit and neutron weights do not depend on q, so the per-atom
+         ! amplitudes go straight into a single transform:
+         !   T(q) = sum_alpha f_alpha rho_alpha(q) = sum_j w_j exp(i q.r_j)
+         do i = 1, frame%natoms
+            self%strengths(i) = cmplx(self%amp_const(self%species_of(i)), 0.0_rk, &
+                                      c_double_complex)
+         end do
+         ier = finufft_execute(self%plan, self%strengths, self%fk)
+         if (ier /= 0) then
+            ierr = 1
+            write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
+            return
          end if
-      end do
-
-      ! Accumulate |rho|^2 into the shell and grid statistics.
-      do im = 1, int(self%nmodes)
-         g = self%gidx(im)
-         value = real(self%total(g)*conjg(self%total(g)), rk)
-         sh = self%shell(im)
-         self%num(sh) = self%num(sh) + value
-         if (self%want_grid) self%gnum(g) = self%gnum(g) + value
-      end do
-      self%nframes = self%nframes + 1
+         call self%accumulate_modes(self%fk)
+      end if
    end subroutine nufft_accumulate
 
    subroutine nufft_finalize(self)
@@ -570,12 +660,33 @@ contains
       type(weight_scheme_t), intent(in) :: scheme
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
+      integer :: i, t
       integer(lk) :: work
 
       ierr = 0
       message = ''
       allocate (self%type_of(frame%natoms))
       self%type_of = frame%type_id
+      allocate (self%species_first(self%ntypes + 1))
+      self%species_first = 1
+      do i = 1, frame%natoms
+         self%species_first(int(frame%type_id(i)) + 1) = &
+            self%species_first(int(frame%type_id(i)) + 1) + 1
+      end do
+      do t = 1, self%ntypes
+         self%species_first(t + 1) = self%species_first(t + 1) + self%species_first(t) - 1
+      end do
+      allocate (self%atom_of(frame%natoms))
+      block
+         integer(ik), allocatable :: cursor(:)
+         allocate (cursor(self%ntypes))
+         cursor = self%species_first(1:self%ntypes)
+         do i = 1, frame%natoms
+            t = int(frame%type_id(i))
+            self%atom_of(cursor(t)) = int(i, ik)
+            cursor(t) = cursor(t) + 1
+         end do
+      end block
       allocate (self%cart(3, frame%natoms))
       allocate (self%intensity(self%nmodes))
       work = int(frame%natoms, lk)*self%nmodes
@@ -594,8 +705,9 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: s(3), amp, phase, value
+      real(rk) :: qx, qy, qz
       complex(c_double_complex) :: acc, total
-      integer :: i, im, isp, sh, atype
+      integer :: i, im, isp, sh, idx
       integer(lk) :: g
 
       ierr = 0
@@ -606,16 +718,18 @@ contains
          self%cart(:, i) = matmul(frame%cell%a, s)
       end do
 
-      !$omp parallel do schedule(static) private(im, isp, i, amp, phase, acc, total, atype)
+      !$omp parallel do schedule(static) private(im, isp, idx, i, amp, phase, acc, total, qx, qy, qz)
       do im = 1, int(self%nmodes)
+         qx = self%qvec(1, im)
+         qy = self%qvec(2, im)
+         qz = self%qvec(3, im)
          total = (0.0_rk, 0.0_rk)
          do isp = 1, self%ntypes
             amp = scheme%amplitude(int(isp, ik), self%qlen(im))
             acc = (0.0_rk, 0.0_rk)
-            do i = 1, frame%natoms
-               if (self%type_of(i) /= isp) cycle
-               phase = self%qvec(1, im)*self%cart(1, i) + self%qvec(2, im)*self%cart(2, i) &
-                       + self%qvec(3, im)*self%cart(3, i)
+            do idx = self%species_first(isp), self%species_first(isp + 1) - 1
+               i = self%atom_of(idx)
+               phase = qx*self%cart(1, i) + qy*self%cart(2, i) + qz*self%cart(3, i)
                acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
             end do
             total = total + cmplx(amp, 0.0_rk, c_double_complex)*acc
@@ -624,14 +738,7 @@ contains
       end do
       !$omp end parallel do
 
-      do im = 1, int(self%nmodes)
-         g = self%gidx(im)
-         value = self%intensity(im)
-         sh = self%shell(im)
-         self%num(sh) = self%num(sh) + value
-         if (self%want_grid) self%gnum(g) = self%gnum(g) + value
-      end do
-      self%nframes = self%nframes + 1
+      call self%accumulate_values(self%intensity)
    end subroutine direct_accumulate
 
 end module sqc_structure

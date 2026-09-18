@@ -1,15 +1,26 @@
 find_package(Python3 COMPONENTS Interpreter)
 
+# Helper that dumps an HDF5 result file as text (used by the python tests).
+if(SQC_HAVE_HDF5)
+  add_executable(h5read h5read.f90)
+  target_link_libraries(h5read PRIVATE HDF5::HDF5)
+endif()
+
 # Layout check for the FINUFFT options mirror (fails loudly on an ABI change).
 add_executable(test_finufft_opts test_finufft_opts.f90)
 target_link_libraries(test_finufft_opts PRIVATE sqcalc_lib)
 add_test(NAME finufft_opts COMMAND test_finufft_opts)
 
 if(Python3_Interpreter_FOUND)
+  set(_sqc_h5read "")
+  if(SQC_HAVE_HDF5)
+    set(_sqc_h5read "--h5read=$<TARGET_FILE:h5read>")
+  endif()
   add_test(
     NAME sqcalc_physics
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sqcalc.py
             --executable $<TARGET_FILE:sqcalc> --workdir ${CMAKE_CURRENT_BINARY_DIR}/work
+            ${_sqc_h5read}
   )
   set_tests_properties(sqcalc_physics PROPERTIES LABELS "integration")
 
@@ -21,6 +32,7 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sqcalc.py
               --executable $<TARGET_FILE:sqcalc>
               --workdir ${CMAKE_CURRENT_BINARY_DIR}/work_gpu --gpu
+              ${_sqc_h5read}
     )
     set_tests_properties(sqcalc_gpu PROPERTIES LABELS "integration;gpu")
   endif()

@@ -78,6 +78,26 @@ contains
       nbytes = merge(bytes_per_complex32, bytes_per_complex, self%single_precision)
    end function device_complex_bytes
 
+   !> Number of strength values transferred per frame.
+   pure integer(lk) function upload_count(self) result(n)
+      class(cufinufft_structure_factor_t), intent(in) :: self
+      if (self%q_dependent) then
+         n = int(self%nspecies, lk)*int(self%natoms, lk)
+      else
+         n = int(self%natoms, lk)
+      end if
+   end function upload_count
+
+   !> Number of transform values downloaded per frame.
+   pure integer(lk) function download_count(self) result(n)
+      class(cufinufft_structure_factor_t), intent(in) :: self
+      if (self%q_dependent) then
+         n = int(self%nspecies, lk)*self%gridpoints
+      else
+         n = self%gridpoints
+      end if
+   end function download_count
+
    !> Allocate host and device buffers and create the cufinufft plan.
    subroutine gpu_setup(self, frame, scheme, ierr, message)
       class(cufinufft_structure_factor_t), intent(inout) :: self
@@ -86,7 +106,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(c_int64_t) :: n_modes(3)
-      integer(c_int) :: istat, ier, ndevices
+      integer(c_int) :: istat, ier, ndevices, ntrans
 
       ierr = 0
       message = ''
@@ -157,11 +177,19 @@ contains
       self%opts%modeord = mode_cmcl
       self%opts%gpu_device_id = int(self%device, c_int)
       n_modes = int(self%modes, c_int64_t)
+      ! With q independent weights (unit/neutron) the per-atom amplitudes are
+      ! folded into a single transform; only X-ray form factors need one
+      ! transform per species.
+      if (self%q_dependent) then
+         ntrans = int(self%nspecies, c_int)
+      else
+         ntrans = 1_c_int
+      end if
       if (self%single_precision) then
-         ier = cufinufftf_makeplan(type1, 3_c_int, n_modes, 1_c_int, int(self%nspecies, c_int), &
+         ier = cufinufftf_makeplan(type1, 3_c_int, n_modes, 1_c_int, ntrans, &
                                    real(self%eps, c_float), self%plan, self%opts)
       else
-         ier = cufinufft_makeplan(type1, 3_c_int, n_modes, 1_c_int, int(self%nspecies, c_int), &
+         ier = cufinufft_makeplan(type1, 3_c_int, n_modes, 1_c_int, ntrans, &
                                   real(self%eps, c_double), self%plan, self%opts)
       end if
       if (ier /= 0) then
@@ -227,19 +255,28 @@ contains
          return
       end if
 
-      ! Strengths: one contiguous block of natoms entries per species.
-      host_c = (0.0_rk, 0.0_rk)
-      do isp = 1, self%nspecies
-         base = int(isp - 1, ik)*frame%natoms
-         do i = 1, frame%natoms
-            if (self%species_of(i) == isp) host_c(base + i) = (1.0_rk, 0.0_rk)
+      ! Strengths.  With q independent weights the per-atom amplitudes go into a
+      ! single transform; X-ray form factors need one block per species.
+      if (self%q_dependent) then
+         host_c = (0.0_rk, 0.0_rk)
+         do isp = 1, self%nspecies
+            base = int(isp - 1, ik)*frame%natoms
+            do i = 1, frame%natoms
+               if (self%species_of(i) == isp) host_c(base + i) = (1.0_rk, 0.0_rk)
+            end do
          end do
-      end do
-      if (self%single_precision) then
-         host_c32 = cmplx(host_c, kind=c_float_complex)
-         istat = cuda_upload_complex32(self%d_c, host_c32)
       else
-         istat = cuda_upload_complex(self%d_c, host_c)
+         do i = 1, frame%natoms
+            host_c(i) = cmplx(self%amp_const(self%species_of(i)), 0.0_rk, &
+                              c_double_complex)
+         end do
+      end if
+      if (self%single_precision) then
+         host_c32(1:upload_count(self)) = cmplx(host_c(1:upload_count(self)), &
+                                                kind=c_float_complex)
+         istat = cuda_upload_complex32(self%d_c, host_c32(1:upload_count(self)))
+      else
+         istat = cuda_upload_complex(self%d_c, host_c(1:upload_count(self)))
       end if
       if (istat /= cuda_success) then
          ierr = 1
@@ -258,18 +295,18 @@ contains
          return
       end if
       if (self%single_precision) then
-         istat = cuda_download_complex32(self%d_fk, host_fk32)
+         istat = cuda_download_complex32(self%d_fk, host_fk32(1:download_count(self)))
          if (istat == cuda_success) then
             ! Widen for the (double precision) combine and accumulation.
             !$omp parallel do schedule(static)
-            do i = 1, int(size(host_fk, kind=lk))
+            do i = 1, int(download_count(self))
                host_fk(i) = cmplx(real(host_fk32(i)), aimag(host_fk32(i)), &
                                   kind=c_double_complex)
             end do
             !$omp end parallel do
          end if
       else
-         istat = cuda_download_complex(self%d_fk, host_fk)
+         istat = cuda_download_complex(self%d_fk, host_fk(1:download_count(self)))
       end if
       if (istat /= cuda_success) then
          ierr = 1
@@ -277,32 +314,26 @@ contains
          return
       end if
 
-      ! Combine the species with their amplitudes (parallel over modes: each
-      ! mode needs its own species sum, but nothing is shared) and accumulate.
-      !$omp parallel do schedule(static) private(im, isp, g, amp, total)
-      do im = 1, int(self%nmodes)
-         g = self%gidx(im)
-         total = (0.0_rk, 0.0_rk)
-         do isp = 1, self%nspecies
-            if (self%q_dependent) then
+      if (self%q_dependent) then
+         ! Combine the species with their q dependent amplitudes (each mode
+         ! needs its own species sum, but nothing is shared) then accumulate.
+         !$omp parallel do schedule(static) private(im, isp, g, amp, total)
+         do im = 1, int(self%nmodes)
+            g = self%gidx(im)
+            total = (0.0_rk, 0.0_rk)
+            do isp = 1, self%nspecies
                amp = self%amp_table(im, isp)
-            else
-               amp = self%amp_const(isp)
-            end if
-            total = total + cmplx(amp, 0.0_rk, c_double_complex) &
-                            *host_fk(int(isp - 1, lk)*self%gridpoints + g)
+               total = total + cmplx(amp, 0.0_rk, c_double_complex) &
+                               *host_fk(int(isp - 1, lk)*self%gridpoints + g)
+            end do
+            self%mode_values(im) = real(total*conjg(total), rk)
          end do
-         mode_intensity(im) = real(total*conjg(total), rk)
-      end do
-      !$omp end parallel do
-      do im = 1, int(self%nmodes)
-         value = mode_intensity(im)
-         g = self%gidx(im)
-         sh = self%shell(im)
-         self%num(sh) = self%num(sh) + value
-         if (self%want_grid) self%gnum(g) = self%gnum(g) + value
-      end do
-      self%nframes = self%nframes + 1
+         !$omp end parallel do
+         call self%accumulate_values(self%mode_values)
+      else
+         ! Single weighted transform: fk already is rho(q).
+         call self%accumulate_modes(host_fk)
+      end if
    end subroutine gpu_accumulate
 
    !> Release device memory and the plan.

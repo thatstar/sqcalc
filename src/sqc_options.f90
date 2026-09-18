@@ -8,7 +8,7 @@ module sqc_options
    private
 
    public :: options_t, parse_options, print_usage, program_version, device_cpu, device_gpu, &
-             precision_double, precision_single
+             precision_double, precision_single, grid_format_text, grid_format_hdf5
 
    !> Where the NUFFT transforms run.
    integer, parameter :: device_cpu = 0
@@ -17,6 +17,10 @@ module sqc_options
    !> Precision of the GPU transform.
    integer, parameter :: precision_double = 0
    integer, parameter :: precision_single = 1
+
+   !> Format of the reciprocal grid table.
+   integer, parameter :: grid_format_text = 0
+   integer, parameter :: grid_format_hdf5 = 1
 
    character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
 
@@ -38,6 +42,8 @@ module sqc_options
       real(rk) :: qmax = 20.0_rk
       real(rk) :: eps = 1.0e-9_rk
       logical :: want_grid = .false.
+      integer :: grid_format = grid_format_text
+      logical :: grid_format_given = .false.
       logical :: quiet = .false.
       logical :: show_help = .false.
       logical :: show_version = .false.
@@ -94,7 +100,7 @@ contains
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
-                  '--device', '--gpu-id', '--precision')
+                  '--device', '--gpu-id', '--precision', '--grid-format')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -217,6 +223,18 @@ contains
                case ('--grid')
                   self%want_grid = .true.
                   self%grid_output = trim(value)
+               case ('--grid-format')
+                  select case (trim(value))
+                  case ('text', 'txt', 'ascii')
+                     self%grid_format = grid_format_text
+                  case ('hdf5', 'h5', 'hdf')
+                     self%grid_format = grid_format_hdf5
+                  case default
+                     ierr = 1
+                     message = 'unknown grid format "'//trim(value)//'" (use text or hdf5)'
+                     return
+                  end select
+                  self%grid_format_given = .true.
                end select
             end if
          else
@@ -269,7 +287,22 @@ contains
          return
       end if
       if (.not. self%want_grid) self%grid_output = ''
+      ! Default the grid format from the file name.
+      if (self%want_grid .and. .not. self%grid_format_given) then
+         if (ends_with(self%grid_output, '.h5') .or. ends_with(self%grid_output, '.hdf5')) then
+            self%grid_format = grid_format_hdf5
+         end if
+      end if
    end subroutine parse_options
+
+   !> Case sensitive file suffix test used for the grid format default.
+   pure logical function ends_with(text, suffix) result(found)
+      character(len=*), intent(in) :: text, suffix
+      integer :: n, m
+      n = len_trim(text)
+      m = len(suffix)
+      found = n >= m .and. text(n - m + 1:n) == suffix
+   end function ends_with
 
    subroutine print_usage(unit)
       integer, intent(in) :: unit
@@ -290,6 +323,7 @@ contains
       write (unit, '(a)') '      --qmax VALUE    largest |q| in the output [1/A] (default 20)'
       write (unit, '(a)') '      --nq N          number of q shells (default 500)'
       write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
+      write (unit, '(a)') '      --grid-format NAME  text (default) or hdf5 (.h5/.hdf5 implies hdf5)'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
       write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
       write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'

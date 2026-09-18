@@ -41,6 +41,17 @@ def read_table(path):
     return np.array(q), np.array(s)
 
 
+def read_matrix(path):
+    """Read a whitespace separated data table (any number of columns)."""
+    rows = []
+    with open(path) as handle:
+        for line in handle:
+            if line.startswith("#") or not line.strip():
+                continue
+            rows.append([float(value) for value in line.split()])
+    return np.array(rows)
+
+
 def compare(reference, candidate, label, rtol=1.0e-6, atol=1.0e-8):
     """Compare two S(q) tables and fail when they disagree."""
     scale = np.maximum(np.abs(reference), 1.0)
@@ -58,6 +69,8 @@ def main():
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--gpu", action="store_true",
                         help="also compare the CUDA backend against the CPU")
+    parser.add_argument("--h5read", default=None,
+                        help="path of the h5read helper (enables the HDF5 checks)")
     args = parser.parse_args()
     exe = os.path.abspath(args.executable)
     work = os.path.abspath(args.workdir)
@@ -176,6 +189,37 @@ def main():
     _, s_tri_ref = read_table(path("tri_ref.dat"))
     compare(s_tri_direct, s_tri_nufft, "NUFFT vs direct (triclinic, xu yu zu)")
     compare(s_tri_direct, s_tri_ref, "direct vs numpy reference (triclinic)")
+
+    # --- 5b. HDF5 grid output ---------------------------------------------
+    if args.h5read:
+        print("hdf5 output")
+        sqcalc(dump, "h5_shell.dat", "-w", "unit", "--norm", "self",
+               "--grid", path("grid.h5"), *common)
+        sqcalc(dump, "txt_shell.dat", "-w", "unit", "--norm", "self",
+               "--grid", path("grid.txt"), *common)
+        # HDF5 grid table must reproduce the text grid table exactly.
+        h5_grid = run([args.h5read, path("grid.h5"), "grid"]).stdout
+        with open(path("grid_from_h5.txt"), "w") as handle:
+            handle.write(h5_grid)
+        s_h5 = read_matrix(path("grid_from_h5.txt"))[:, 3]
+        s_txt = read_matrix(path("grid.txt"))[:, 3]
+        if s_h5.shape != s_txt.shape:
+            raise SystemExit("FAIL hdf5 grid has %d rows, text grid has %d"
+                             % (len(s_h5), len(s_txt)))
+        worst = np.max(np.abs(s_h5 - s_txt)/np.maximum(np.abs(s_txt), 1.0))
+        if worst > 1.0e-12:
+            raise SystemExit("FAIL hdf5 vs text grid: %.3e" % worst)
+        print("  ok   %-42s max deviation %.2e" % ("HDF5 vs text grid table", worst))
+
+        # The shell table stored in the same file must match the text one.
+        h5_shell = run([args.h5read, path("grid.h5"), "shell"]).stdout
+        with open(path("shell_from_h5.txt"), "w") as handle:
+            handle.write(h5_shell)
+        _, s_shell_h5 = read_table(path("shell_from_h5.txt"))
+        _, s_shell_txt = read_table(path("h5_shell.dat"))
+        compare(s_shell_txt, s_shell_h5, "HDF5 vs text shell table", rtol=1.0e-12)
+    else:
+        print("hdf5 output: skipped (no HDF5 in this build)")
 
     # --- 6. command line errors -------------------------------------------
     print("command line handling")
