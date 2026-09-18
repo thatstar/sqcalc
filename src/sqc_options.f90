@@ -47,6 +47,11 @@ module sqc_options
       logical :: skin_given = .false.
       !> Disable the Debye cut-off density correction.
       logical :: no_cutoff_correction = .false.
+      !> Write partial structure factor columns (default: when -m is given).
+      logical :: partials = .true.
+      logical :: partials_given = .false.
+      !> Use the Faber-Ziman form for the partials.
+      logical :: faber_ziman = .false.
       !> True when the user gave --eps explicitly.
       logical :: eps_given = .false.
       integer :: nq = 500
@@ -112,6 +117,18 @@ contains
                needs_value = .false.
             case ('--no-cutoff-correction')
                self%no_cutoff_correction = .true.
+               needs_value = .false.
+            case ('-fz', '--faber-ziman')
+               self%faber_ziman = .true.
+               self%partials = .true.
+               needs_value = .false.
+            case ('--partials')
+               self%partials = .true.
+               self%partials_given = .true.
+               needs_value = .false.
+            case ('--no-partials')
+               self%partials = .false.
+               self%partials_given = .true.
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
@@ -349,6 +366,8 @@ contains
             return
          end if
       end if
+      ! Partial columns need to know which type is which element.
+      if (self%partials .and. .not. self%scheme%has_mapping()) self%partials = .false.
       if (.not. self%want_grid) self%grid_output = ''
       ! Default the grid format from the file name.
       if (self%want_grid .and. .not. self%grid_format_given) then
@@ -395,6 +414,8 @@ contains
       write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [1/A] (default 1.0)'
       write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
       write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
+      write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
+      write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'
       write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
       write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
       write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'

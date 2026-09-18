@@ -86,6 +86,14 @@ module sqc_structure_factor
       real(rk), allocatable :: num(:), den(:)
       !> Scratch: |rho(q)|^2 of each kept mode for the current frame.
       real(rk), allocatable :: mode_values(:)
+      !> Write partial structure factors S_ab(q) next to the total.
+      logical :: partials = .false.
+      !> Report the partials in the Faber-Ziman normalization.
+      logical :: faber_ziman = .false.
+      !> Accumulated, unweighted partial sums Re(rho_a rho_b*) per shell.
+      real(rk), allocatable :: partial_num(:, :, :)
+      !> Human readable label of each type pair (for the partial columns).
+      character(len=18), allocatable :: pair_label(:, :)
       !> Number of (frame, mode) contributions per shell.
       integer(lk), allocatable :: shell_count(:)
       !> Accumulated numerator and denominator per grid point.
@@ -93,14 +101,19 @@ module sqc_structure_factor
       !> Frame bookkeeping.
       integer(ik) :: natoms = 0
       integer(ik) :: ntypes = 0
+      !> Number of atoms per type id.
+      integer(ik), allocatable :: type_counts(:)
       integer(lk) :: nframes = 0
    contains
       procedure :: configure => sf_configure
       procedure :: write_results => sf_write_results
       procedure :: accumulate_modes => sf_accumulate_modes
       procedure :: accumulate_values => sf_accumulate_values
+      procedure :: accumulate_partials => sf_accumulate_partials
       procedure :: prepare_output => sf_prepare_output
       procedure :: shell_value => sf_shell_value
+      procedure :: partial_value => sf_partial_value
+      procedure :: partial_column => sf_partial_column
       procedure :: grid_value => sf_grid_value
       procedure(sf_setup_iface), deferred :: method_setup
       procedure(sf_accumulate_iface), deferred :: accumulate_frame
@@ -150,6 +163,8 @@ module sqc_structure_factor
       real(rk), allocatable :: amp_const(:)
       !> Per-atom strengths and transform scratch space.
       complex(c_double_complex), allocatable :: strengths(:), fk(:), total(:)
+      !> Per-species amplitudes on the flat grid (only with --partials).
+      complex(c_double_complex), allocatable :: rho_species(:, :)
    contains
       procedure :: method_setup => nufft_setup
       procedure :: accumulate_frame => nufft_accumulate
@@ -216,6 +231,7 @@ contains
          message = 'could not classify all atoms by type'
          return
       end if
+      self%type_counts = type_counts
 
       ! Grid extent: enough reciprocal lattice points to reach qmax.
       do i = 1, 3
@@ -291,6 +307,17 @@ contains
       end do
       allocate (self%num(self%nq), self%den(self%nq), self%shell_count(self%nq))
       allocate (self%mode_values(self%nmodes))
+      if (self%partials) then
+         allocate (self%partial_num(self%ntypes, self%ntypes, self%nq))
+         self%partial_num = 0.0_rk
+         allocate (self%pair_label(self%ntypes, self%ntypes))
+         self%pair_label = ' '
+         do t = 1, self%ntypes
+            do i = t, self%ntypes
+               self%pair_label(t, i) = scheme%pair_label(t, i)
+            end do
+         end do
+      end if
       self%num = 0.0_rk
       self%den = 0.0_rk
       self%shell_count = 0
@@ -358,6 +385,38 @@ contains
       call self%accumulate_values(self%mode_values)
    end subroutine sf_accumulate_modes
 
+   !> Accumulate the unweighted partial sums Re(rho_a rho_b*) of one frame.
+   !!
+   !! `rho_species(g, a)` holds the amplitude of species `a` on the flat
+   !! reciprocal grid (the same layout as `accumulate_modes` expects).  The
+   !! partials are stored unweighted so that the same numbers serve for every
+   !! weighting scheme and normalization.
+   subroutine sf_accumulate_partials(self, rho_species)
+      class(structure_factor_t), intent(inout) :: self
+      complex(c_double_complex), intent(in) :: rho_species(:, :)
+      integer :: ia, ib, im, ia_max
+      integer(ik), allocatable :: local_partial(:, :, :)
+      integer(lk) :: g, s
+      real(rk) :: value, contribution
+
+      if (.not. self%partials) return
+      ia_max = size(rho_species, 2)
+      allocate (local_partial(self%ntypes, self%ntypes, self%nq))
+      local_partial = 0.0_rk
+      do ia = 1, ia_max
+         do ib = ia, ia_max
+            do im = 1, int(self%nmodes)
+               g = self%gidx(im)
+               value = real(rho_species(g, ia)*conjg(rho_species(g, ib)), rk)
+               s = self%shell(im)
+               local_partial(ia, ib, s) = local_partial(ia, ib, s) + value
+            end do
+         end do
+      end do
+      self%partial_num = self%partial_num + local_partial
+      deallocate (local_partial)
+   end subroutine sf_accumulate_partials
+
    !> Add |rho|^2 values of the kept modes to the shell and grid accumulators.
    !!
    !! The shell reduction runs in parallel with one accumulator per thread; the
@@ -424,6 +483,76 @@ contains
       if (self%den(shell) > 0.0_rk) value = self%num(shell)/(frames*self%den(shell))
    end function sf_shell_value
 
+   !> Partial structure factors of one shell, in the OVITO convention
+   !!
+   !!   S_ab(q) = (1/N) < sum_{j in a} sum_{k in b} sin(q r_jk)/(q r_jk) >
+   !!
+   !! so that S_aa -> x_a and S_ab -> 0 (a /= b) at large q and
+   !! `S(q) = sum_ab (2 - delta_ab) S_ab(q)` for unit weights.  With
+   !! `faber_ziman` the Faber-Ziman form is returned instead,
+   !!
+   !!   A_ab(q) = (S_ab(q) - x_a delta_ab)/(x_a x_b) + 1,
+   !!
+   !! which tends to 1 for every pair.  Values are given for a <= b.
+   pure real(rk) function sf_partial_value(self, ia, ib, shell) result(value)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: ia, ib, shell
+      real(rk) :: frames, xa, xb
+
+      frames = real(max(self%nframes, 1_lk), rk)
+      value = 0.0_rk
+      if (.not. allocated(self%partial_num)) return
+      ! The grid method sums over the modes of the shell, so the mode count must
+      ! be divided out (the total gets that from `den`).  Methods that evaluate
+      ! S(q) directly (Debye) leave shell_count at zero.
+      value = self%partial_num(ia, ib, shell) &
+              /(frames*real(self%natoms, rk)*real(max(sf_shell_modes(self, shell), 1), rk))
+      if (.not. self%faber_ziman) return
+      xa = real(sf_count_type_of(self, ia), rk)/real(self%natoms, rk)
+      xb = real(sf_count_type_of(self, ib), rk)/real(self%natoms, rk)
+      if (xa*xb <= 0.0_rk) then
+         value = 0.0_rk
+         return
+      end if
+      value = (value - merge(xa, 0.0_rk, ia == ib))/(xa*xb) + 1.0_rk
+   end function sf_partial_value
+
+   !> Number of reciprocal lattice modes that contributed to a shell (0 when the
+   !! method does not use the reciprocal grid).
+   pure integer function sf_shell_modes(self, shell) result(n)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: shell
+      n = 0
+      if (allocated(self%shell_count)) then
+         if (shell >= 1 .and. shell <= size(self%shell_count)) n = int(self%shell_count(shell))
+      end if
+   end function sf_shell_modes
+
+   !> Number of atoms of a type id (helper for the partial normalization).
+   pure integer function sf_count_type_of(self, type_id) result(n)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: type_id
+      n = 0
+      if (allocated(self%type_counts)) then
+         if (type_id >= 1 .and. type_id <= size(self%type_counts)) n = int(self%type_counts(type_id))
+      end if
+   end function sf_count_type_of
+
+   !> Column label of a partial, "S(Si-O)" or "A(Si-O)" for Faber-Ziman.
+   pure function sf_partial_column(self, ia, ib) result(label)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: ia, ib
+      character(len=24) :: label
+      character(len=18) :: pair
+      character(len=2) :: prefix
+
+      pair = ' '
+      if (allocated(self%pair_label)) pair = self%pair_label(ia, ib)
+      prefix = 'S('
+      if (self%faber_ziman) prefix = 'A('
+      label = prefix//trim(pair)//')'
+   end function sf_partial_column
+
    !> Normalized S(q) of one kept reciprocal lattice mode.
    pure real(rk) function sf_grid_value(self, mode) result(value)
       class(structure_factor_t), intent(in) :: self
@@ -444,7 +573,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: qc, value, frames
-      integer :: s
+      integer :: s, t, u
       integer(lk) :: i, g
 
       ierr = 0
@@ -453,11 +582,36 @@ contains
       ! normalization, so the average over frames is num/(nframes*den).
       frames = real(max(self%nframes, 1_lk), rk)
       if (shell_unit /= no_unit) then
-         write (shell_unit, '(a)') '# q S(q)'
-      do s = 1, self%nq
+         if (self%partials .and. allocated(self%partial_num)) then
+            write (shell_unit, '(a)', advance='no') '# q S(q)'
+            do t = 1, self%ntypes
+               do u = t, self%ntypes
+                  if (sf_count_type_of(self, t) == 0) cycle
+                  if (sf_count_type_of(self, u) == 0) cycle
+                  write (shell_unit, '(a)', advance='no') ' '//self%partial_column(t, u)
+               end do
+            end do
+            write (shell_unit, '(a)') ''
+         else
+            write (shell_unit, '(a)') '# q S(q)'
+         end if
+         do s = 1, self%nq
             qc = self%qmin + (real(s, rk) - 0.5_rk)*self%shell_dq
             value = self%shell_value(s)
-            write (shell_unit, '(f14.6,2x,es20.12)') qc, value
+            if (self%partials .and. allocated(self%partial_num)) then
+               write (shell_unit, '(f14.6,2x,es20.12)', advance='no') qc, value
+               do t = 1, self%ntypes
+                  do u = t, self%ntypes
+                     if (sf_count_type_of(self, t) == 0) cycle
+                     if (sf_count_type_of(self, u) == 0) cycle
+                     write (shell_unit, '(2x,es20.12)', advance='no') &
+                        self%partial_value(t, u, s)
+                  end do
+               end do
+               write (shell_unit, '(a)') ''
+            else
+               write (shell_unit, '(f14.6,2x,es20.12)') qc, value
+            end if
          end do
       end if
 
@@ -501,6 +655,13 @@ contains
       if (self%q_dependent) then
          allocate (self%total(self%gridpoints))
          self%total = (0.0_rk, 0.0_rk)
+      end if
+      if (self%partials) then
+         allocate (self%rho_species(self%gridpoints, size(self%species_type)))
+         if (.not. allocated(self%total)) then
+            allocate (self%total(self%gridpoints))
+            self%total = (0.0_rk, 0.0_rk)
+         end if
       end if
 
       call finufft_default_opts(self%opts)
@@ -609,6 +770,40 @@ contains
       end if
 
       if (self%q_dependent) then
+         ! Partial structure factors need the individual species amplitudes,
+         ! which also gives the weighted total in the same pass.
+         if (self%partials) then
+            do isp = 1, size(self%species_type)
+               do i = 1, frame%natoms
+                  if (self%species_of(i) == isp) then
+                     self%strengths(i) = (1.0_rk, 0.0_rk)
+                  else
+                     self%strengths(i) = (0.0_rk, 0.0_rk)
+                  end if
+               end do
+               ier = finufft_execute(self%plan, self%strengths, self%fk)
+               if (ier /= 0) then
+                  ierr = 1
+                  write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
+                  return
+               end if
+               self%rho_species(:, isp) = self%fk
+            end do
+            call self%accumulate_partials(self%rho_species)
+            !$omp parallel do schedule(static) private(im, isp, g)
+            do im = 1, int(self%nmodes)
+               g = self%gidx(im)
+               self%total(g) = (0.0_rk, 0.0_rk)
+               do isp = 1, size(self%species_type)
+                  self%total(g) = self%total(g) &
+                                  + cmplx(self%amp_table(im, isp), 0.0_rk, c_double_complex) &
+                                    *self%rho_species(g, isp)
+               end do
+            end do
+            !$omp end parallel do
+            call self%accumulate_modes(self%total)
+            return
+         end if
          ! X-ray form factors depend on q, so each species needs its own
          ! transform before they are combined with f_alpha(|q|).
          self%total = (0.0_rk, 0.0_rk)
@@ -637,6 +832,40 @@ contains
          end do
          call self%accumulate_modes(self%total)
       else
+         ! Partial structure factors: compute the species amplitudes first,
+         ! then the partials and the weighted total from them.
+         if (self%partials) then
+            do isp = 1, size(self%species_type)
+               do i = 1, frame%natoms
+                  if (self%species_of(i) == isp) then
+                     self%strengths(i) = (1.0_rk, 0.0_rk)
+                  else
+                     self%strengths(i) = (0.0_rk, 0.0_rk)
+                  end if
+               end do
+               ier = finufft_execute(self%plan, self%strengths, self%fk)
+               if (ier /= 0) then
+                  ierr = 1
+                  write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
+                  return
+               end if
+               self%rho_species(:, isp) = self%fk
+            end do
+            call self%accumulate_partials(self%rho_species)
+            !$omp parallel do schedule(static) private(im, isp, g)
+            do im = 1, int(self%nmodes)
+               g = self%gidx(im)
+               self%total(g) = (0.0_rk, 0.0_rk)
+               do isp = 1, size(self%species_type)
+                  self%total(g) = self%total(g) &
+                                  + cmplx(self%amp_const(isp), 0.0_rk, c_double_complex) &
+                                    *self%rho_species(g, isp)
+               end do
+            end do
+            !$omp end parallel do
+            call self%accumulate_modes(self%total)
+            return
+         end if
          ! Unit and neutron weights do not depend on q, so the per-atom
          ! amplitudes go straight into a single transform:
          !   T(q) = sum_alpha f_alpha rho_alpha(q) = sum_j w_j exp(i q.r_j)

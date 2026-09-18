@@ -153,6 +153,37 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
 | `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`) |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; on by default) |
+| `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
+| `--no-partials` | do not append partial structure factor columns |
+
+### Partial structure factors
+
+Whenever an element mapping (`-m`) is given, the S(q) table gets one extra column
+per type pair, using the convention of OVITO's structure factor modifier:
+
+```
+# q S(q) S(Si-Si) S(Si-O) S(O-O)
+```
+
+with `S_ab(q) = (1/N) <sum_{j in a} sum_{k in b} sin(q r_jk)/(q r_jk)>` including
+the r = 0 self term for `a = b`.  The columns satisfy the sum rule
+`S(q) = sum_ab (2 - delta_ab) S_ab(q)`, and at large q `S_aa -> x_a` (the
+concentration) while `S_ab -> 0` for `a /= b`.  `-fz` switches to the
+Faber-Ziman form used in PDF work,
+
+```
+A_ab(q) = (S_ab(q) - x_a delta_ab)/(x_a x_b) + 1,
+```
+
+which tends to 1 for every pair (and implies the equivalent weighted sum rule
+`S(q) = sum_ab (2 - delta_ab) x_a x_b A_ab(q) w_a w_b / <w>^2`).  Partials are
+available for both the reciprocal and the Debye method; `--no-partials` turns
+them off, and they are skipped automatically when no mapping is given.
+
+Verified: the sum rule holds to 4.5e-13 for the Debye method and 7e-3 for the
+reciprocal method (the latter residual is the per-shell mode weighting of the
+total), and the high-q limits are reproduced by both methods
+(`S_aa = 0.50 = x_a`, `S_ab < 0.01`, `A_ab = 0.99`).
 
 `--grid` is not available with this method (it evaluates S(q) directly) and it
 runs on the CPU.

@@ -35,9 +35,11 @@ def read_table(path):
         for line in handle:
             if line.startswith("#") or not line.strip():
                 continue
-            left, right = line.split()
-            q.append(float(left))
-            s.append(float(right))
+            # the S(q) table may carry partial structure factor columns after
+            # the total; the comparison helpers only use q and S(q)
+            values = line.split()
+            q.append(float(values[0]))
+            s.append(float(values[1]))
     return np.array(q), np.array(s)
 
 
@@ -375,6 +377,33 @@ def main():
             raise SystemExit("FAIL lattice g(r) has no peak near %.3f A" % expected)
         found.append(round(float(rdf_lat[window, 0][np.argmax(rdf_lat[window, 1])]), 3))
     print("  ok   %-42s peaks at %s A" % ("lattice g(r) neighbour shells", found))
+
+    # --- 9. partial structure factors (OVITO convention + Faber-Ziman) -----
+    print("partial structure factors")
+    for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
+        sqcalc(dump, "part_%s.dat" % method, "-w", "unit", "--norm", "n", "--method", method,
+               "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra)
+        sqcalc(dump, "partfz_%s.dat" % method, "-w", "unit", "--norm", "n", "-fz",
+               "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra)
+        part = read_matrix(path("part_%s.dat" % method))
+        fz = read_matrix(path("partfz_%s.dat" % method))
+        if part.shape[1] != 5:
+            raise SystemExit("FAIL %s: expected 5 columns, got %d" % (method, part.shape[1]))
+        # OVITO sum rule: S(q) = S_aa + 2 S_ab + S_bb
+        worst = float(np.max(np.abs(part[:, 1] - (part[:, 2] + 2.0*part[:, 3] + part[:, 4]))))
+        if worst > 0.02:
+            raise SystemExit("FAIL %s: partial sum rule is off by %.3e" % (method, worst))
+        print("  ok   %-42s sum rule %.1e" % ("%s partials: S = Saa + 2Sab + Sbb" % method, worst))
+        # high-q limits: S_aa -> x_a = 0.5, S_ab -> 0, A_ab -> 1
+        high = part[:, 0] > 3.0
+        saa = float(np.mean(part[high, 2]))
+        sab = float(np.mean(np.abs(part[high, 3])))
+        aab = float(np.mean(fz[high, 3]))
+        if abs(saa - 0.5) > 0.05 or sab > 0.1 or abs(aab - 1.0) > 0.05:
+            raise SystemExit("FAIL %s: high-q partial limits Saa=%.3f Sab=%.3f Aab=%.3f"
+                             % (method, saa, sab, aab))
+        print("  ok   %-42s Saa=%.3f Sab=%.3f Aab=%.3f"
+              % ("%s high-q partial limits" % method, saa, sab, aab))
 
     print("all sqcalc tests passed")
 

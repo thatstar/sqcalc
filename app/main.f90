@@ -123,6 +123,8 @@ program sqcalc
    method%eps = eps_used
    method%nthreads = opts%threads
    method%want_grid = opts%want_grid
+   method%partials = opts%partials
+   method%faber_ziman = opts%faber_ziman
 
    call method%configure(frame, opts%scheme, ierr, message)
    if (ierr /= 0) then

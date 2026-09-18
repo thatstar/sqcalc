@@ -151,6 +151,11 @@ contains
       allocate (self%histogram(self%ntypes, self%ntypes, self%nbins))
       self%histogram = 0.0_rk
       self%nhist = 0
+      ! This method evaluates S(q) directly at the shell centers, so the
+      ! reciprocal mode list of the base type is not used: clear its per-shell
+      ! mode counts, otherwise the partial normalization would divide by them.
+      if (allocated(self%shell_count)) self%shell_count = 0
+      self%nmodes = 0
       call self%nlist%configure(frame%cell, frame%natoms, self%rmax, self%skin, self%pbc, &
                                 ierr, message)
    end subroutine debye_setup
@@ -225,6 +230,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk), allocatable :: weight(:)
       real(rk) :: q, r_bin, sinc, pair_sum, self_sum, weight_sum, avg, corr, rho0, qc
+      real(rk) :: part_sum, part_corr, xa, xb
       integer :: s, ia, ib, k, t
 
       ierr = 0
@@ -261,6 +267,38 @@ contains
             weight_sum = weight_sum + real(self%count_type(t), rk)*weight(t)
          end do
          self%den(s) = mode_denominator(self%norm, scheme, self%natoms, self%count_type, q)
+         ! Partial structure factors (unweighted), same convention as the
+         ! reciprocal method: (1/N) <sum_jk sin(q r)/(q r)> with the r = 0 self
+         ! term for equal species.
+         if (self%partials) then
+            ! The cut-off correction must be shared by the partials in
+            ! proportion to x_a x_b so that they still add up to the total
+            ! (sum_ab (2 - delta_ab) x_a x_b = 1).
+            part_corr = 0.0_rk
+            if (self%correct_cutoff .and. any(self%pbc)) then
+               qc = q*self%rmax
+               part_corr = 4.0_rk*acos(-1.0_rk)*(real(self%natoms, rk)/self%volume)/(q*q) &
+                           *(self%rmax*cos(qc) - sin(qc)/q)
+            end if
+            do ia = 1, self%ntypes
+               if (self%count_type(ia) == 0) cycle
+               do ib = ia, self%ntypes
+                  if (self%count_type(ib) == 0) cycle
+                  part_sum = 0.0_rk
+                  do k = 1, self%nbins
+                     if (self%histogram(ia, ib, k) == 0.0_rk) cycle
+                     r_bin = (real(k, rk) - 0.5_rk)*self%dr
+                     part_sum = part_sum + (self%histogram(ia, ib, k) &
+                                /real(self%nhist, rk))*sin(q*r_bin)/(q*r_bin)
+                  end do
+                  if (ia == ib) part_sum = part_sum + real(self%count_type(ia), rk)
+                  xa = real(self%count_type(ia), rk)/real(self%natoms, rk)
+                  xb = real(self%count_type(ib), rk)/real(self%natoms, rk)
+                  part_sum = part_sum + xa*xb*part_corr*real(self%natoms, rk)
+                  self%partial_num(ia, ib, s) = part_sum*real(self%nframes, rk)
+               end do
+            end do
+         end if
          ! debyer's density correction for the pairs beyond the cut-off
          ! (add_cutoff_correction): restores the low q behaviour and removes the
          ! truncation ripple.  It is expressed in the per-atom normalization

@@ -33,6 +33,7 @@ module sqc_weights
       procedure :: amplitude => scheme_amplitude
       procedure :: amplitude_of_element => scheme_amplitude_of_element
       procedure :: label => scheme_label
+      procedure :: pair_label => scheme_pair_label
    end type weight_scheme_t
 
 contains
@@ -169,6 +170,26 @@ contains
          label = 'unit weights'
       end select
    end function scheme_label
+
+   !> Label of a type pair, "Si-O" when the types are mapped and "1-2" otherwise.
+   pure function scheme_pair_label(self, ia, ib) result(label)
+      class(weight_scheme_t), intent(in) :: self
+      integer, intent(in) :: ia, ib
+      character(len=18) :: label
+      character(len=2) :: sa, sb
+
+      sa = ' '
+      sb = ' '
+      if (allocated(self%symbols)) then
+         if (ia >= 1 .and. ia <= size(self%symbols)) sa = self%symbols(ia)
+         if (ib >= 1 .and. ib <= size(self%symbols)) sb = self%symbols(ib)
+      end if
+      if (len_trim(sa) > 0 .and. len_trim(sb) > 0) then
+         label = trim(sa)//'-'//trim(sb)
+      else
+         write (label, '(i0,a,i0)') ia, '-', ib
+      end if
+   end function scheme_pair_label
 
    !> Map a command line scheme name to its integer code.
    integer function scheme_from_name(name) result(kind)
