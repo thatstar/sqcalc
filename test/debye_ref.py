@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--nq", type=int, default=500)
     parser.add_argument("--rmax", type=float, required=True)
     parser.add_argument("--dr", type=float, default=0.01)
+    parser.add_argument("--no-correction", action="store_true",
+                        help="skip debyer's cut-off density correction")
     parser.add_argument("--output", required=True)
     parser.add_argument("--rdf", default=None, help="also write the total g(r)")
     args = parser.parse_args()
@@ -89,8 +91,18 @@ def main():
             den = weight_sum**2 / natoms
         else:
             den = float(np.sum(counts * w**2))
-        s_of_q[k] = (pair_sum + self_sum) / den
-        s_exact[k] = (np.einsum("a,ab,b->", w, exact[k], w) + self_sum) / den
+        correction = 0.0
+        if not args.no_correction:
+            # debyer's add_cutoff_correction (per-atom normalization, so the
+            # numerator gains corr * N)
+            avg = weight_sum / natoms
+            rho0 = natoms / volume
+            q = fq[k]
+            correction = (avg**2 * 4.0 * np.pi * rho0 / q**2
+                          * (args.rmax * np.cos(q * args.rmax) - np.sin(q * args.rmax) / q)
+                          * natoms)
+        s_of_q[k] = (pair_sum + self_sum + correction) / den
+        s_exact[k] = (np.einsum("a,ab,b->", w, exact[k], w) + self_sum + correction) / den
 
     with open(args.output, "w") as handle:
         handle.write("# q S(q)\n")

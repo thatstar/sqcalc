@@ -312,6 +312,25 @@ def main():
     _, s_rmax = read_table(path("deb_rmax10.dat"))
     compare(s_rmax, s_default, "Debye default rmax = half the box side", rtol=1.0e-12)
 
+    # After the cut-off density correction an ideal gas must give S(q) = 1
+    # everywhere (debyer agrees to machine precision on this configuration).
+    q_deb, s_deb = read_table(path("deb_f_unit.dat"))
+    high = q_deb > 1.5
+    rms = float(np.sqrt(np.mean((s_deb[high] - 1.0)**2)))
+    if rms > 0.1:
+        raise SystemExit("FAIL corrected ideal gas: rms(S-1) = %.3f for q > 1.5" % rms)
+    print("  ok   %-42s rms(S-1) = %.4f" % ("ideal gas S(q) -> 1 (corrected)", rms))
+
+    # The uncorrected variant must match the reference with --no-correction.
+    sqcalc(dump, "deb_raw.dat", "-w", "unit", "--norm", "n", "--method", "debye",
+           "--skin", "0", "--no-cutoff-correction", *debye_q)
+    run([sys.executable, ref_debye, "--input", dump, "--mapping", "1:Si,2:O",
+         "--weight", "unit", "--norm", "n", "--no-correction", "--output",
+         path("deb_raw_ref.dat"), *debye_q])
+    _, s_raw = read_table(path("deb_raw.dat"))
+    _, s_raw_ref = read_table(path("deb_raw_ref.dat"))
+    compare(s_raw_ref, s_raw, "Debye uncorrected vs reference", rtol=1.0e-9)
+
     # Skin reuse must not change a single number.
     sqcalc(dump, "deb_skin0.dat", "-w", "unit", "--norm", "self", "--method", "debye",
            "--skin", "0", *debye_q)

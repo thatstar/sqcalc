@@ -152,6 +152,7 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
 | `--dr VALUE` | radial bin width (default 0.01 A, reliable up to q ~ pi/(2 dr) ~ 150 1/A) |
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
 | `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`) |
+| `--no-cutoff-correction` | disable the cut-off density correction (for comparison; on by default) |
 
 `--grid` is not available with this method (it evaluates S(q) directly) and it
 runs on the CPU.
@@ -203,6 +204,12 @@ validated independently: `test/debye_ref.py` reproduces sqcalc's S(q) and g(r)
 exactly, and both programs reach the correct high-q plateau (1.00).  Porting
 that correction is the remaining item of plan M4.
 
+That correction is now implemented (default on, `--no-cutoff-correction` to
+disable it).  With it, sqcalc reproduces debyer's curve for this configuration
+**exactly** (max |difference| = 0.0000 over the 27 q points), and the ideal gas
+RMS deviation from S(q) = 1 drops from 0.267 (uncorrected) to 0.0146, identical
+to debyer's own value.
+
 The same configuration against our reciprocal (NUFFT) method, all three
 evaluated on the same q grid.  An ideal gas has S(q) = 1 everywhere, so any
 deviation is an artifact:
@@ -211,14 +218,14 @@ deviation is an artifact:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | debyer | 0.91 | 1.03 | 1.01 | 1.01 | 1.02 | 0.98 | 0.99 | 1.01 | 1.00 |
 | sqcalc Debye | 5.98 | 0.21 | 1.09 | 1.15 | 0.84 | 1.15 | 0.86 | 1.10 | 0.96 |
+| sqcalc Debye (corrected) | 0.91 | 1.03 | 1.01 | 1.01 | 1.02 | 0.98 | 0.99 | 1.01 | 1.00 |
 | sqcalc NUFFT | 1.28 | 1.04 | 0.99 | 1.01 | 0.99 | 1.02 | 1.00 | 1.01 | 1.00 |
 
-RMS deviation from 1 for q > 1.5 1/A: debyer 0.015, our NUFFT 0.024, our
-uncorrected Debye 0.267.  So the reciprocal method is the reliable one here (its
-small scatter is the finite shell resolution plus 4-frame statistics, not
-physics), debyer matches it, and our Debye method needs the density correction
-before it can be trusted at low q - it currently oscillates by +-15% and blows
-up as q -> 0.
+RMS deviation from 1 for q > 1.5 1/A: debyer 0.015, our corrected Debye 0.015,
+our NUFFT 0.024, our uncorrected Debye 0.267.  The reciprocal method and the
+corrected Debye method agree with debyer and with the exact ideal-gas value; the
+small NUFFT scatter is the finite shell resolution plus 4-frame statistics, not
+physics.
 
 ## Output
 

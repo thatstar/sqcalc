@@ -88,6 +88,7 @@ program sqcalc
          method%rmax = opts%rmax
          method%dr = opts%dr
          method%skin = opts%skin
+         method%correct_cutoff = .not. opts%no_cutoff_correction
          if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
       end select
    case default

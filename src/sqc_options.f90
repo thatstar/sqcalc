@@ -45,6 +45,8 @@ module sqc_options
       logical :: rmax_given = .false.
       logical :: dr_given = .false.
       logical :: skin_given = .false.
+      !> Disable the Debye cut-off density correction.
+      logical :: no_cutoff_correction = .false.
       !> True when the user gave --eps explicitly.
       logical :: eps_given = .false.
       integer :: nq = 500
@@ -107,6 +109,9 @@ contains
                needs_value = .false.
             case ('-q', '--quiet')
                self%quiet = .true.
+               needs_value = .false.
+            case ('--no-cutoff-correction')
+               self%no_cutoff_correction = .true.
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
@@ -389,6 +394,7 @@ contains
       write (unit, '(a)') '      --dr VALUE      Debye radial bin width [1/A] (default 0.01)'
       write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [1/A] (default 1.0)'
       write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
+      write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
       write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
       write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
       write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'

@@ -50,6 +50,8 @@ module sqc_debye
       logical :: pbc(3) = .true.
       !> Optional pair distribution function file ('' = none).
       character(len=:), allocatable :: rdf_path
+      !> Apply the cut-off density correction (debyer's add_cutoff_correction).
+      logical :: correct_cutoff = .true.
       !> Type id of each atom and number of atoms per type id.
       integer(ik), allocatable :: type_of(:)
       integer(ik), allocatable :: count_type(:)
@@ -222,7 +224,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk), allocatable :: weight(:)
-      real(rk) :: q, r_bin, sinc, pair_sum, self_sum
+      real(rk) :: q, r_bin, sinc, pair_sum, self_sum, weight_sum, avg, corr, rho0, qc
       integer :: s, ia, ib, k, t
 
       ierr = 0
@@ -254,10 +256,28 @@ contains
          end do
          ! r = 0 self term: exactly the "self" denominator of the same weights
          self_sum = mode_denominator(norm_self, scheme, self%natoms, self%count_type, q)
+         weight_sum = 0.0_rk
+         do t = 1, self%ntypes
+            weight_sum = weight_sum + real(self%count_type(t), rk)*weight(t)
+         end do
          self%den(s) = mode_denominator(self%norm, scheme, self%natoms, self%count_type, q)
+         ! debyer's density correction for the pairs beyond the cut-off
+         ! (add_cutoff_correction): restores the low q behaviour and removes the
+         ! truncation ripple.  It is expressed in the per-atom normalization
+         ! (debyer's S = pattern/N), hence the factor N when we add it to our
+         ! numerator.
+         corr = 0.0_rk
+         if (self%correct_cutoff .and. any(self%pbc)) then
+            rho0 = real(self%natoms, rk)/self%volume
+            avg = weight_sum/real(self%natoms, rk)
+            qc = q*self%rmax
+            corr = avg**2*4.0_rk*acos(-1.0_rk)*rho0/(q*q) &
+                   *(self%rmax*cos(qc) - sin(qc)/q)
+         end if
          if (self%den(s) > 0.0_rk) then
             ! shell_value() returns num(s)/(nframes*den(s)) = S(q)
-            self%num(s) = (pair_sum + self_sum)*real(self%nframes, rk)
+            self%num(s) = (pair_sum + self_sum + corr*real(self%natoms, rk)) &
+                          *real(self%nframes, rk)
          else
             self%num(s) = 0.0_rk
          end if
