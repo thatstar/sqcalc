@@ -185,6 +185,24 @@ reciprocal method (the latter residual is the per-shell mode weighting of the
 total), and the high-q limits are reproduced by both methods
 (`S_aa = 0.50 = x_a`, `S_ab < 0.01`, `A_ab = 0.99`).
 
+The `-fz` columns are checked against the algebraic transformation of the plain
+partial columns (`A = (S - x_a delta)/(x_a x_b) + 1`, agreement 6e-13) and
+against the equivalent weighted sum rule
+`S(q) = sum_ab (2 - delta_ab) x_a x_b A_ab(q)` (Debye 5e-13).
+
+The reciprocal grid table (`--grid`, text or HDF5) deliberately keeps writing
+the total S(q) only - a per-partial decomposition there would multiply the
+storage for output that is rarely used.  Partial g(r) are available in the
+`--rdf` file (Debye method, text and HDF5).
+
+Cross-check of the partial g(r) against debyer (`-g -p`, which writes one column
+per pair plus a sum): debyer's partial columns are scaled by `x_a x_b` and use
+its half-list pair counting, so dividing by `x_a x_b` brings them onto our
+definition - then `g_SiSi = 0.988` (debyer) versus `1.029` (ours) and
+`g_OO = 0.979` versus `1.027`, i.e. agreement within the statistics of the
+250-atom, 4-frame test trajectory.  Our partials use the standard normalization
+`g_ab -> 1`.
+
 `--grid` is not available with this method (it evaluates S(q) directly) and it
 runs on the CPU.
 

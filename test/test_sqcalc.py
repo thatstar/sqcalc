@@ -405,6 +405,45 @@ def main():
         print("  ok   %-42s Saa=%.3f Sab=%.3f Aab=%.3f"
               % ("%s high-q partial limits" % method, saa, sab, aab))
 
+    # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
+    print("faber-ziman cross-check and partial g(r)")
+    for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
+        sqcalc(dump, "fzchk_%s.dat" % method, "-w", "unit", "--norm", "n", "-fz",
+               "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra)
+        part = read_matrix(path("part_%s.dat" % method))
+        fz = read_matrix(path("partfz_%s.dat" % method))
+        # A_ab = (S_ab - x_a delta_ab)/(x_a x_b) + 1 with x = 0.5 for both types
+        x = 0.5
+        expect = np.column_stack([(part[:, 2] - x)/(x*x) + 1.0,
+                                  part[:, 3]/(x*x) + 1.0,
+                                  (part[:, 4] - x)/(x*x) + 1.0])
+        worst = float(np.max(np.abs(fz[:, 2:5] - expect)))
+        if worst > 1.0e-9:
+            raise SystemExit("FAIL %s: FZ transformation is off by %.3e" % (method, worst))
+        print("  ok   %-42s max deviation %.1e"
+              % ("%s: A = (S - x delta)/(x x) + 1" % method, worst))
+        # FZ sum rule: sum_ab (2 - delta_ab) x_a x_b A_ab = S(q)
+        fsum = fz[:, 2] + 2.0*fz[:, 3]*x*x/0.25 + fz[:, 4]
+        fsum = x*x*fz[:, 2] + 2.0*x*x*fz[:, 3] + x*x*fz[:, 4]
+        worst = float(np.max(np.abs(fsum - fz[:, 1])))
+        if worst > 0.02:
+            raise SystemExit("FAIL %s: FZ sum rule is off by %.3e" % (method, worst))
+        print("  ok   %-42s sum rule %.1e"
+              % ("%s: S = sum (2-d) x_a x_b A_ab" % method, worst))
+
+    # partial g(r): ideal gas -> every partial approaches 1
+    rdf = read_matrix(path("deb.rdf"))
+    if rdf.shape[1] != 5:
+        raise SystemExit("FAIL rdf should have r, total and 3 partial columns, got %d" % rdf.shape[1])
+    mid = (rdf[:, 0] > 4.0) & (rdf[:, 0] < 8.0)
+    for col, label in ((1, "total"), (2, "Si-Si"), (3, "Si-O"), (4, "O-O")):
+        mean_g = float(np.mean(rdf[mid, col]))
+        if abs(mean_g - 1.0) > 0.25:
+            raise SystemExit("FAIL ideal gas partial g(%s) = %.3f" % (label, mean_g))
+    print("  ok   %-42s total %.3f Si-Si %.3f Si-O %.3f O-O %.3f"
+          % ("ideal gas partial g(r) -> 1", rdf[mid, 1].mean(), rdf[mid, 2].mean(),
+             rdf[mid, 3].mean(), rdf[mid, 4].mean()))
+
     print("all sqcalc tests passed")
 
 
