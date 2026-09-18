@@ -131,6 +131,13 @@ contains
       if (ierr /= 0) return
       call write_dataset_i8_f(group_id, 'count', dims, counts, ierr, message)
       if (ierr /= 0) return
+      ! Partial structure factors: one dataset per pair (1D, so there is no
+      ! ambiguity about the storage order), plus the label list and the
+      ! normalization convention used for the numbers.
+      if (method%partials) then
+         call write_shell_partials(group_id, method, ierr, message)
+         if (ierr /= 0) return
+      end if
       deallocate (qd, sd, counts)
       call h5gclose_f(group_id, hdferr)
 
@@ -462,6 +469,77 @@ contains
    end subroutine hdf5_write_rdf
 
    !> Fixed length string dataset (1D).
+   !> Partial structure factors of the shell table: `/shell/S_partial/<pair>`
+   !! plus `/shell/pairs` (labels) and the `partial_normalization` attribute.
+   subroutine write_shell_partials(group, method, ierr, message)
+      integer(hid_t), intent(in) :: group
+      class(structure_factor_t), intent(in) :: method
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: subgroup_id
+      integer(hsize_t) :: dims(1)
+      integer :: hdferr, ia, ib, p, npair, s
+      real(real64), allocatable :: values(:)
+      character(len=18), allocatable :: labels(:)
+
+      ierr = 0
+      message = ''
+      if (.not. allocated(method%partial_num)) return
+      npair = 0
+      do ia = 1, method%ntypes
+         if (sf_type_count(method, ia) == 0) cycle
+         do ib = ia, method%ntypes
+            if (sf_type_count(method, ib) == 0) cycle
+            npair = npair + 1
+         end do
+      end do
+      if (npair == 0 .or. method%nq <= 0) return
+
+      dims = [int(method%nq, hsize_t)]
+      allocate (values(method%nq), labels(npair))
+      call h5gcreate_f(group, 'S_partial', subgroup_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /shell/S_partial group'
+         return
+      end if
+      p = 0
+      do ia = 1, method%ntypes
+         if (sf_type_count(method, ia) == 0) cycle
+         do ib = ia, method%ntypes
+            if (sf_type_count(method, ib) == 0) cycle
+            p = p + 1
+            labels(p) = method%pair_label(ia, ib)
+            do s = 1, method%nq
+               values(s) = real(method%partial_value(ia, ib, s), real64)
+            end do
+            call write_dataset_f(subgroup_id, trim(labels(p)), H5T_NATIVE_DOUBLE, &
+                                 dims, values, ierr, message)
+            if (ierr /= 0) return
+         end do
+      end do
+      call h5gclose_f(subgroup_id, hdferr)
+      call write_string_dataset(group, 'pairs', labels, ierr, message)
+      if (ierr /= 0) return
+      if (method%faber_ziman) then
+         call write_string_attr(group, 'partial_normalization', 'faber-ziman', ierr, message)
+      else
+         call write_string_attr(group, 'partial_normalization', 'ovito', ierr, message)
+      end if
+      deallocate (values, labels)
+   end subroutine write_shell_partials
+
+   !> Number of atoms of a type id (0 when the type is absent).
+   pure integer function sf_type_count(method, type_id) result(n)
+      class(structure_factor_t), intent(in) :: method
+      integer, intent(in) :: type_id
+      n = 0
+      if (allocated(method%type_counts)) then
+         if (type_id >= 1 .and. type_id <= size(method%type_counts)) &
+            n = int(method%type_counts(type_id))
+      end if
+   end function sf_type_count
+
    subroutine write_string_dataset(group, name, values, ierr, message)
       integer(hid_t), intent(in) :: group
       character(len=*), intent(in) :: name

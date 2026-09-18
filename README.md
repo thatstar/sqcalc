@@ -195,6 +195,13 @@ the total S(q) only - a per-partial decomposition there would multiply the
 storage for output that is rarely used.  Partial g(r) are available in the
 `--rdf` file (Debye method, text and HDF5).
 
+In the HDF5 output the partials *are* stored for the shell-averaged table
+(small: `npairs x nq` values), as one dataset per pair under `/shell/S_partial/`
+(`Si-Si`, `Si-O`, ...), with the label list in `/shell/pairs` and an attribute
+`partial_normalization` recording whether they are `ovito` or `faber-ziman`
+(the same distinction the text header makes with `S(...)` versus `A(...)`).
+The grid group stays total-only, as decided.
+
 Cross-check of the partial g(r) against debyer (`-g -p`, which writes one column
 per pair plus a sum): debyer's partial columns are scaled by `x_a x_b` and use
 its half-list pair counting, so dividing by `x_a x_b` brings them onto our

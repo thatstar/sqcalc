@@ -213,6 +213,22 @@ def main():
             raise SystemExit("FAIL hdf5 vs text grid: %.3e" % worst)
         print("  ok   %-42s max deviation %.2e" % ("HDF5 vs text grid table", worst))
 
+        # Partials stored under /shell/S_partial must match the text columns.
+        sqcalc(dump, "h5_fz_shell.dat", "-w", "unit", "--norm", "self", "-fz",
+               "--grid", path("grid_fz.h5"), *common)
+        h5_part = run([args.h5read, path("grid_fz.h5"), "partials"]).stdout
+        with open(path("part_from_h5.txt"), "w") as handle:
+            handle.write(h5_part)
+        part_h5 = read_matrix(path("part_from_h5.txt"))
+        part_txt = read_matrix(path("h5_fz_shell.dat"))
+        if part_h5.shape != part_txt[:, :part_h5.shape[1]].shape:
+            raise SystemExit("FAIL hdf5 partials shape %s vs text %s"
+                             % (part_h5.shape, part_txt.shape))
+        worst = float(np.max(np.abs(part_h5[:, 1:] - part_txt[:, 2:2+part_h5.shape[1]-1])))
+        if worst > 1.0e-12:
+            raise SystemExit("FAIL hdf5 vs text partials: %.3e" % worst)
+        print("  ok   %-42s max deviation %.2e" % ("HDF5 vs text partial columns", worst))
+
         # The shell table stored in the same file must match the text one.
         h5_shell = run([args.h5read, path("grid.h5"), "shell"]).stdout
         with open(path("shell_from_h5.txt"), "w") as handle:

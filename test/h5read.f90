@@ -9,10 +9,12 @@ program h5read
    use hdf5
    implicit none
    character(len=512) :: path, which
-   integer(hid_t) :: file_id, group_id
-   integer :: hdferr, i, n
+   integer(hid_t) :: file_id, group_id, subgroup_id
+   integer :: hdferr, i, j, n, npairs
    real(real64), allocatable :: q(:), s(:), qx(:), qy(:), qz(:)
    integer(int32), allocatable :: h(:), k(:), l(:)
+   real(real64), allocatable :: part(:, :), pv(:)
+   character(len=18), allocatable :: dnames(:)
 
    call get_command_argument(1, path)
    call get_command_argument(2, which)
@@ -48,6 +50,31 @@ program h5read
          write (output_unit, '(3(f14.8,2x),es20.12)') qx(i), qy(i), qz(i), s(i)
       end do
       call h5gclose_f(group_id, hdferr)
+   case ('partials')
+      ! partial structure factors of the shell table, one dataset per pair
+      call h5gopen_f(file_id, 'shell', group_id, hdferr)
+      call read_real_1d(group_id, 'q', q, n)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      allocate (part(n, npairs))
+      do i = 1, npairs
+         call h5gopen_f(group_id, 'S_partial', subgroup_id, hdferr)
+         call read_real_1d(subgroup_id, trim(dnames(i)), pv, n)
+         part(:, i) = pv
+         call h5gclose_f(subgroup_id, hdferr)
+      end do
+      write (output_unit, '(a)', advance='no') '# q'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' '//trim(dnames(i))
+      end do
+      write (output_unit, '(a)') ''
+      do i = 1, n
+         write (output_unit, '(f14.6)', advance='no') q(i)
+         do j = 1, npairs
+            write (output_unit, '(2x,es20.12)', advance='no') part(i, j)
+         end do
+         write (output_unit, '(a)') ''
+      end do
+      call h5gclose_f(group_id, hdferr)
    case default
       write (error_unit, '(a)') 'unknown table "'//trim(which)//'"'
       stop 3
@@ -75,5 +102,27 @@ contains
       call h5sclose_f(space_id, hdferr)
       call h5dclose_f(dset_id, hdferr)
    end subroutine read_real_1d
+
+   !> Read a fixed length string dataset (1D).
+   subroutine read_string_1d(group, name, values, n)
+      integer(hid_t), intent(in) :: group
+      character(len=*), intent(in) :: name
+      character(len=18), allocatable, intent(out) :: values(:)
+      integer, intent(out) :: n
+      integer(hid_t) :: dset_id, space_id, type_id
+      integer(hsize_t) :: dims(1), maxdims(1)
+      integer :: hdferr
+
+      call h5dopen_f(group, trim(name), dset_id, hdferr)
+      call h5dget_space_f(dset_id, space_id, hdferr)
+      call h5sget_simple_extent_dims_f(space_id, dims, maxdims, hdferr)
+      n = int(dims(1))
+      allocate (values(n))
+      call h5dget_type_f(dset_id, type_id, hdferr)
+      call h5dread_f(dset_id, type_id, values, dims, hdferr)
+      call h5tclose_f(type_id, hdferr)
+      call h5sclose_f(space_id, hdferr)
+      call h5dclose_f(dset_id, hdferr)
+   end subroutine read_string_1d
 
 end program h5read
