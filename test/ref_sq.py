@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# sqcalc - structure factors from LAMMPS dump trajectories
+# Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Independent numpy reference for the sqcalc shell averaged S(q).
 
 This is deliberately a second implementation: it reads the dump with its own

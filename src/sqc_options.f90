@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Command line handling for sqcalc.
 module sqc_options
    use sqc_kinds

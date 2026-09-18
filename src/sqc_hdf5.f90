@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> HDF5 output for the structure factor results.
 !!
 !! The file holds the shell averaged table and, when requested, the full

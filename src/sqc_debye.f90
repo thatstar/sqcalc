@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Debye scattering equation method (real space pair histograms).
 !!
 !! Instead of transforming the periodic density (the NUFFT method), this method

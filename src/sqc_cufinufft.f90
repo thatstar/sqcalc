@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> iso_c_binding wrapper for the cuFFT based cufinufft library.
 !!
 !! cufinufft is built as a separate library next to the CPU FINUFFT

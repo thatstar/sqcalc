@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Brute force validation of the cell list (distances, images, PBC, skin).
 program test_neighbour_list
    use sqc_kinds

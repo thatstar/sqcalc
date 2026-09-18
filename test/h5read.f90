@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Dump the tables of an sqcalc HDF5 result file as text.
 !!
 !! Used by the test suite to compare the HDF5 output against the text output

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# sqcalc - structure factors from LAMMPS dump trajectories
+# Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Convert LAMMPS dump frames to AtomEye .cfg files (one file per frame).
 
 Only a helper for cross-checking sqcalc against the external `debyer` program

@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Thin iso_c_binding wrapper around the double-precision FINUFFT C API.
 !!
 !! We bind the C API (finufft.h) rather than the F77 translation layer so that

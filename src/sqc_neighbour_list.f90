@@ -1,3 +1,8 @@
+! sqcalc - structure factors from LAMMPS dump trajectories
+! Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+!
+! SPDX-License-Identifier: GPL-3.0-or-later
+
 !> Cell list for pair enumeration (triclinic cells, per-direction periodicity).
 !!
 !! Adapted from the nnap2 neighbour list (`~/develop/nnap2/src/neighbour_list.f90`)

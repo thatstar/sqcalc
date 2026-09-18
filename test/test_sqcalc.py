@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# sqcalc - structure factors from LAMMPS dump trajectories
+# Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """End to end checks for the sqcalc executable.
 
 The tests combine three independent views of the same physics:
