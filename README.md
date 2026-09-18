@@ -1,9 +1,12 @@
 # sqcalc
 
 `sqcalc` computes the total structure factor S(q) of a LAMMPS trajectory.  It
-reads the default LAMMPS `atoms` dump style, evaluates the scattering amplitude
-on the reciprocal lattice of the dump box with a non-uniform FFT (FINUFFT),
-averages |rho(q)|^2 over all snapshots and writes a `# q S(q)` table.
+reads the default LAMMPS `atoms` dump style, averages |rho(q)|^2 over all
+snapshots and writes a `# q S(q)` table.  Two independent evaluations are
+available: the reciprocal space transform with a non-uniform FFT (FINUFFT) on
+the CPU, or on a CUDA GPU with cuFFT, and the real space Debye pair-histogram
+method.  With an element mapping the table also carries the partial structure
+factors S_ab(q).
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -22,15 +25,16 @@ Requirements
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build          # optional, runs the physics test suite
+ctest --test-dir build          # optional, runs the test suite
 ```
 
 If FFTW lives in a non standard prefix pass `-DFFTW_ROOT=/path/to/fftw`.  The
-first configure of the vendored FINUFFT fetches `CPM.cmake`, `findFFTW` and
-`xsimd` (network access needed once, cached in the build directory afterwards);
-set `-DCPM_SOURCE_CACHE=/path` to keep that cache outside the build tree.  With
-`-DSQC_USE_SYSTEM_FINUFFT=ON -DSQC_FINUFFT_ROOT=/path` an installed FINUFFT can
-be used instead.
+first configure of the vendored FINUFFT obtains its build helpers
+(`CPM.cmake`, `findFFTW`, `xsimd` and, unless a system FFTW is found, FFTW3)
+over the network; they are cached in `.cpm-cache/` next to the sources, so
+later configures work offline.  Set `-DCPM_SOURCE_CACHE=/path` to keep that
+cache elsewhere.  With `-DSQC_USE_SYSTEM_FINUFFT=ON -DSQC_FINUFFT_ROOT=/path`
+an installed FINUFFT can be used instead.
 
 ## Usage
 
@@ -49,13 +53,18 @@ sqcalc -i DUMP [options] OUTPUT
 | `--qmin`, `--qmax`, `--nq` | q range and number of shells (defaults 0, 20 1/A, 500) |
 | `--grid FILE` | also write S(q) on every reciprocal lattice point |
 | `--grid-format NAME` | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5 |
-| `--method NAME` | `nufft` (default) or `direct` (O(N * Nmodes) reference) |
+| `--method NAME` | `nufft` (default), `direct` (O(N * Nmodes) reference) or `debye` (real space pair histograms, see below) |
 | `--device NAME` | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`) |
 | `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
 | `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--norm NAME` | `mean` (default), `self` or `n` |
-| `--eps VALUE` | FINUFFT tolerance (default 1e-9) |
+| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path) |
+| `--partials` | append the partial structure factor columns (default: on when `-m` is given) |
+| `--no-partials` | do not append the partial columns |
+| `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
 | `-q, --quiet` | suppress progress output on stderr |
+| `-h, --help` | show the option summary |
+| `-v, --version` | print the program version |
 
 Examples
 
@@ -107,15 +116,15 @@ Notes
   shared as well in a CUDA build.
 * Accuracy is the same as on the CPU (`--eps` controls the tolerance).
   Measured on an RTX 2060 (10 000 atoms, 10 frames, 193^3 grid, 4 threads):
-  CPU 17.3 s, GPU 5.5 s.  The GPU wins for large grids (roughly qmax * L > 300,
-  i.e. from a 97^3 grid upwards here); for small grids the fixed plan cost and
-  per-frame overhead make the CPU faster (49^3 grid: CPU 0.6 s, GPU 2.1 s).
+  CPU 17.3 s, GPU float64 5.6 s.  The GPU wins for large grids (roughly
+  qmax * L > 300, i.e. from a 97^3 grid upwards here); for small grids the fixed
+  plan cost and per-frame overhead make the CPU faster (49^3 grid: CPU 0.6 s,
+  GPU 2.1 s).
 * The `--method direct` reference path is CPU only, and `--grid` accumulation is
   done on the host after downloading the transform.
 * Consumer GPUs run double precision at a much lower rate (the RTX 2060 at
-  1/32 of fp32), so the GPU win is limited by the FP64 FFT and spreading; a
-  single precision GPU transform would be substantially faster and is accurate
-  enough for S(q) - a possible follow-up.
+  1/32 of fp32), so the float64 GPU win is limited by the FP64 FFT and
+  spreading; float32 is substantially faster here and accurate enough for S(q).
 * `--precision single` selects the float32 GPU transform (cufinufftf).  It only
   affects the transform: coordinates and strengths are converted down before the
   upload and the grid is widened back to double for the combine/binning, so the
@@ -153,8 +162,6 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
 | `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`) |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; on by default) |
-| `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
-| `--no-partials` | do not append partial structure factor columns |
 
 ### Partial structure factors
 
@@ -245,26 +252,24 @@ per frame, then averaging its S(q) curves).  debyer is *not* a build or test
 dependency; the script is a manual validation helper.
 
 On an ideal gas (250 atoms, 20 A box, rmax = 6 A, 4 frames, `-c sf` versus
-`--weight unit --norm n`) the two agree in structure but not in detail:
+`--weight unit --norm n`) the raw pair histograms agree in structure but not in
+detail - the uncorrected sqcalc curve still carries the finite cut-off artifacts
+(the low-q rise and the residual few-percent bias at high q):
 
 | q [1/A] | 0.6 | 1.6 | 2.6 | 3.6 | 4.6 | 5.6 |
 | --- | --- | --- | --- | --- | --- | --- |
 | debyer | 0.91 | 1.02 | 1.02 | 0.98 | 1.01 | 1.00 |
-| sqcalc | 5.98 | 1.91 | 1.37 | 1.15 | 1.10 | 1.05 |
+| sqcalc (uncorrected) | 5.98 | 1.91 | 1.37 | 1.15 | 1.10 | 1.05 |
 
-debyer applies its cut-off density correction (`add_cutoff_correction`)
-automatically whenever a cut-off is given, which removes exactly the finite
-cut-off artifacts visible here (the low-q rise and the residual few-percent bias
-at high q); sqcalc does not implement it yet.  The pair counting itself is
-validated independently: `test/debye_ref.py` reproduces sqcalc's S(q) and g(r)
-exactly, and both programs reach the correct high-q plateau (1.00).  Porting
-that correction is the remaining item of plan M4.
-
-That correction is now implemented (default on, `--no-cutoff-correction` to
-disable it).  With it, sqcalc reproduces debyer's curve for this configuration
-**exactly** (max |difference| = 0.0000 over the 27 q points), and the ideal gas
-RMS deviation from S(q) = 1 drops from 0.267 (uncorrected) to 0.0146, identical
-to debyer's own value.
+debyer removes those artifacts with the cut-off density correction
+(`add_cutoff_correction`), which it applies automatically whenever a cut-off is
+given; sqcalc implements the same correction and enables it by default
+(`--no-cutoff-correction` disables it).  With it, sqcalc reproduces debyer's
+curve for this configuration **exactly** (max |difference| = 0.0000 over the 27
+q points), and the ideal gas RMS deviation from S(q) = 1 drops from 0.267
+(uncorrected) to 0.0146, identical to debyer's own value.  The pair counting
+itself is validated independently: `test/debye_ref.py` reproduces sqcalc's S(q)
+and g(r) exactly, and both programs reach the correct high-q plateau (1.00).
 
 The same configuration against our reciprocal (NUFFT) method, all three
 evaluated on the same q grid.  An ideal gas has S(q) = 1 everywhere, so any
@@ -317,6 +322,10 @@ plain one dimensional array, so no reader has to care about dimension ordering:
 /grid/h,k,l     nmodes  int32     Miller indices
 /grid/S         nmodes  doubles   S(q) at that reciprocal lattice point
 ```
+
+When partial structure factors are written they are added as one dataset per
+pair under `/shell/S_partial/<pair>`, with the label list in `/shell/pairs` (see
+[Partial structure factors](#partial-structure-factors)).
 
 File attributes carry the run metadata: `nframes`, `natoms`, `nmodes`, `nq`,
 `qmin`, `qmax`, `eps`, `cell` (3x3), `weight`, `norm`, `device`, `precision`
@@ -398,14 +407,18 @@ More about the debyer program: <https://github.com/wojdyr/debyer>.
 
 * `finufft_opts`: verifies at run time that the Fortran mirror of
   `finufft_opts` matches the linked FINUFFT library,
+* `neighbour_list`: the Debye cell list (pair enumeration, periodic images and
+  skin reuse) against brute force pair counting,
 * `sqcalc_physics`: NUFFT versus direct summation versus an independent numpy
-  implementation (`test/ref_sq.py`) for unit, neutron and X-ray weights,
-  an ideal gas (`S -> 1`), a simple cubic lattice (Bragg peaks, elsewhere zero),
-  the reciprocal grid output and a triclinic box with `xu yu zu` columns,
-  plus command line error handling.
+  implementation (`test/ref_sq.py`, `test/debye_ref.py`) for unit, neutron and
+  X-ray weights, an ideal gas (`S -> 1`), a simple cubic lattice (Bragg peaks,
+  elsewhere zero), the reciprocal grid output, the Debye method with the cut-off
+  correction, g(r), the partial structure factors, a triclinic box with
+  `xu yu zu` columns, the HDF5 output (when HDF5 was found) and command line
+  error handling,
 * `sqcalc_gpu` (CUDA builds only): compares the GPU backend against the CPU for
-  unit, neutron and X-ray weights and for the reciprocal grid output; it skips
-  itself when no CUDA device is visible.
+  unit, neutron and X-ray weights, the float32 transform and the reciprocal grid
+  output; it skips itself when no CUDA device is visible.
 
 ## License
 

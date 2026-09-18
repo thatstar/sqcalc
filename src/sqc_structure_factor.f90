@@ -5,8 +5,8 @@
 
 !> Structure factor accumulation.
 !!
-!! All methods evaluate the scattering amplitude on the reciprocal lattice of
-!! the simulation cell,
+!! The NUFFT and direct methods evaluate the scattering amplitude on the
+!! reciprocal lattice of the simulation cell,
 !!
 !!    rho(q) = sum_j w_j exp(i q . r_j),
 !!
@@ -17,6 +17,10 @@
 !!    norm_mean : S = <|rho|^2> / (N <w>^2)      (Faber-Ziman total S(q))
 !!    norm_self : S = <|rho|^2> / sum_j w_j^2    (S -> 1 at large q)
 !!    norm_natom: S = <|rho|^2> / N              (debyer style)
+!!
+!! The Debye method (sqc_debye) derives S(q) from real space pair histograms
+!! instead, but shares the normalization and the output bookkeeping defined
+!! here.
 !!
 !! The 1D output is the average of S over the q shells [qmin, qmax]; the
 !! optional grid output writes S at every reciprocal lattice point of that
@@ -146,7 +150,9 @@ module sqc_structure_factor
       end subroutine sf_accumulate_iface
    end interface
 
-   !> NUFFT based evaluation: one type-1 transform per species and frame.
+   !> NUFFT based evaluation: one type-1 transform per frame, with one entry
+   !! per species for q-dependent (X-ray) form factors and a single weighted
+   !! transform for the q-independent weights.
    type, extends(structure_factor_t) :: nufft_structure_factor_t
       !> FINUFFT plan handle.
       type(c_ptr) :: plan = c_null_ptr

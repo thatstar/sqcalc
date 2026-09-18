@@ -7,8 +7,9 @@
 !!
 !! Used by the test suite to compare the HDF5 output against the text output
 !! without depending on python HDF5 bindings:
-!!   h5read file.h5 grid   -> "# qx qy qz S(q)" table
-!!   h5read file.h5 shell  -> "# q S(q)" table
+!!   h5read file.h5 grid     -> "# qx qy qz S(q)" table
+!!   h5read file.h5 shell    -> "# q S(q)" table
+!!   h5read file.h5 partials -> "# q Si-Si Si-O ..." table
 program h5read
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64, error_unit, output_unit
    use hdf5
@@ -24,7 +25,7 @@ program h5read
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials)'
       stop 1
    end if
    call h5open_f(hdferr)

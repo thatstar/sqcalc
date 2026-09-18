@@ -6,14 +6,16 @@
 
 """End to end checks for the sqcalc executable.
 
-The tests combine three independent views of the same physics:
+The tests combine independent views of the same physics:
 
 1. sqcalc with the NUFFT method (the production path),
 2. sqcalc with the direct summation method,
-3. a small numpy reference implementation (test/ref_sq.py),
+3. sqcalc with the Debye pair-histogram method,
+4. small numpy reference implementations (test/ref_sq.py, test/debye_ref.py),
 
-plus two qualitative checks (ideal gas -> S ~ 1, cubic lattice -> Bragg peaks)
-and a handful of command line error cases.
+plus qualitative checks (ideal gas -> S ~ 1, cubic lattice -> Bragg peaks),
+the HDF5 and partial structure factor outputs, the g(r) output and a handful of
+command line error cases.
 """
 
 import argparse

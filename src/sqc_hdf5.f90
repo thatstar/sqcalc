@@ -13,11 +13,16 @@
 !!   /shell/q        nq     doubles   shell centers [1/A]
 !!   /shell/S        nq     doubles   S(q) averaged over the shell
 !!   /shell/count    nq     int64     reciprocal lattice points per shell
+!!   /shell/S_partial/<pair> nq doubles partial S_ab(q) (when requested, with
+!!                                    the labels in /shell/pairs and the
+!!                                    partial_normalization attribute)
 !!   /grid/qx,qy,qz  nmodes doubles   reciprocal lattice vector [1/A]
 !!   /grid/h,k,l     nmodes int32     Miller indices
 !!   /grid/S         nmodes doubles   S(q) at that reciprocal lattice point
 !!
 !! plus file attributes describing the run (cell, weights, mapping, frames, ...).
+!! hdf5_write_rdf() writes the total and partial g(r) of the Debye method
+!! (/rdf/r, /rdf/g and one dataset per pair under /rdf/g).
 module sqc_hdf5
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64
    use, intrinsic :: iso_c_binding, only: c_loc, c_ptr

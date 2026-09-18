@@ -8,8 +8,9 @@
 !! The reciprocal grid, the normalization and the accumulators are exactly the
 !! same as in the CPU NUFFT method (both extend structure_factor_t); the
 !! difference is that the type-1 transforms run on the GPU.  Per frame we upload
-!! the wrapped coordinates and the per-species strengths, run one batched
-!! transform (one entry per species), copy the grid amplitudes back and do the
+!! the wrapped coordinates and the strengths, run one batched transform (a
+!! single entry for q-independent weights, one entry per species for the
+!! q-dependent X-ray form factors), copy the grid amplitudes back and do the
 !! cheap combine/binning on the host.
 module sqc_gpu
    use sqc_kinds

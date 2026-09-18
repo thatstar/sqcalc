@@ -7,9 +7,10 @@
 """Convert LAMMPS dump frames to AtomEye .cfg files (one file per frame).
 
 Only a helper for cross-checking sqcalc against the external `debyer` program
-(`test/compare_debyer.sh`); nothing in the sqcalc build or test suite depends on
-debyer.  .cfg stores fractional coordinates and the cell in H0(i,j) lines, which
-is what debyer's reader expects.
+(run debyer on the generated frames and average its S(q) curves); nothing in the
+sqcalc build or test suite depends on debyer.  .cfg stores fractional
+coordinates and the cell in H0(i,j) lines, which is what debyer's reader
+expects.
 """
 
 import argparse
