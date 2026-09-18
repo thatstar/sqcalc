@@ -385,6 +385,20 @@ def main():
         raise SystemExit("FAIL ideal gas g(r) = %.3f for 4 < r < 8 A" % mean_g)
     print("  ok   %-42s mean g(r) = %.3f" % ("ideal gas g(r) -> 1", mean_g))
 
+    # The HDF5 form of the same g(r) file must carry the same numbers (the text
+    # file writes 10 significant digits, hence the relative comparison).
+    if args.h5read:
+        sqcalc(dump, "deb_rdf_h5.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+               "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+               "--rdf", path("deb_rdf.h5"))
+        with open(path("deb_rdf_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("deb_rdf.h5"), "rdf"]).stdout)
+        rdf_h5 = read_matrix(path("deb_rdf_h5.txt"))
+        if rdf_h5.shape != rdf.shape:
+            raise SystemExit("FAIL HDF5 rdf shape %s vs text shape %s"
+                             % (rdf_h5.shape, rdf.shape))
+        compare(rdf[:, 1:], rdf_h5[:, 1:], "HDF5 rdf vs text rdf", rtol=1.0e-8)
+
     # Lattice: the RDF peaks at the neighbour shell distances of a cubic
     # lattice with a = 4 A (4, 5.66, 6.93, 8 A).
     lattice_dump = generate("lattice_debye.dump", natoms=125, length=20, frames=1,

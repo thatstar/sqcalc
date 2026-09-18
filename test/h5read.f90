@@ -10,6 +10,7 @@
 !!   h5read file.h5 grid     -> "# qx qy qz S(q)" table
 !!   h5read file.h5 shell    -> "# q S(q)" table
 !!   h5read file.h5 partials -> "# q Si-Si Si-O ..." table
+!!   h5read file.h5 rdf      -> "# r g(r) Si-Si Si-O ..." table
 program h5read
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64, error_unit, output_unit
    use hdf5
@@ -25,7 +26,7 @@ program h5read
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -75,6 +76,33 @@ program h5read
       write (output_unit, '(a)') ''
       do i = 1, n
          write (output_unit, '(f14.6)', advance='no') q(i)
+         do j = 1, npairs
+            write (output_unit, '(2x,es20.12)', advance='no') part(i, j)
+         end do
+         write (output_unit, '(a)') ''
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('rdf')
+      ! pair distribution functions of the Debye method: total g(r) plus one
+      ! dataset per pair, under the same labels as the text file
+      call h5gopen_f(file_id, 'rdf', group_id, hdferr)
+      call read_real_1d(group_id, 'r', q, n)
+      call read_real_1d(group_id, 'g', s, n)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      allocate (part(n, npairs))
+      do i = 1, npairs
+         call h5gopen_f(group_id, 'g_partial', subgroup_id, hdferr)
+         call read_real_1d(subgroup_id, trim(dnames(i)), pv, n)
+         part(:, i) = pv
+         call h5gclose_f(subgroup_id, hdferr)
+      end do
+      write (output_unit, '(a)', advance='no') '# r g(r)'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' '//trim(dnames(i))
+      end do
+      write (output_unit, '(a)') ''
+      do i = 1, n
+         write (output_unit, '(f14.6,2x,es20.12)', advance='no') q(i), s(i)
          do j = 1, npairs
             write (output_unit, '(2x,es20.12)', advance='no') part(i, j)
          end do

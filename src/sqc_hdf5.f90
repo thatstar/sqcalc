@@ -22,7 +22,7 @@
 !!
 !! plus file attributes describing the run (cell, weights, mapping, frames, ...).
 !! hdf5_write_rdf() writes the total and partial g(r) of the Debye method
-!! (/rdf/r, /rdf/g and one dataset per pair under /rdf/g).
+!! (/rdf/r, /rdf/g and one dataset per pair under /rdf/g_partial).
 module sqc_hdf5
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64
    use, intrinsic :: iso_c_binding, only: c_loc, c_ptr
@@ -398,7 +398,7 @@ contains
    end subroutine write_string_attr
 
    !> Pair distribution functions: `/rdf/r`, `/rdf/g` (total), one dataset per
-   !! pair under `/rdf/g/<label>` and the label list in `/rdf/pairs`.
+   !! pair under `/rdf/g_partial/<label>` and the label list in `/rdf/pairs`.
    subroutine hdf5_write_rdf(path, r, g_total, g_partial, labels, ierr, message)
       character(len=*), intent(in) :: path
       real(rk), intent(in) :: r(:), g_total(:), g_partial(:, :, :)
@@ -451,11 +451,12 @@ contains
       call write_string_dataset(group_id, 'pairs', label_buf, ierr, message)
       if (ierr /= 0) return
 
-      ! one dataset per partial pair, under /rdf/g/<label>
-      call h5gcreate_f(group_id, 'g', subgroup_id, hdferr)
+      ! one dataset per partial pair, under /rdf/g_partial/<label> (a dataset
+      ! and a group cannot share the name /rdf/g)
+      call h5gcreate_f(group_id, 'g_partial', subgroup_id, hdferr)
       if (hdferr /= 0) then
          ierr = 1
-         message = 'HDF5: cannot create the /rdf/g group'
+         message = 'HDF5: cannot create the /rdf/g_partial group'
          return
       end if
       p = 0
