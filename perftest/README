@@ -1,0 +1,19 @@
+Performance and development test directory for FINUFFT.
+
+spreadtestnd : time spread & interp for given dim, tol, etc.
+spreadtestndall : time spread & interp sweeping over all tols, for given dim.
+big2d2f : tests int64_t (8byte int) indexing, ie data size > 2^31.
+
+Scripts:
+spreadtestall.sh : rapid test of spreadtestnd in all cases.
+spreadtestnd.sh : performance test of spreader only, in dims 1,2, or 3.
+nuffttestnd.sh : performance test of NUFFT library, in dims 1,2, or 3.
+mycpuinfo.sh : prints info about the CPU
+spreadtestndsweep.sh : tolerance-sweeping scripts all precs, dims, dirs
+
+Possibly obsolete scripts (for developers):
+highaspect3d_test.sh : comparing various pizza-box orientations for speed
+
+
+Also see:
+../test for validation tests
