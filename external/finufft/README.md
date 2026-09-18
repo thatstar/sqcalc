@@ -1,0 +1,89 @@
+# Flatiron Institute Nonuniform Fast Fourier Transform library: FINUFFT
+
+[![C++ Build](https://github.com/flatironinstitute/finufft/workflows/C++%20Build/badge.svg)](https://github.com/flatironinstitute/finufft/actions)
+[![Docs](https://readthedocs.org/projects/finufft/badge)](https://finufft.readthedocs.io)
+[![PyPI - finufft](https://img.shields.io/pypi/dm/finufft?label=finufft%20(CPU))](https://pypi.org/project/finufft)
+[![PyPI - cufinufft](https://img.shields.io/pypi/dm/cufinufft?label=cufinufft%20(GPU))](https://pypi.org/project/cufinufft)
+[![Star Graph](https://img.shields.io/badge/GitHub-star%20history-blue?logo=github)](https://www.star-history.com/#flatironinstitute/finufft&Date)
+
+
+Principal author **Alex H. Barnett** (abarnett@flatironinstitute.org),
+main co-developers Jeremy F. Magland,
+Ludvig af Klinteberg, Yu-hsuan "Melody" Shih, Libin Lu,
+Joakim Andén, Marco Barbone, Robert Blackwell, and Martin Reinecke;
+see `docs/ackn.rst` for full list of contributors.
+​
+<img align="right" src="docs/logo.png" width="350">
+
+<img align="right" src="docs/spreadpic.png" width="400"/>
+
+This is a lightweight CPU library to compute the three standard types of nonuniform FFT to a specified precision, in one, two, or three dimensions. It is written in C++ with interfaces to C, Fortran, MATLAB/octave, Python, and (in a separate [repository](https://github.com/ludvigak/FINUFFT.jl)) Julia. It now also integrates the GPU CUDA library cuFINUFFT.
+
+Docs and installation
+---------------------
+
+Please see the [online documentation](http://finufft.readthedocs.io/en/latest/index.html) which can also be downloaded as a [PDF manual](https://finufft.readthedocs.io/_/downloads/en/latest/pdf/), and a [project overview](https://users.flatironinstitute.org/~ahb/notes/finufft-project-summary-2025.pdf).
+You will also want to see CPU example codes in the directories `examples`, `test`, `fortran`, `matlab/test`, `matlab/examples`, `python/finufft/test`, etc, and GPU examples in `examples/cuda`, `test/cuda`, etc.
+
+If you cannot build via cMake, try the makefile. Python users try `pip install finufft`. See the docs for details. See our GitHub Issues for tips.
+
+If you prefer to read text files, the source to generate the above documentation is in human-readable (mostly .rst) files as follows:
+
+- `docs/install.rst` : installation and compilation instructions
+- `docs/install_gpu.rst` : installation and compilation for GPU (CUDA)
+- `docs/dirs.rst`    : explanation of directories and files in the package
+- `docs/math.rst`    : mathematical definitions
+- `docs/cex.rst`     : example usage from C++/C
+- `docs/c.rst`       : documentation of C++/C function API
+- `docs/c_gpu.rst`   : documentation of C++/C function API for GPU library
+- `docs/opts.rst`    : optional parameters
+- `docs/error.rst`   : error codes
+- `docs/trouble.rst` : troubleshooting and accuracy advice
+- `docs/performance.rst` : CPU timing benchmarks compared to older versions
+- `docs/tut.rst` and `tutorial/*` : tutorial application examples
+- `docs/fortran.rst` : usage examples from Fortran, documentation of interface
+- `docs/matlab.rst` and `docs/matlabhelp.raw` : using the MATLAB/Octave interface
+- `docs/python.rst` and `python/*/_interfaces.py` : using the Python interface
+- `docs/python_gpu.rst` : Python interface to GPU library
+- `docs/julia.rst`   : information for Julia users
+- `docs/nfft_migr.rst` and `docs/cufinufft_migration` : guides for migration
+- `docs/impl_gpu.rst`: implementation notes for GPU code
+- `docs/devnotes.rst`: notes/guide for developers
+- `docs/related.rst` : other recommended NUFFT packages
+- `docs/users.rst`   : some known users of FINUFFT, dependent packages
+- `docs/ackn.rst`    : authors and acknowledgments
+- `docs/refs.rst`    : journal article references (ours and others)
+
+License
+-------
+
+For license info for FINUFFT (CPU/GPU source), see `LICENSE`.
+For info for dependencies and contributed code, see `NOTICE`.
+
+Support
+-------
+
+<img align="right" src="docs/FIlogo_200.png" width="200">
+
+FINUFFT/cuFINUFFT was developed at, and is supported by,
+the Flatiron Institute at the Simons Foundation.
+
+Citing
+------
+
+If you find (cu)FINUFFT useful in your work, please star this repository and
+cite it and the following. It will help us to improve the library if you also
+describe your use case parameters
+[here](https://github.com/flatironinstitute/finufft/discussions/398).
+
+For FINUFFT (CPU library):
+
+A parallel non-uniform fast Fourier transform library based on an ``exponential of semicircle'' kernel.
+A. H. Barnett, J. F. Magland, and L. af Klinteberg.
+SIAM J. Sci. Comput. 41(5), C479-C504 (2019).
+
+For cuFINUFFT (GPU library):
+
+cuFINUFFT: a load-balanced GPU library for general-purpose nonuniform FFTs,
+Yu-hsuan Shih, Garrett Wright, Joakim Andén, Johannes Blaschke, Alex H. Barnett,
+PDSEC2021 workshop of the IPDPS2021 conference. https://arxiv.org/abs/2102.08463

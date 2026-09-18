@@ -1,0 +1,707 @@
+List of features / changes made / release notes, in reverse chronological order.
+If not stated, FINUFFT is assumed (old cuFINUFFT <=1.3 is listed separately).
+
+v2.5.1 4/8/26
+
+* fix thread safety of PSWF kernel evaluation (Barbone, Lu #847)
+* tune GPU interpolation block size for small workloads (Barbone #847)
+* add parallel makeplan/setpts thread-safety test (Barbone, Lu)
+* doc improvements for PSWF functions (Barnett)
+
+v2.5.0 3/3/26
+
+* Major overhaul of spreading (gridding) kernel function choice, parameters,
+  and code logic, to exploit the new on-the-fly kernel polynomial fitting:
+  Switch default kernel to PSWF (prolate) with constant shift from the cutoff
+  shape parameter, improving by 0.3-0.6 digit at the same w (width).
+  Comparisons against many kernels (KB, cosh, cont variants...) done.
+  The logic of choosing ns from tol is improved to give lower and
+  more predictable error across types, sigma (upsampfac), and dimensions.
+  NOTE: this is a math change, and will affect the answers FINUFFT gives!
+  (at the level of the tolerance). In almost all cases the change will be to
+  a more accurate result. tol is now a better upper bound on relative error;
+  hence users may want to adjust tol (slightly) in their codes.
+  See https://github.com/flatironinstitute/finufft/discussions/798
+  Legacy (2017-2025) ES kernel and parameters are available
+  via (new) option field opts.spread_kerformula=1 (with default of 0).
+  Simplified kernel definition to [-1,1], simplified old ES-specific spopts.
+  Added several new MATLAB tolerance-sweeping error-measure tools, and CI:
+  tolsweeptest.m is run in CI & has a multi-fig plot option (to test/results/)
+  Kernel-comparison-vs-w mean rel err plotter wsweepkerrcomp.m (Barnett #787).
+* fix no-setpts bug in perftest/spreadtestndall, better perftests (Barnett #791)
+* exhaustive tolerance testing in CI via new tolsweep.cpp (Barnett, #780)
+* Added real-valued function type-2 interpolation demos (Barnett, Unalmis #722)
+* Moved finufft_spread_opts.h from public-facing to private header, allowing
+  easy changes without affecting the API. (Barnett #791)
+* Added functionality for adjoint execution of FINUFFT plans (Reinecke #633,
+  addresses #566 and #571).
+  Work arrays are now only allocated during plan execution, reducing overall
+  memory consumption.
+  A single plan can now safely be executed by several threads concurrently.
+* Using c++17 template dispatching for kernels dispatch logic in one place
+  (Barbone, Wentzell #719 addresses #696 & #476).
+* The update overhauls the CMake and MATLAB/CUDA build system for better
+  consistency and performance. It simplifies and unifies configuration,
+  adds developer tools such as cppcheck, IWYU, and clang-tidy, and introduces
+  proper LTO support. The CI pipeline is cleaner and faster, with improved
+  cross-platform compatibility across Linux, Windows, and macOS.
+  Dependencies are updated, MATLAB and CUDA integration is fixed,
+  and reliance on MATLAB OpenMP is removed with revised CUDA/MEX handling.
+  The update also corrects typos, warnings, deployment issues,
+  adds Fortran to CI, and brings support for CMake 4 and CUDA 13.
+  CI generates matlab finufft and cufinufft artifacts now.
+  Now needs cmake>3.24 (Barbone #721)
+* cmake: cache query and result for supported compiler flags to speed up
+  configuration (Stanimirov #725).
+* move include/common to include/finufft_common (Stanimirov #734)
+* Fixed symbol visibility issues so shared libraries export the Fortran wrapper
+  entry points and test helpers consistently on Windows and macOS.  This
+  included tightening default visibility in the makefile, introducing
+  `FINUFFT_EXPORT_TEST` for test-only APIs, and ensuring FFT backends are linked
+  through a dedicated `finufft_fftlibs` interface target. Barbone, Reinecke #737
+* Kernel polynomial coefficients now fitted at runtime, kernel implementation
+  moved to kernel.h and integrated into the spread/interp code path,
+  centralizing kernel evaluation and simplifying parameter handling.
+  spreadtestnd, spreadtestndall and test_spreadinterponly were updated to use
+  the public API and share a unified STL-based implementation for kersum,
+  mass and relative-error checks. This common kernel header will also enable
+  reuse by the GPU. (Barbone, Barnett, Lu, PR #748 and some in #791)
+* Purged legacy `TF_OMIT_*` timing flags from headers and core source and
+  removed timing-related omission flags. Deprecated `kerevalmeth` and
+  `kerpad` are retained only for API compatibility but are ignored; the
+  library now always uses Horner piecewise-polynomial kernel evaluation
+  internally (Horner scalar/piecewise evaluation replaces the legacy
+  vector evaluator `evaluate_kernel_vector`). `setup_spreader` now ignores
+  user-provided `kerevalmeth`/`kerpad` and emits explicit warnings, and the
+  spreader CLI reports timing flags and kerpad toggles as deprecated
+  no-ops. Documentation, examples, and Fortran/C headers were updated to
+  reflect these changes. Horner evaluation now supports any `upsampfac`.
+  (Barbone, #760)
+* Added bounds checks for CUDA method 3 to prevent segfault in single-precision
+  when the dimension is >= 1e8 (Barbone #802)
+* Fixed memory leak in python bindings due to storing input references for too
+  long (Barbone #804)
+* Added support to clone a specific commit in makefile (Barbone #806)
+* Reduced shared-memory usage for Method 2/3 in 3D double-precision (15-digit)
+  runs, preventing crashes on systems with very small available shmem.
+  Added benchmarking-based GPU autotuning to select binsize and np for best
+  performance; this is detailed in Discussion #809.
+  Cleaned up and consolidated debug printing output. (Barbone #807)
+* fixed obsolete finufftf_plan to finufft_plan in C/C++ docs (Barnett).
+* Now all C++ errors are caught and converted to C-style status return error
+  codes. (Eg, prevents crashing out of MATLAB.) (Reinecke/Barbone/Lu #808).
+* revert to binsort (was thrust quicksort) for GPU 1D GM method (Lu #810).
+* GPU type 3 fixed mem leak and ptr ownership issue (Garrison #816).
+
+V 2.4.1 7/8/25
+
+* Update Python cufinufft unit tests to use complex dtypes (Andén, #705).
+* Python version of 2D Poisson solve tutorial (Julius Herb, #700).
+* Cached the optimal thread number (# physical cores) to reduce system call
+  overhead in repeated small transforms (YuWei-CH, #697, fixing #693).
+* Adding OutputDriven parallelism to cufinufft (Barbone)
+* replaced LGPL-licensed Gauss-Legendre quadrature code by Apache2-licensed
+  code adapted from Jason Kaye's cppdlr. CPU and GPU. PR #692 (Barnett).
+* Fix cufinufft importing bug found by @fzimmermann89 (Barbone, #707, PR #708)
+* Python simple interface for CUDA type 3 (Maxim Ermenko, #685)
+
+V 2.4.0 (5/27/25)
+
+* slight accuracy improvements for small N by use of ceil in nf choice
+  (Barbone & Barnett a0bde26).
+* PR #662 (Barbone):
+  Direct calc (dirft) templated, norms computed by hand in tests, to remove
+  finufft dependency for cufinufft math tests.
+  Aligned cufinufft tests with finufft tests to test entire transform output.
+  Fix timing tests so that setpts no longer included in H2D transfer.
+* Found and fixed obscure off-by-one bug in cufinufft that could result in
+  decreased accuracy or undefined output. The bug has been present since 2019
+  (!) but was very hard to trigger, requiring a NU pt to fall on a gridpoint to
+  float accuracy, causing ns+1 instead of ns kerval elements to be accessed
+  in spreadinterp. Prior to summer v2.3 this could only error if ns=16;
+  it became more likely in v2.3 due to shortening kerval cuda arrays to ns.
+  Introduction of type 3 on GPU triggered it more often due to alignment of
+  extremal NU pts on grid. We only observed it at tol=1e-8, upsampfac=1.25.
+  We believe it is unlikely to have affected many recent t1,2 GPU results.
+  We will post a Discussion on this. PR #662 (found by: Lu, Barbone, Barnett).
+* Update CUDA version to 12.4 for cufinufft (Andén).
+* Binary Python wheels for Windows and musllinux (Barbone).
+* fix CMake MATLAB build (final *.m copy), PR 667 (Barnett).
+* fixed empty-opts bug in MATLAB/Octave for {cu}finufft, PR 666 (Barnett).
+* MATLAB/Octave unified fullmathtest.m for CPU and/or GPU (Barnett).
+* MATLAB GPU interface (MEX CUDA) via gpuArrays, PR 634 (mostly Libin Lu;
+  docs/examples/tests/interfaces by Barnett; sped up by Fortunato).
+* Tweaked choice of upsampfac to use a density based heuristic for type 1 and 2
+  in the CPU library. This gives a significant speedup for some cases.
+  For now we assume density=1.0 (to revisit).  Barbone. PR #638 & 652.
+  Since 2.4.0-rc1 we changed the heuristic to avoid usf=1.25 when within 2
+  digits of machine prec, to prevent accuracy loss in single prec (#671).
+* Get optimal threads as # physical cores, no hyperthreading (Barbone #641),
+  fixing Issue #596.
+* Removed FINUFFT_CUDA_ARCHITECTURES flag, as it was unnecessary duplication.
+* Enabled LTO for finufft (nvcc support is flaky at the moment). Barbone.
+* Added GPU spreadinterp-only test. Added CPU spreadinterp-only test to cmake
+* Make attributes private in Python Plan classes and allow read-only access to
+  them using properties (Andén #608).
+* Remove possibility to supply real dtypes to Plan interfaces. Now only complex
+  dtypes are supported (Andén #606).
+* CPU opts.spreadinterponly (experts only), and GPU, logic and docs changed so
+  upsampfac controls kernel shape properly. Add C++/MATLAB demos. #602 (Barnett)
+* PR618: removing alloca and using kernel dispatch on the GPU (Barbone)
+* PR617: Caching pip dependencies in github actions.
+  Forcing Ninja when building python on Windows.
+* PR614: Added support for sccache in github actions.
+  Caching cmake dependencies so to avoid downloading fftw, xsimd, etc every time
+* fully removed chkbnds option (opts and spreadopts) (Barnett)
+* classic GNU makefile settings make.inc.* tidied to make-platforms/ (Barnett)
+* unified separate-dim arrays (eg X,Y,Z->XYZ), simplifiying core (Reinecke #592)
+* exit codes of many-vector tests now insensitive to one-mode randomness
+  (Barnett)
+* various bugfixes (DUCC+Python, Python dtype chk, Fortran opts)
+* Large re-org of CPU lib code to remove C-style macros (Martin Reinecke)
+  PR 558: de-macroize FFT (FFT plan now a class), and OMP funcs.
+  PR 567: replace dual-pass compilation to .o and _32.o by C++ templating.
+  - all FLT/CPX macros replaced by templating in main lib (not in test codes).
+  - finufft_plan changed from struct to class, with setpts/exec methods.
+  - spreadinterp reversed order of funcs to avoid fwd declarations.
+  - finufft.cpp and defs.h replaced by finufft_core.{h,cpp}.
+  PR 584: follow-up, more idiomatic C++.
+  - simplify finufft_core internals via class members instead of struct fields.
+  - all array allocations std::vectors or xsimd-aligned, removing FFT's allocs.
+  - math consts such as PI change from macros to templated static consts.
+  - C++ style error handling ("throw") replaces ier, except in C-API wrapper.
+  - simpleinterfaces -> c_interfaces. Shorthands for types ("using f64=" etc).
+  Note: tests still use macros (test_defs.h). And C++ interface will solidify.
+* Single-argument spreading kernel Horner evaluator available for deconv step
+  (onedim_* funcs), to unify ker eval. PR 541, Libin Lu. Not yet exploited.
+* Simplify building of Python source distributions. PR 555 (J Anden).
+* reduced roundoff error in a[n] phase calc in CPU onedim_fseries_kernel().
+   PR534 (Barnett).
+* GPU code type 1,2 also reduced round-off error in phases, to match CPU code;
+  rationalized onedim_{fseries,nuft}_* GPU codes to match CPU (Barbone, Barnett)
+* Added type 3 in 1D, 2D, and 3D, in the GPU library cufinufft. PR #517, Barbone
+  - Removed the CPU fseries computation (used for benchmark, no longer needed)
+  - Added complex arithmetic support for cuda_complex type
+  - Added tests for type 3 in 1D, 2D, and 3D and cuda_complex arithmetic
+  - Minor fixes on the GPU code:
+    a) removed memory leaks in case of errors
+    b) renamed maxbatchsize to batchsize
+* Add options for user-provided FFTW locker (PR548, Blackwell). These options
+  can be be used to prevent crashes when a user is creating/destroying FFTW
+  plans and FINUFFT plans in threads simultaneously.
+* Fixed missing dependency on `packaging` in the Python `cufinufft` package.
+
+V 2.3.2 (2/11/25) minor update release (continued support on 2.3.X branch)
+
+* Increase cufinufft 1d cmake test size and fix 1d spreader subprob SM kernel.
+
+V 2.3.1 (11/25/24) minor update release (continued support on 2.3.X branch)
+
+* Support and docs for opts.gpu_spreadinterponly=1 for MRI "density compensation
+  estimation" type 1&2 use-case with upsampfac=1.0 PR564 (Chaithya G R).
+
+V 2.3.0 (9/5/24)
+
+* Switched C++ standards from C++14 to C++17, allowing various templating
+  improvements (Barbone).
+* Python build modernized to pyproject.toml (for both CPU and GPU).
+  PR 507 (Anden, Lu, Barbone). Compiles from source for the local build.
+* Switchable FFT: either FFTW or DUCC0 (latter needs no plan stage; also it is
+  used to exploit sparsity pattern to achieve FFT speedups 1-3x in 2D and 3D).
+  PR463, Martin Reinecke. Both CMake and makefile includes this DUCC0 option
+  (makefile PR511 by Barnett; CMake by Barbone).
+* ES kernel rescaled to max value 1, reduced poly degrees for upsampfac=1.25,
+  cleaner Horner coefficient generation PR499 (fixes fp32 overflow issue #454).
+* Major manual acceleration of spread/interp kernels via XSIMD header-only lib,
+  kernel evaluation, templating by ns with AVX-width-dependent decisions.
+  Up to 80% faster, dep on compiler. (Marco Barbone with help from Libin Lu).
+  A large chunk (many weeks) of work: PRs 459, 471, 502.
+  NOTE: introduces new dependency (XSIMD), added to CMake and makefile.
+* Exploiting even/odd symmetry for 10% faster xsimd-accel kernel poly eval
+  (Libin Lu based on idea of Martin Reinecke; PR477,492,493).
+* new test/finufft3dkernel_test checks kerevalmeth=0 and 1 agree to tolerance
+  PR 473 (M Barbone).
+* new perftest/compare_spreads.jl compares two spreadinterp libs (A Barnett).
+* new benchmarker perftest/spreadtestndall sweeps all kernel widths (M Barbone).
+* cufinufft now supports modeord(type 1,2 only): 0 CMCL-style increasing mode
+  order, 1 FFT-style mode order. PR447,446 (Libin Lu, Joakim Anden).
+* New doc page: migration guide from NFFT3 (2d1 case only), Barnett.
+* New foldrescale, removes [-3pi,3pi) restriction on NU points, and slight
+  speedup at large tols. Deprecates both opts.chkbnds and error code
+  FINUFFT_ERR_SPREAD_PTS_OUT_RANGE. Also inlined kernel eval code (increases
+  compile of spreadinterp.cpp to 10s). PR440 Marco Barbone + Martin Reinecke.
+* CPU plan stage allows any # threads, warns if > omp_get_max_threads(); or
+  if single-threaded fixes nthr=1 and warns opts.nthreads>1 attempt.
+  Sort now respects spread_opts.sort_threads not nthreads. Supercedes PR 431.
+* new docs troubleshooting accuracy limitations due to condition number of the
+  NUFFT problem (Barnett).
+* new sanity check on nj and nk (<0 or too big); new err code, tester, doc.
+* MAX_NF increased from 1e11 to 1e12, since machines grow.
+* improved GPU python docs: migration guide; usage from cupy, numba, torch,
+  pycuda. Docs for all GPU options. PyPI pkg still at 2.2.0beta.
+* Added a clang-format pre-commit hook to ensure consistent code style.
+  Created a .clang-format file to define a style similar to the existing style.
+  Applied clang-format to all cmake, C, C++, and CUDA code. Ignored the blame
+  using .git-blame-ignore-revs. contributing.md for devs. PR450,455, Barbone.
+* cuFINUFFT interface update: number of nonuniform points M is now a 64-bit int
+  as opposed to 32-bit. While this does modify the ABI, most code will just
+  need to recompile against the new library as compilers will silently upcast
+  any 32-bit integers to 64-bit when calling cufinufft(f)_setpts. Note that
+  internally, 32-bit integers are still used, so calling cufinufft with more
+  than 2e9 points will fail. This restriction may be lifted in the future.
+* CMake build system revamped completely, using more modern practices (Barbone).
+  It now auto-selects compiler flags based on those supported on all OSes, and
+  has support for Windows (llvm, msvc), Linux (llvm, gcc) and MacOS (llvm, gcc).
+* CMake added nvcc and msvc optimization flags.
+* sphinx local doc build also using CMake. (Barbone)
+* updated install docs, including for DUCC0 FFT and new python build.
+* updated install docs (Barnett)
+* Major acceleration effort for the GPU library cufinufft (M Barbone, PR488):
+  - binsize is now a function of the shared memory available where possible.
+  - GM 1D sorts using thrust::sort instead of bin-sort.
+  - uses the new normalized Horner coefficients and added support for
+    upsampfac=1.25 on GPU, for first time.
+  - new compile flags for extra-vectorization, flushing single
+    precision denormals to 0 and using fma where possible.
+  -  using intrinsics (eg FMA) in foldrescale and other places to increase
+    performance
+  - using SM90 float2 vector atomicAdd where supported
+  - make default binsize = 0
+* overide single-output relative error by l2 relative error in exit codes of
+  test/finufft?d_test.cpp to reduce CI fails due to random numbers on some
+  platforms in single-prec (with DUCC, etc). (Barnett PR516)
+* fix GPU segfault due to stream deletion as pointer not value (Barbone PR520)
+* new performance-tracking doc page comparing releases (Barbone) #527
+* fix various Py 3.8 wheel and numpy distutils logging issues #549 #545
+* Cmake option to control -fPIC in static build; default now ON (as v2.2) #551
+
+V 2.2.0 (12/12/23)
+
+* MERGE OF CUFINUFFT (GPU CODE) INTO FINUFFT SOURCE TREE:
+  - combined cmake build system via FINUFFT_USE_CUDA flag
+  - python wrapper for GPU code included
+  - GPU documentation (improving on cufinufft) added {install,c,python)_gpu.rst
+  - CI includes GPU full test via C++, and python four styles, via Jenkins.
+  - common spread_opts.h header; other code not yet made common.
+  - GPU interface has been changed (ie broken) to more closely match finufft
+  - cufinufft repo is left in legacy state at v1.3.
+  - Add support for cuda streams, allowing for concurrent memory transfer and
+    execution streams (PR #330)
+  [coding lead on this: Robert Blackwell, with help from Joakim Anden]
+* CMake build structure (thanks: Wenda Zhou, Marco Barbone, Libin Lu)
+  - Note: the plan is to continue to support GNU makefile and make.inc.* but
+    to transition to CMake as the main build system.
+  - CI workflow using CMake on 3 OSes, 2 compilers each, PR #382 (Libin Lu)
+* Docs: new tutorial content on iterative inverse NUFFTs; troubleshooting.
+* GitHub-facing badges
+* include/finufft/finufft_eitherprec.h moved up directory to be public (bea316c)
+* interp (for type 2) accel by up to 60% in high-acc 2D/3D, by FMA/SIMD-friendly
+  rearranging of loops, by Martin Reinecke, PR #292.
+* remove inv array in binsort; speeds up multithreaded case by up to 50%
+  but no effect on single-threaded. Martin Reinecke, PR #291.
+* Fix memleak in repeated setpts (Issue #269); thanks Aaron Shih & Libin Lu.
+* Fortran90 example via a new FINUFFT fortran module, thanks Reinhard Neder.
+* made the C++ plan object (finufft_plan_s) private; only opaque pointer
+  remains public, as should be (PR #233). Allows plan to have C++ constructs.
+* fixed single-thread (OMP=OFF) build which failed due to fftw_defs.h/defs.h
+* finally thread-safety for all fftw cases, kill FFTW_PLAN_SAFE (PR 354)
+* Python interface: - better type checking (PR #237).
+  - fixing edge cases (singleton dims, issue #359).
+  - supports batch dimension of length 1 (issue #367).
+* fix issue where repeated calls of finufft_makeplan with different numbers of
+  requested threads would always use the first requested number of threads
+
+CUFINUFFT v 1.3 (06/10/23) (Final legacy release outside of FINUFFT repo)
+
+* Move second half of onedim_fseries_kernel() to GPU (with a simple heuristic
+  basing on nf1 to switch between the CPU and the GPU version).
+* Melody fixed bug in MAX_NF being 0 due to typecasting 1e11 to int (thanks
+  Elliot Slaughter for catching that).
+* Melody fixed kernel eval so done w*d not w^d times, speeds up 2d a little, 3d
+  quite a lot! (PR#130)
+* Melody added 1D support for both types 1 (GM-sort and SM methods) 2 (GM-sort),
+  in C++/CUDA and their test executables (but not Python interface).
+* Various fixes to package config.
+* Miscellaneous bug fixes.
+
+V 2.1.0 (6/10/22)
+
+* BREAKING INTERFACE CHANGE: nufft_opts is now called finufft_opts.
+  This is needed for consistency and fixes a historical problem.
+  We have compile-time warning, and backwards-compatibility for now.
+* Professionalized the public-facing interface:
+  - safe lib (.so, .a) symbols via hierarchical namespacing of private funcs
+    that do not already begin with finufft{f}, in finufft:: namespace.
+    This fixes, eg, clash with linking against cufinufft (their Issue #138).
+  - public headers (finufft.h) has all macro names safe (ie FINUFFT suffix).
+    Headers both public and private rationalized/simplified.
+  - private headers are in include/finufft/, so not exposed by -Iinclude
+  - spread_opts renamed finufft_spread_opts, since publicly exposed and name
+    must respect library naming.
+* change nj and nk in plan to BIGINT (int64_t), new big2d2f perftest, fixing
+  Issue #215.
+* PDF manual moved from local to readthedocs.io hosting, Issue #221.
+* Py doc for dtype fixed, Issue #216.
+* spreadinterp evaluate_kernel_vector uses single arith when FLT=single.
+* spread_opts.h fix duplication for FLT=single/double by making FLT->double.
+* examples/simulplans1d1 demos ability to to wield independent plans.
+* sped up float32 1d type 3 by 20% by using float32 cos()... thanks Wenda Zhou.
+
+V 2.0.4 (1/13/22)
+
+* makefile now appends (not replaces by) environment {C,F,CXX}FLAGS (PR #199).
+* fixed MATLAB Contents.m and guru help strings.
+* fortran examples: avoided clash with keywords "type" and "null", and correct
+  creation of null ptr for default opts (issues #195-196, Jiri Kulda).
+* various fixes to python wheels CI.
+* various docs improvements.
+* fixed modeord=1 failure for type 3 even though should never be used anyway
+  (issue #194).
+* fixed spreadcheck NaN failure to detect bug introduced in 2.0.3 (9566511).
+* Dan Fortunato found and fixed MATLAB setpts temporary array loss, issue #185.
+
+V 2.0.3 (4/22/21)
+
+* finufft (plan) now thread-safe via OMP lock (if nthr=1 and -DFFTW_PLAN_SAFE)
+  + new example/threadsafe*.cpp demos. Needs FFTW>=3.3.6 (Issues #72 #180 #183)
+* fixed bug in checkbounds that falsely reported NU pt as invalid if exactly 1
+  ULP below +pi, for certain N values only, egad! (Issue #181)
+* GH workflows continuous integration (CI) in four setups (linux, osx*2, mingw)
+* fixed memory leak in type 3.
+* corrected C guru execute documentation.
+
+CUFINUFFT v 1.2 (02/17/21)
+
+* Warning: Following are Python interface changes -- not backwards compatible
+  with v 1.1 (See examples/example2d1,2many.py for updated usage)
+
+    - Made opts a kwarg dict instead of an object:
+         def __init__(self, ... , opts=None, dtype=np.float32)
+      => def __init__(self, ... , dtype=np.float32, **kwargs)
+    - Renamed arguments in plan creation `__init__`:
+         ntransforms => n_trans, tol => eps
+    - Changed order of arguments in plan creation `__init__`:
+         def __init__(self, ... ,isign, eps, ntransforms, opts, dtype)
+      => def __init__(self, ... ,ntransforms, eps, isign, opts, dtype)
+    - Removed M in `set_pts` arguments:
+         def set_pts(self, M, kx, ky=None, kz=None)
+      => def set_pts(self, kx, ky=None, kz=None)
+
+* Python: added multi-gpu support (in beta)
+* Python: added more unit tests (wrong input, kwarg args, multi-gpu)
+* Fixed various memory leaks
+* Added index bound check in 2D spread kernels (Spread_2d_Subprob(_Horner))
+* Added spread/interp tests to `make check`
+* Fixed user request tolerance (eps) to kernel width (w) calculation
+* Default kernel evaluation method set to 0, ie exp(sqrt()), since faster
+* Removed outdated benchmark codes, cleaner spread/interp tests
+
+V 2.0.2 (12/5/20)
+
+* fixed spreader segfault in obscure use case: single-precision N1>1e7, where
+  rounding error is O(1) anyway. Now uses consistent int(ceil()) grid index.
+* Improved large-thread scaling of type-1 (spreading) via transition from OMP
+  critical to atomic add_wrapped_subgrid() operations; thanks Rob Blackwell.
+* Increased heuristic t1 spreader max_subproblem_size, faster in 2D, 3D, and
+  allowed this and the above atomic threshold to be controlled as nufft_opts.
+* Removed MAX_USEFUL_NTHREADS from defs.h and all code, for simplicity, since
+  large thread number now scales better.
+* multithreaded one-mode accuracy test in C++ tests, t1 & t3, for faster tests.
+
+V 2.0.1 (10/6/20)
+
+* python (under-the-hood) interfacing changed from pybind11 to cleaner ctypes.
+* non-stochastic test/*.cpp routines, zeroing small chance of incorrect failure
+* Windows compatible makefile
+* mac OSX improved installation instructions and make.inc.*
+
+CUFINUFFT v 1.1 (09/22/20)
+
+* Python: extended the mode tuple to 3D and reorder from C/python
+  ndarray.shape style input (nZ, nY, nX) to to the (F) order expected by the
+  low level library (nX, nY, nZ).
+* Added bound checking on the bin size
+* Dual-precision support of spread/interp tests
+* Improved documentation of spread/interp tests
+* Added dummy call of cuFFTPlan1d to avoid timing the constant cost of cuFFT
+  library.
+* Added heuristic decision of maximum batch size (number of vectors with the
+  same nupts to transform at the same time)
+* Reported execution throughput in the test codes
+* Fixed timing in the tests code
+* Professionalized handling of too-small-eps (requested tolerance)
+* Rewrote README.md and added cuFINUFFT logo.
+* Support of advanced Makefile usage, e.g. make -site=olcf_summit
+* Removed FFTW dependency
+
+V 2.0.0 (8/28/20)
+
+* major changes to code, internally, and major improvements to operation and
+  language interfaces.
+
+	WARNING!: Here are all the interface compatibility changes from 1.1.2:
+	- opts (nufft_opts) is now always passed as a pointer in C++/C, not
+	  pass-by-reference as in v1.1.2 or earlier.
+	- Fortran simple calls are now finufft?d?(..) not finufft?d?_f(..), and
+	  they add a penultimate opts argument.
+	- Python module name is now finufft not finufftpy, and the interface has
+	  been completely changed (allowing major improvements, see below).
+	- ier=1 is now a warning not an error; this indicates requested tol
+	  was too small, but that a transform *was* done at the best possible
+	  accuracy.
+	- opts.fftw directly controls the FFTW plan mode consistently in all
+	  language interfaces (thus changing the meaning of fftw=0 in MATLAB).
+	- Octave now needs version >= 4.4, since OO features used by guru.
+
+	These changes were deemed necessary to rationalize and improve FINUFFT
+	for the long term.
+	There are also many other new interface options (many-vector, guru)
+	added; see docs.
+* the C++ library is now dual-precision, with distinct function interfaces for
+  double vs single precision operation, that are C and C++ compatible. Under
+  the hood this is achieved via simple C macros. All language interfaces now
+  have dual precision options.
+* completely new (although backward compatible) MATLAB/octave interface,
+  including object-style wrapper around the guru interface, dual precision.
+* completely new Fortran interface, allowing >2^31 sized (int64) arrays,
+  all simple, many-vector and guru interface, with full options control,
+  and dual precisions.
+* all simple and many-vector interfaces now call guru interface, for much
+  better maintainability and less code repetition.
+* new guru interface, by Andrea Malleo and Alex Barnett, allowing easier
+  language wrapping and control of point-setting, reuse of sorting and FFTW
+  plans. This finally bypasses the 0.1ms/thread cost of FFTW looking up previous
+  wisdom, which slowed down performance for many small problems.
+* removed obsolete -DNEED_EXTERN_C flag.
+* major rewrite of documentation, plus tutorial application examples in MATLAB.
+* numdiff dependency is removed for pass-fail library validation.
+* new (professional!) logo for FINUFFT. Sphinx HTML and PDF aesthetics.
+
+CUFINUFFT v 1.0 (07/29/20)
+* Started by Melody Shih.
+
+V 1.1.2 (1/31/20)
+
+* Ludvig's padding of Horner loop to w=4n, speeds up kernel, esp for GCC5.4.
+* Bansal's Mingw32 python patches.
+
+V 1.1.1 (11/2/18)
+
+* Mac OSX installation on clang and gcc-8, clearer install docs.
+* LIBSOMP split off in makefile.
+* printf(...%lld..) w/ long long typecast
+* new basic passfail tester
+* precompiled binaries
+
+V 1.1 (9/24/18)
+
+* NOTE TO USERS: changed interface for setting default opts in C++ and C, from
+  pass by reference to pass by value of a pointer (see docs/). Unifies C++/C
+  interfaces in a clean way.
+* fftw3_omp instead of fftw3_threads (on linux), is faster.
+* rationalized header files.
+
+V 1.0.1 (9/14/18)
+
+* Ludvig's removal of omp chunksize in dir=2, another 20%+ speedup.
+* Matlab doesn't change omp internal state.
+
+V 1.0 (8/20/18)
+
+* repo transferred to flatironinstitute
+* usage doc simpler
+* 2d1many and 2d2many interfaces by Melody Shih, for multiple vectors with same
+  nonuniform points. All tests and docs for these interfaces.
+* horner optimized kernel for sigma=5/4 (low upsampling), to go along with the
+  default sigma=2. Cmdline arg to change sigma in finufft?d_test.
+* simplified various int types: only BIGINT remains.
+* clearer docs.
+* remaining C interfaces, with opts control.
+
+V 0.99 (4/24/18)
+
+* piecewise polynomial kernel evaluation by Horner, for faster spreading esp at
+  low accuracy and 1d or 2d.
+* various heuristic decisions re whether to sort, and if sorting is single or
+  multi-threaded.
+* single-precision libs get an "f" suffix so can coexist with double-prec.
+
+V 0.98 (3/1/18)
+
+* makefile includes make.inc for OS-specific defs.
+* decided that, since Legendre nodes code of GLR alg by Hale/Burkhardt is LGPL
+  licensed, our use (not changing source) is not a "derived work", therefore
+  ok under our Apache v2 license. See:
+  https://tldrlegal.com/license/gnu-lesser-general-public-license-v3-(lgpl-3)
+  https://www.apache.org/licenses/GPL-compatibility.html
+  https://softwareengineering.stackexchange.com/questions/233571/
+    open-source-what-is-the-definition-of-derivative-work-and-how-does-it-impact
+  * fixed MATLAB FFTW incompat alloc crash, by hack of Joakim, calling fft()
+  first.
+* python tests fixed, brought into makefile.
+* brought in af Klinteberg spreader optimizations & SSE tricks.
+* logo
+
+V 0.97 (12/6/17)
+
+* tidied all docs -> readthedocs.io host. README.md now a stub. TODO tidied.
+* made sort=1 in tests for xeon (used to be 0)
+* removed mcwrap and python dirs
+* changed name of py routines to nufft* from finufft*
+* python interfaces doc, up-to-date. Removed ms,.. from type-2 interfaces.
+* removed RESCALEs from lower dims in bin_sort, speeds up a few % in 1D.
+* allowed NU pts to be currectly folded from +-1 periods from central box, as
+  per David Stein request. Adds 5% to time at 1e-2 accuracy, less at higher acc.
+* corrected dynamic C++ array allocs in spreader (some made static, 5% speedup)
+* removed all C++11 dependencies, mainly that opts structs are all explicitly
+  initialized.
+* fixed python interface to have chkbnds.
+* tidied MEX interface
+* removed memory leaks (!)
+* opts.modeord implemented and exposed to matlab/python interfaces. Also removes
+  looping backwards in RAM in deconvolveshuffle.
+
+V 0.96 (10/15/17)
+
+* apache v2 license, exposed flags in python interface.
+
+V 0.95 (10/2/17)
+
+* brought in JFM's in-package python wrapper & doc, create lib-static dir,
+  removed devel dir.
+
+V 0.9: (6/17/17)
+
+* adapted adv4 into main code, inner loops separate by dim, kill
+  the current spreader. Incorporate old ideas such as: checkerboard
+  per-thread grid cuboids, compare speed in 2d and 3d against
+  current 1d slicing. See cnufftspread:set_thread_index_box()
+* added FFTW_MEAS vs FFTW_EST (set as default) opts flag in nufft_opts, and
+  matlab/python interfaces
+* removed opts.maxnalloc in favor of #defined MAX_NF
+* fixed the 1-target case in type-3, all dims, to avoid nan; clarified logic
+  for handling X=0 and/or S=0. 6/12/17
+* changed arraywidcen to snap to C=0 if relative shift is <0.1, avoids cexps in
+  type-3.
+* t3: if C1 < X1/10 and D1 < S1/10 then don't rephase. Same for d=2,3.
+* removed the 1/M type-1 prefactor, also in all test routines. 6/6/17
+* removed timestamp-based make decision whether to rebuild matlab/finufft.cpp,
+  since git clone creates files with random timestamp order!
+* theory work on exp(sqrt) being close to PSWF. Analysis.
+* fix issue w/ needing mwrap when do make matlab.
+* makefile has variables customizing openmp and precision, non-omp tested
+* fortran single-prec demos (required all direct ft's in single prec too!)
+* examples changed to err rel to max F.
+* matlab interface control of opts.spread_sort.
+* matlab interface using doubles as big ints w/ correct typecasting.
+* twopispread removed, used flag in spread_opts for [-pi,pi] input instead.
+* testfinufft* use same integer type INT as for interfaces, typecast all %ld in
+  printf warnings, use omp rand array filling
+* INT64 for necessary size-setting arrays, removed all %lf printf warnings in
+  finufft*
+* all internal array indexing is BIGINT, switchable from long long to int via
+  SMALLINT compile flag (default off, see utils.h)
+* all integers in interfaces are type INT, default 64-bit, switchable to 32 bit
+  by INTERGER32 compile flag (see utils.h)
+* test big probs (speed, crashing) and decide if BIGINT is long long or int?
+  slows any array access down, or spreading? allows I/O sizes
+  (M, N1*N2*N3) > 2^31. Note June-Yub int*8 in nufft-1.3.x slowed things by
+  factor 2-3.
+* tidy up spreader to be BIGINT = long long compatible and test > 2^31.
+* spreadtest parallel rand()
+* sort flag passed to spreader via finufft, and test scripts check if Xeon
+  (-> sort=0)
+* opts in the manual
+* removed all xk2, dNU2 sorted arrays, and not-needed dims y,z; halved RAM usage
+
+V 0.8: (3/27/17)
+
+* bnderr checking done in dir=1,2 main loops, not before.
+* all kx2, dNU2 arrays removed, just done by permutation index when needed.
+* MAC OSX test, makefile, instructions.
+* matlab wrappers in 3D
+* matlab wrappers, mcwrap issue w/ openmp, mex, and subdirs. Ship mex
+  executables for linux. Link to .a
+* matlab wrappers need ier output? yes, and internal omp numthreads control
+  (since matlab's is poor)
+* wrappers for MEX octave, instructions. Ship .mex for octave.
+* python wrappers - Dan Foreman-Mackey starting to add something similar to
+	https://github.com/dfm/python-nufft
+* check is done before attempting to malloc ridiculous array sizes, eg if a
+  large product of x width and k width is requested in type 3 transforms.
+* draft make python
+* basic manual (txt)
+
+V. 0.7:
+
+* build static & shared lib
+* fixed bug when Nth>Ntop
+* fortran drivers use dynamic malloc to prevent stack segfaults that CMCL had
+* bugs found in fortran drivers, removed
+* split out devel text files (TODO, etc)
+* made pass-fail test script counting crashes and numdiff fails.
+* finufft?d_test have a no-timings option, and exit with ier.
+* global error codes
+* made finufft routines & testers return error codes rather than exit().
+* dumbinput test executable
+* found nan returned error for nj=0 in type-1, fixed so returns the zero array.
+* fixed type 2 to not segfault when ms,mt, or mu=0, doing dir=2 0-padding right
+* array utils use pointers to make which vars they write to explicit.
+* don't do final type-3 rephase if C1 nan or 0.
+* finished all dumbinputs, all dims
+* fortran compilation fixed
+* makefile self-documents
+* nf1 (etc) size check before alloc, exit gracefully if exceeds RAM
+* integrate into nufft_comparison, esp vs NFFT - jfm did
+* simple examples, simpler than the test drivers
+* fortran link via gfortran, better fortran docs
+* boilerplate stuff as in CMCL page
+
+pre-V. 0.7: (Jan-Feb 2017)
+
+* efficient modulo in spreader, done by conditionals
+* removed data-zeroing bug in t-II spreader, slowness of large arrays in t-I.
+* clean dir tree
+* spreader dir=1,2 math tests in 3d, then nd.
+* Jeremy's request re only computing kernel vals needed (actually
+  was vital for efficiency in dir=1 openmp version), Ie fix KB kereval in
+  spreader so doesn't wdo 3d fill when 1 or 2 will do.
+* spreader removed modulo altogether in favor of ifs
+* OpenMP spreader, all dims
+* multidim spreader test, command line args and bash driver
+* cnufft->finufft names, except spreader still called cnufft
+* make ier report accuracy out of range, malloc size errors, etc
+* moved wrappers to own directories so the basic lib is clean
+* fortran wrapper added ier argument
+* types 1,2 in all dims, using 1d kernel for all dims.
+* fix twopispread so doesn't create dummy ky,kz, and fix sort so doesn't ever
+  access unused ky,kz dims.
+* cleaner spread and nufft test scripts
+* build universal ndim Fourier coeff copiers in C and use for finufft
+* makefile opts and compiler directives to link against FFTW.
+* t-I, t-II convergence params test: R=M/N and KB params
+* overall scale factor understand in KB
+* check J's bessel10 approx is ok. - became irrelevant
+* meas speed of I_0 for KB kernel eval - became irrelevant
+* understand origin of dfftpack (netlib fftpack is real*4) - not needed
+* [spreader: make compute_sort_indices sensible for 1d and 2d. not needed]
+* next235even for nf's
+* switched pre/post-amp correction from DFT of kernel to F series (FT) of
+  kernel, more accurate
+* Gauss-Legendre quadrature for direct eval of kernel FT, openmp since cexp slow
+* optimize q (# G-L nodes) for kernel FT eval on reg and irreg grids
+  (common.cpp). Needs q a bit bigger than like (2-3x the PTR, when 1.57x is
+  expected). Why?
+* type 3 segfault in dumb case of nj=1 (SX product = 0). By keeping gam>1/S
+* optimize that phi(z) kernel support is only +-(nspread-1)/2, so w/ prob 1 you
+  only use nspread-1 pts in the support. Could gain several % speed for same acc
+* new simpler kernel entirely
+* cleaned up set_nf calls and removed params from within core libs
+* test isign=-1 works
+* type 3 in 2d, 3d
+* style: headers should only include other headers needed to compile the .h;
+  all other headers go in .cpp, even if that involves repetition I guess.
+* changed library interface and twopispread to dcomplex
+* fortran wrappers (rmdir greengard_work, merge needed into fortran)
+
+FINUFFT Started: mid-January 2017, building on nufft_comparison of J. Magland.
