@@ -203,6 +203,23 @@ validated independently: `test/debye_ref.py` reproduces sqcalc's S(q) and g(r)
 exactly, and both programs reach the correct high-q plateau (1.00).  Porting
 that correction is the remaining item of plan M4.
 
+The same configuration against our reciprocal (NUFFT) method, all three
+evaluated on the same q grid.  An ideal gas has S(q) = 1 everywhere, so any
+deviation is an artifact:
+
+| q [1/A] | 0.6 | 1.2 | 1.8 | 2.4 | 3.0 | 3.6 | 4.2 | 4.8 | 5.4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| debyer | 0.91 | 1.03 | 1.01 | 1.01 | 1.02 | 0.98 | 0.99 | 1.01 | 1.00 |
+| sqcalc Debye | 5.98 | 0.21 | 1.09 | 1.15 | 0.84 | 1.15 | 0.86 | 1.10 | 0.96 |
+| sqcalc NUFFT | 1.28 | 1.04 | 0.99 | 1.01 | 0.99 | 1.02 | 1.00 | 1.01 | 1.00 |
+
+RMS deviation from 1 for q > 1.5 1/A: debyer 0.015, our NUFFT 0.024, our
+uncorrected Debye 0.267.  So the reciprocal method is the reliable one here (its
+small scatter is the finite shell resolution plus 4-frame statistics, not
+physics), debyer matches it, and our Debye method needs the density correction
+before it can be trusted at low q - it currently oscillates by +-15% and blows
+up as q -> 0.
+
 ## Output
 
 The first table is the isotropic average over q shells:
