@@ -12,4 +12,16 @@ if(Python3_Interpreter_FOUND)
             --executable $<TARGET_FILE:sqcalc> --workdir ${CMAKE_CURRENT_BINARY_DIR}/work
   )
   set_tests_properties(sqcalc_physics PROPERTIES LABELS "integration")
+
+  if(SQC_ENABLE_CUDA)
+    # Compares the cufinufft backend against the CPU results; skips itself when
+    # no CUDA device is visible (so it can also run on CPU-only build hosts).
+    add_test(
+      NAME sqcalc_gpu
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sqcalc.py
+              --executable $<TARGET_FILE:sqcalc>
+              --workdir ${CMAKE_CURRENT_BINARY_DIR}/work_gpu --gpu
+    )
+    set_tests_properties(sqcalc_gpu PROPERTIES LABELS "integration;gpu")
+  endif()
 endif()

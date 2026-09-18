@@ -19,7 +19,13 @@ module sqc_finufft
    !> Transform types supported by the guru interface.
    integer, parameter :: type1 = 1, type2 = 2, type3 = 3
 
-   !> C-compatible mirror of finufft_opts (FINUFFT v2.5.x, double precision).
+   !> C-compatible mirror of finufft_opts (double precision).
+   !!
+   !! Field list taken from the vendored include/finufft_opts.h.  Note that the
+   !! development branch of FINUFFT has one more field
+   !! (allow_eps_too_small) which the v2.5.1 release does not have, so this
+   !! mirror must be checked against the vendored header whenever FINUFFT is
+   !! updated - finufft_opts_is_consistent() does that at run time.
    type, bind(c) :: finufft_opts_t
       integer(c_int) :: modeord
       integer(c_int) :: spreadinterponly
@@ -37,7 +43,6 @@ module sqc_finufft
       integer(c_int) :: spread_nthr_atomic
       integer(c_int) :: spread_max_sp_size
       integer(c_int) :: spread_kerformula
-      integer(c_int) :: allow_eps_too_small
       type(c_funptr) :: fftw_lock_fun
       type(c_funptr) :: fftw_unlock_fun
       type(c_ptr) :: fftw_lock_data
@@ -101,7 +106,6 @@ contains
            .and. opts%spread_sort == 2 .and. abs(opts%upsampfac) <= 1.0e-12_c_double &
            .and. opts%maxbatchsize == 0 .and. opts%spread_nthr_atomic == -1 &
            .and. opts%spread_max_sp_size == 0 .and. opts%spread_kerformula == 0 &
-           .and. opts%allow_eps_too_small == 0 &
            .and. .not. c_associated(opts%fftw_lock_fun) &
            .and. .not. c_associated(opts%fftw_unlock_fun) &
            .and. .not. c_associated(opts%fftw_lock_data)

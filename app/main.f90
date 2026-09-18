@@ -8,6 +8,9 @@ program sqcalc
    use sqc_elements, only: element_table
    use sqc_structure
    use sqc_finufft, only: finufft_opts_is_consistent
+#ifdef SQC_ENABLE_CUDA
+   use sqc_gpu, only: cufinufft_structure_factor_t
+#endif
    use, intrinsic :: iso_fortran_env, only: error_unit, output_unit
    use omp_lib, only: omp_set_num_threads, omp_get_max_threads
    implicit none
@@ -75,7 +78,21 @@ program sqcalc
    case (method_direct)
       allocate (direct_structure_factor_t :: method)
    case default
-      allocate (nufft_structure_factor_t :: method)
+      if (opts%device == device_gpu) then
+#ifdef SQC_ENABLE_CUDA
+         allocate (cufinufft_structure_factor_t :: method)
+         select type (method)
+         type is (cufinufft_structure_factor_t)
+            method%device = opts%gpu_id
+         end select
+#else
+         write (error_unit, '(a)') 'sqcalc: this build has no GPU support; '// &
+            'configure with -DSQC_ENABLE_CUDA=ON'
+         stop 16
+#endif
+      else
+         allocate (nufft_structure_factor_t :: method)
+      end if
    end select
    method%norm = opts%norm
    method%nq = opts%nq
@@ -155,7 +172,7 @@ program sqcalc
 
    if (.not. opts%quiet) then
       write (error_unit, '(a,i0,a,a,a,f0.2,a,i0,a)') 'averaged ', method%nframes, ' frames (', &
-         trim(method_description(opts%method)), ', ', elapsed, ' s wall, threads = ', &
+         trim(method_description(opts)), ', ', elapsed, ' s wall, threads = ', &
          opts%threads, ')'
    end if
 
@@ -225,6 +242,7 @@ contains
          write (error_unit, '(a)') ''
       end if
       write (error_unit, '(a,i0)') '  threads    : ', opt%threads
+      if (opt%device == device_gpu) write (error_unit, '(a,i0)') '  gpu device : ', opt%gpu_id
    end subroutine report_setup
 
    subroutine report_grid(m)
@@ -255,14 +273,18 @@ contains
       end if
    end subroutine open_output
 
-   function method_description(m) result(text)
-      integer, intent(in) :: m
+   function method_description(opt) result(text)
+      type(options_t), intent(in) :: opt
       character(len=:), allocatable :: text
-      select case (m)
+      select case (opt%method)
       case (method_direct)
          text = 'direct summation'
       case default
-         text = 'NUFFT'
+         if (opt%device == device_gpu) then
+            text = 'NUFFT on GPU (cufinufft/cuFFT)'
+         else
+            text = 'NUFFT on CPU (FINUFFT)'
+         end if
       end select
    end function method_description
 

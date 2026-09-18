@@ -56,6 +56,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True)
     parser.add_argument("--workdir", required=True)
+    parser.add_argument("--gpu", action="store_true",
+                        help="also compare the CUDA backend against the CPU")
     args = parser.parse_args()
     exe = os.path.abspath(args.executable)
     work = os.path.abspath(args.workdir)
@@ -192,6 +194,48 @@ def main():
             print("  ok   %s rejected" % label)
     if failures:
         raise SystemExit("%d command line checks failed" % failures)
+
+    # --- 7. GPU backend (optional) ----------------------------------------
+    if args.gpu:
+        print("gpu backend")
+        probe = subprocess.run([exe, "-i", dump, "--device", "gpu", "--qmax", "3",
+                                "--nq", "4", "-"], capture_output=True, text=True)
+        skip_reasons = ("no GPU support", "no usable CUDA device", "CUDA device",
+                        "incompatible cufinufft_opts")
+        if probe.returncode != 0:
+            if any(marker in probe.stderr for marker in skip_reasons):
+                reason = next((line for line in probe.stderr.splitlines()
+                               if any(marker in line for marker in skip_reasons)),
+                              probe.stderr.strip().splitlines()[0])
+                print("  skip %s" % reason.strip())
+            else:
+                raise SystemExit("FAIL gpu probe exited %d\n%s" % (probe.returncode, probe.stderr))
+        else:
+            gpu_common = ["--qmax", "6", "--nq", "40", "--eps", "1e-10"]
+            for weight, norm in (("unit", "self"), ("neutron", "mean"), ("xray", "mean")):
+                sqcalc(dump, "cpu_%s.dat" % weight, "-w", weight, "--norm", norm, *gpu_common)
+                run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", weight, "--norm", norm,
+                     "--device", "gpu", *gpu_common, path("gpu_%s.dat" % weight)])
+                _, s_cpu = read_table(path("cpu_%s.dat" % weight))
+                _, s_gpu = read_table(path("gpu_%s.dat" % weight))
+                compare(s_cpu, s_gpu, "GPU vs CPU (%s weights)" % weight)
+
+            # Reciprocal grid output must agree as well.
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+                 "--grid", path("cpu_grid.dat"), *gpu_common, path("cpu_grid_sq.dat")])
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+                 "--device", "gpu", "--grid", path("gpu_grid.dat"), *gpu_common,
+                 path("gpu_grid_sq.dat")])
+            cpu_grid = np.loadtxt(path("cpu_grid.dat"))
+            gpu_grid = np.loadtxt(path("gpu_grid.dat"))
+            if cpu_grid.shape != gpu_grid.shape:
+                raise SystemExit("FAIL gpu grid shape %s vs %s" % (gpu_grid.shape, cpu_grid.shape))
+            worst = np.max(np.abs(gpu_grid[:, 3] - cpu_grid[:, 3])
+                           / np.maximum(np.abs(cpu_grid[:, 3]), 1.0))
+            if worst > 1.0e-6:
+                raise SystemExit("FAIL gpu grid vs cpu grid: %.3e" % worst)
+            print("  ok   %-42s max deviation %.2e"
+                  % ("GPU vs CPU (reciprocal grid)", worst))
 
     print("all sqcalc tests passed")
 

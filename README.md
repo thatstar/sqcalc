@@ -49,6 +49,8 @@ sqcalc -i DUMP [options] OUTPUT
 | `--qmin`, `--qmax`, `--nq` | q range and number of shells (defaults 0, 20 1/A, 500) |
 | `--grid FILE` | also write S(q) on every reciprocal lattice point |
 | `--method NAME` | `nufft` (default) or `direct` (O(N * Nmodes) reference) |
+| `--device NAME` | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`) |
+| `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
 | `--norm NAME` | `mean` (default), `self` or `n` |
 | `--eps VALUE` | FINUFFT tolerance (default 1e-9) |
 | `-q, --quiet` | suppress progress output on stderr |
@@ -66,7 +68,45 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
 # X-ray weighting (q dependent form factors) and a cross check with the
 # brute force implementation
 sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
+
+# same calculation on the GPU (cufinufft / cuFFT)
+sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
 ```
+
+## GPU execution (cuFFT)
+
+Configure with the CUDA backend to get `--device gpu`, which runs the type-1
+transforms with cufinufft (cuFFT) while the cheap combine/binning stays on the
+host:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSQC_ENABLE_CUDA=ON
+cmake --build build -j
+ctest --test-dir build -R sqcalc_gpu --output-on-failure
+```
+
+Notes
+
+* The CUDA toolkit is required; the compute capability is taken from
+  `nvidia-smi`, or pass `-DSQC_CUDA_ARCHITECTURES=<cc>` (for example `75`) when
+  configuring on a machine without a visible GPU.
+* FINUFFT's CUDA build downloads CCCL from GitHub once (even for CUDA 12, where
+  the toolkit ships its own copy).  It is cached in `.cpm-cache/`, so later
+  reconfigures work offline.  Point `-DCPM_CCCL_SOURCE=<dir>` at a local CCCL to
+  avoid that download entirely.
+* cufinufft is linked as a shared library, so the CPU `libfinufft` is built
+  shared as well in a CUDA build.
+* Accuracy is the same as on the CPU (`--eps` controls the tolerance).
+  Measured on an RTX 2060 (10 000 atoms, 10 frames, 193^3 grid, 4 threads):
+  CPU 17.3 s, GPU 5.5 s.  The GPU wins for large grids (roughly qmax * L > 300,
+  i.e. from a 97^3 grid upwards here); for small grids the fixed plan cost and
+  per-frame overhead make the CPU faster (49^3 grid: CPU 0.6 s, GPU 2.1 s).
+* The `--method direct` reference path is CPU only, and `--grid` accumulation is
+  done on the host after downloading the transform.
+* Consumer GPUs run double precision at a much lower rate (the RTX 2060 at
+  1/32 of fp32), so the GPU win is limited by the FP64 FFT and spreading; a
+  single precision GPU transform would be substantially faster and is accurate
+  enough for S(q) - a possible follow-up.
 
 ## Output
 
@@ -154,3 +194,6 @@ More about the debyer program: <https://github.com/wojdyr/debyer>.
   an ideal gas (`S -> 1`), a simple cubic lattice (Bragg peaks, elsewhere zero),
   the reciprocal grid output and a triclinic box with `xu yu zu` columns,
   plus command line error handling.
+* `sqcalc_gpu` (CUDA builds only): compares the GPU backend against the CPU for
+  unit, neutron and X-ray weights and for the reciprocal grid output; it skips
+  itself when no CUDA device is visible.

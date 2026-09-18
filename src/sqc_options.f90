@@ -7,7 +7,11 @@ module sqc_options
    implicit none
    private
 
-   public :: options_t, parse_options, print_usage, program_version
+   public :: options_t, parse_options, print_usage, program_version, device_cpu, device_gpu
+
+   !> Where the NUFFT transforms run.
+   integer, parameter :: device_cpu = 0
+   integer, parameter :: device_gpu = 1
 
    character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
 
@@ -19,6 +23,8 @@ module sqc_options
       integer :: threads = 0
       integer :: method = method_nufft
       integer :: norm = norm_mean
+      integer :: device = device_cpu
+      integer :: gpu_id = 0
       integer :: nq = 500
       real(rk) :: qmin = 0.0_rk
       real(rk) :: qmax = 20.0_rk
@@ -79,7 +85,8 @@ contains
                self%quiet = .true.
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
-                  '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid')
+                  '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
+                  '--device', '--gpu-id')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -156,6 +163,24 @@ contains
                      message = 'unknown method "'//trim(value)//'" (use nufft or direct)'
                      return
                   end select
+               case ('--device')
+                  select case (trim(value))
+                  case ('cpu')
+                     self%device = device_cpu
+                  case ('gpu', 'cuda')
+                     self%device = device_gpu
+                  case default
+                     ierr = 1
+                     message = 'unknown device "'//trim(value)//'" (use cpu or gpu)'
+                     return
+                  end select
+               case ('--gpu-id')
+                  read (value, *, iostat=ierr) self%gpu_id
+                  if (ierr /= 0 .or. self%gpu_id < 0) then
+                     ierr = 1
+                     message = 'GPU id must be a non-negative integer'
+                     return
+                  end if
                case ('--norm')
                   select case (trim(value))
                   case ('mean', 'fz')
@@ -213,6 +238,11 @@ contains
          message = 'weighted schemes need an element mapping, e.g. -m 1:Si,2:O'
          return
       end if
+      if (self%device == device_gpu .and. self%method == method_direct) then
+         ierr = 1
+         message = 'the direct method runs on the CPU; use --device cpu or --method nufft'
+         return
+      end if
       if (.not. self%want_grid) self%grid_output = ''
    end subroutine parse_options
 
@@ -236,6 +266,8 @@ contains
       write (unit, '(a)') '      --nq N          number of q shells (default 500)'
       write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
+      write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
+      write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
       write (unit, '(a)') '      --norm NAME     mean (default), self or n'
       write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'
       write (unit, '(a)') '  -q, --quiet         do not write progress information to stderr'

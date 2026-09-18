@@ -9,7 +9,9 @@ project(
 
 option(SQC_BUILD_TESTS "Build the sqcalc tests" ON)
 option(SQC_USE_SYSTEM_FINUFFT "Use an installed FINUFFT instead of external/finufft" OFF)
+option(SQC_ENABLE_CUDA "Build the cuFFT based GPU backend (cufinufft)" OFF)
 set(SQC_FINUFFT_ROOT "" CACHE PATH "Prefix of an installed FINUFFT (SQC_USE_SYSTEM_FINUFFT=ON)")
+set(SQC_CUDA_ARCHITECTURES "" CACHE STRING "CUDA compute capability to build for (default: detected)")
 
 # FINUFFT's own build system obtains its helper packages (CPM.cmake, findFFTW,
 # xsimd, poet) with CPM.  Keep that download cache next to the sources instead
@@ -65,9 +67,16 @@ else()
     )
   endif()
   set(FINUFFT_USE_CPU ON CACHE BOOL "" FORCE)
-  set(FINUFFT_USE_CUDA OFF CACHE BOOL "" FORCE)
+  set(FINUFFT_USE_CUDA ${SQC_ENABLE_CUDA} CACHE BOOL "" FORCE)
   set(FINUFFT_USE_OPENMP ON CACHE BOOL "" FORCE)
-  set(FINUFFT_STATIC_LINKING ON CACHE BOOL "" FORCE)
+  if(SQC_ENABLE_CUDA)
+    # cufinufft is linked as a shared library: its device code is then linked
+    # inside libcufinufft and a plain Fortran link against it is enough.
+    set(FINUFFT_STATIC_LINKING OFF CACHE BOOL "" FORCE)
+    set(FINUFFT_SHARED_LINKING ON CACHE BOOL "" FORCE)
+  else()
+    set(FINUFFT_STATIC_LINKING ON CACHE BOOL "" FORCE)
+  endif()
   set(FINUFFT_BUILD_FORTRAN OFF CACHE BOOL "" FORCE)
   set(FINUFFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(FINUFFT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -78,6 +87,33 @@ else()
   set(FINUFFT_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   add_subdirectory(external/finufft)
   set(_sqc_finufft_target finufft)
+endif()
+
+if(SQC_ENABLE_CUDA)
+  # FINUFFT defaults to "native", which needs a visible GPU while configuring;
+  # fall back to an explicit compute capability so that CPU-only build hosts
+  # (or containers without device access) can still cross compile.
+  if(NOT CMAKE_CUDA_ARCHITECTURES)
+    if(SQC_CUDA_ARCHITECTURES)
+      set(CMAKE_CUDA_ARCHITECTURES "${SQC_CUDA_ARCHITECTURES}" CACHE STRING "CUDA SMs" FORCE)
+    else()
+      find_program(_sqc_nvidia_smi nvidia-smi)
+      if(_sqc_nvidia_smi)
+        execute_process(
+          COMMAND ${_sqc_nvidia_smi} --query-gpu=compute_cap --format=csv,noheader
+          OUTPUT_VARIABLE _sqc_compute_caps OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
+        )
+      endif()
+      if(_sqc_compute_caps MATCHES "^[0-9]+\\.[0-9]+")
+        string(REPLACE "." "" _sqc_arch "${_sqc_compute_caps}")
+        set(CMAKE_CUDA_ARCHITECTURES "${_sqc_arch}" CACHE STRING "CUDA SMs" FORCE)
+      else()
+        message(FATAL_ERROR "Cannot detect a CUDA GPU; pass -DSQC_CUDA_ARCHITECTURES=<cc>, e.g. 75.")
+      endif()
+    endif()
+  endif()
+  find_package(CUDAToolkit REQUIRED)
+  message(STATUS "sqcalc: CUDA backend enabled (arch ${CMAKE_CUDA_ARCHITECTURES})")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -96,6 +132,11 @@ add_library(
   src/sqc_structure.f90
   src/sqc_options.f90
 )
+if(SQC_ENABLE_CUDA)
+  target_sources(sqcalc_lib PRIVATE src/sqc_cufinufft.f90 src/sqc_gpu.f90)
+  target_link_libraries(sqcalc_lib PUBLIC cufinufft CUDA::cudart)
+  target_compile_definitions(sqcalc_lib PUBLIC SQC_ENABLE_CUDA)
+endif()
 target_link_libraries(sqcalc_lib PUBLIC OpenMP::OpenMP_Fortran ${_sqc_finufft_target})
 target_include_directories(sqcalc_lib PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/mod")
 set_target_properties(sqcalc_lib PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mod")
@@ -104,12 +145,14 @@ target_compile_options(
   sqcalc_lib
   # -Wno-unused-dummy-argument: the deferred type bound procedures share one
   # signature, so a method may legitimately ignore e.g. the weight scheme.
-  PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wextra;-Wno-unused-dummy-argument>
+  # -cpp: the driver selects the GPU backend at compile time.
+  PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wextra;-Wno-unused-dummy-argument;-cpp>
           $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Debug>>:-fcheck=all;-fbacktrace;-ffpe-trap=invalid,zero,overflow>
 )
 
 add_executable(sqcalc app/main.f90)
 target_link_libraries(sqcalc PRIVATE sqcalc_lib)
+target_compile_options(sqcalc PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-cpp>)
 
 include(GNUInstallDirs)
 install(TARGETS sqcalc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -30,7 +30,8 @@ module sqc_structure
    private
 
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
-             method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit
+             method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit, &
+             sf_prepare_species
 
    !> Sentinel for "do not write this table".  A plain negative test would be
    !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
@@ -380,46 +381,13 @@ contains
       character(len=*), intent(out) :: message
       integer(c_int64_t) :: n_modes(3)
       integer(c_int) :: ier
-      integer :: i, t, isp, nspecies
-      logical, allocatable :: present(:)
 
       ierr = 0
       message = ''
 
-      ! Species actually present in the trajectory.
-      allocate (present(max(self%ntypes, 1)))
-      present = .false.
-      do i = 1, frame%natoms
-         present(int(frame%type_id(i))) = .true.
-      end do
-      nspecies = count(present)
-      allocate (self%species_type(nspecies))
-      isp = 0
-      do t = 1, size(present)
-         if (.not. present(t)) cycle
-         isp = isp + 1
-         self%species_type(isp) = t
-      end do
-      allocate (self%species_of(frame%natoms))
-      do i = 1, frame%natoms
-         self%species_of(i) = findloc(self%species_type, frame%type_id(i), dim=1)
-      end do
-
-      ! Amplitudes: constant per species unless the weights depend on q.
-      self%q_dependent = scheme%kind == weight_xray
-      if (self%q_dependent) then
-         allocate (self%amp_table(self%nmodes, nspecies))
-         do isp = 1, nspecies
-            do i = 1, int(self%nmodes)
-               self%amp_table(i, isp) = scheme%amplitude(self%species_type(isp), self%qlen(i))
-            end do
-         end do
-      else
-         allocate (self%amp_const(nspecies))
-         do isp = 1, nspecies
-            self%amp_const(isp) = scheme%amplitude(self%species_type(isp), 0.0_rk)
-         end do
-      end if
+      call sf_prepare_species(self, frame, scheme, self%species_of, self%species_type, &
+                              self%amp_const, self%amp_table, self%q_dependent, ierr, message)
+      if (ierr /= 0) return
 
       ! Allocate work arrays and build the FINUFFT plan.
       allocate (self%xa(frame%natoms), self%ya(frame%natoms), self%za(frame%natoms))
@@ -443,6 +411,64 @@ contains
          return
       end if
    end subroutine nufft_setup
+
+   !> Species present in the frame plus the amplitude of each species at every
+   !! kept reciprocal lattice mode.  Shared by the CPU and GPU NUFFT methods.
+   subroutine sf_prepare_species(self, frame, scheme, species_of, species_type, &
+                                 amp_const, amp_table, q_dependent, ierr, message)
+      class(structure_factor_t), intent(in) :: self
+      type(frame_t), intent(in) :: frame
+      type(weight_scheme_t), intent(in) :: scheme
+      integer(ik), allocatable, intent(out) :: species_of(:)
+      integer(ik), allocatable, intent(out) :: species_type(:)
+      real(rk), allocatable, intent(out) :: amp_const(:)
+      real(rk), allocatable, intent(out) :: amp_table(:, :)
+      logical, intent(out) :: q_dependent
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      logical, allocatable :: present(:)
+      integer :: i, t, isp, nspecies
+
+      ierr = 0
+      message = ''
+
+      ! Species actually present in the trajectory.
+      allocate (present(max(self%ntypes, 1)))
+      present = .false.
+      do i = 1, frame%natoms
+         present(int(frame%type_id(i))) = .true.
+      end do
+      nspecies = count(present)
+      allocate (species_type(nspecies))
+      isp = 0
+      do t = 1, size(present)
+         if (.not. present(t)) cycle
+         isp = isp + 1
+         species_type(isp) = t
+      end do
+      allocate (species_of(frame%natoms))
+      do i = 1, frame%natoms
+         species_of(i) = findloc(species_type, frame%type_id(i), dim=1)
+      end do
+
+      ! Amplitudes: constant per species unless the weights depend on q.
+      q_dependent = scheme%kind == weight_xray
+      if (q_dependent) then
+         allocate (amp_table(self%nmodes, nspecies))
+         do isp = 1, nspecies
+            do i = 1, int(self%nmodes)
+               amp_table(i, isp) = scheme%amplitude(species_type(isp), self%qlen(i))
+            end do
+         end do
+         allocate (amp_const(0))
+      else
+         allocate (amp_const(nspecies))
+         do isp = 1, nspecies
+            amp_const(isp) = scheme%amplitude(species_type(isp), 0.0_rk)
+         end do
+         allocate (amp_table(0, 0))
+      end if
+   end subroutine sf_prepare_species
 
    subroutine nufft_accumulate(self, frame, scheme, ierr, message)
       class(nufft_structure_factor_t), intent(inout) :: self
