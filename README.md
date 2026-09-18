@@ -180,6 +180,29 @@ rattled frames cost a single rebuild), while on a series of independent random
 configurations every frame rebuilds the list and the larger candidate list makes
 `--skin 0` about 4x faster.  Use `--skin 0` for uncorrelated frames.
 
+### Cross-check against the debyer program
+
+`test/dump_to_cfg.py` converts dump frames to AtomEye `.cfg` files so the
+external `debyer` binary can be run on exactly the same configurations (one file
+per frame, then averaging its S(q) curves).  debyer is *not* a build or test
+dependency; the script is a manual validation helper.
+
+On an ideal gas (250 atoms, 20 A box, rmax = 6 A, 4 frames, `-c sf` versus
+`--weight unit --norm n`) the two agree in structure but not in detail:
+
+| q [1/A] | 0.6 | 1.6 | 2.6 | 3.6 | 4.6 | 5.6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| debyer | 0.91 | 1.02 | 1.02 | 0.98 | 1.01 | 1.00 |
+| sqcalc | 5.98 | 1.91 | 1.37 | 1.15 | 1.10 | 1.05 |
+
+debyer applies its cut-off density correction (`add_cutoff_correction`)
+automatically whenever a cut-off is given, which removes exactly the finite
+cut-off artifacts visible here (the low-q rise and the residual few-percent bias
+at high q); sqcalc does not implement it yet.  The pair counting itself is
+validated independently: `test/debye_ref.py` reproduces sqcalc's S(q) and g(r)
+exactly, and both programs reach the correct high-q plateau (1.00).  Porting
+that correction is the remaining item of plan M4.
+
 ## Output
 
 The first table is the isotropic average over q shells:
