@@ -220,6 +220,14 @@ def main():
                 _, s_gpu = read_table(path("gpu_%s.dat" % weight))
                 compare(s_cpu, s_gpu, "GPU vs CPU (%s weights)" % weight)
 
+            # Single precision GPU transform against the double precision CPU one.
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+                 "--device", "gpu", "--precision", "single", *gpu_common,
+                 path("gpu_single.dat")])
+            _, s_cpu_unit = read_table(path("cpu_unit.dat"))
+            _, s_gpu_single = read_table(path("gpu_single.dat"))
+            compare(s_cpu_unit, s_gpu_single, "GPU float32 vs CPU float64", rtol=1.0e-4)
+
             # Reciprocal grid output must agree as well.
             run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
                  "--grid", path("cpu_grid.dat"), *gpu_common, path("cpu_grid_sq.dat")])

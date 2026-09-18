@@ -17,8 +17,11 @@ module sqc_cufinufft
              cufinufft_opts_is_consistent, cufinufft_error_message, &
              cuda_success, cuda_malloc, cuda_free, cuda_upload_real, &
              cuda_download_real, cuda_upload_complex, cuda_download_complex, &
+             cuda_upload_real32, cuda_upload_complex32, cuda_download_complex32, &
              cuda_device_count, cuda_error_message, bytes_per_double, &
-             bytes_per_complex
+             bytes_per_complex, bytes_per_real32, bytes_per_complex32, &
+             cufinufftf_default_opts, cufinufftf_makeplan, cufinufftf_setpts, &
+             cufinufftf_execute, cufinufftf_destroy
 
    !> CUDA runtime return code for success.
    integer(c_int), parameter :: cuda_success = 0
@@ -28,6 +31,8 @@ module sqc_cufinufft
    !> Storage sizes of the interoperable types used here.
    integer(c_size_t), parameter :: bytes_per_double = 8_c_size_t
    integer(c_size_t), parameter :: bytes_per_complex = 16_c_size_t
+   integer(c_size_t), parameter :: bytes_per_real32 = 4_c_size_t
+   integer(c_size_t), parameter :: bytes_per_complex32 = 8_c_size_t
 
    !> C-compatible mirror of cufinufft_opts (FINUFFT v2.5.x, double precision).
    type, bind(c) :: cufinufft_opts_t
@@ -89,6 +94,45 @@ module sqc_cufinufft
          type(c_ptr), value :: plan
          integer(c_int) :: ier
       end function cufinufft_destroy
+
+      ! --- single precision (float32) flavour, same API shape --------------
+      subroutine cufinufftf_default_opts(opts) bind(c, name='cufinufftf_default_opts')
+         import :: cufinufft_opts_t
+         type(cufinufft_opts_t), intent(out) :: opts
+      end subroutine cufinufftf_default_opts
+
+      function cufinufftf_makeplan(itype, ndim, n_modes, iflag, ntrans, eps, plan, opts) &
+         bind(c, name='cufinufftf_makeplan') result(ier)
+         import :: c_int, c_int64_t, c_float, c_ptr, cufinufft_opts_t
+         integer(c_int), value :: itype, ndim, iflag, ntrans
+         integer(c_int64_t), intent(in) :: n_modes(*)
+         real(c_float), value :: eps
+         type(c_ptr), intent(out) :: plan
+         type(cufinufft_opts_t), intent(inout) :: opts
+         integer(c_int) :: ier
+      end function cufinufftf_makeplan
+
+      function cufinufftf_setpts(plan, m, dx, dy, dz, n, ds, dt, du) &
+         bind(c, name='cufinufftf_setpts') result(ier)
+         import :: c_int, c_int64_t, c_ptr
+         type(c_ptr), value :: plan, dx, dy, dz, ds, dt, du
+         integer(c_int64_t), value :: m
+         integer(c_int), value :: n
+         integer(c_int) :: ier
+      end function cufinufftf_setpts
+
+      function cufinufftf_execute(plan, strengths, modes) bind(c, name='cufinufftf_execute') &
+         result(ier)
+         import :: c_int, c_ptr
+         type(c_ptr), value :: plan, strengths, modes
+         integer(c_int) :: ier
+      end function cufinufftf_execute
+
+      function cufinufftf_destroy(plan) bind(c, name='cufinufftf_destroy') result(ier)
+         import :: c_int, c_ptr
+         type(c_ptr), value :: plan
+         integer(c_int) :: ier
+      end function cufinufftf_destroy
 
       ! --- CUDA runtime -----------------------------------------------------
       function cuda_malloc(devptr, nbytes) bind(c, name='cudaMalloc') result(istat)
@@ -162,6 +206,33 @@ contains
       istat = cuda_memcpy(c_loc(host(1)), devptr, int(size(host), c_size_t)*bytes_per_complex, &
                           cuda_memcpy_device_to_host)
    end function cuda_download_complex
+
+   !> Copy a host float32 array to the device.
+   integer(c_int) function cuda_upload_real32(devptr, host) result(istat)
+      type(c_ptr), value :: devptr
+      real(c_float), target, contiguous, intent(in) :: host(:)
+
+      istat = cuda_memcpy(devptr, c_loc(host(1)), int(size(host), c_size_t)*bytes_per_real32, &
+                          cuda_memcpy_host_to_device)
+   end function cuda_upload_real32
+
+   !> Copy a host float32 complex array to the device.
+   integer(c_int) function cuda_upload_complex32(devptr, host) result(istat)
+      type(c_ptr), value :: devptr
+      complex(c_float_complex), target, contiguous, intent(in) :: host(:)
+
+      istat = cuda_memcpy(devptr, c_loc(host(1)), int(size(host), c_size_t)*bytes_per_complex32, &
+                          cuda_memcpy_host_to_device)
+   end function cuda_upload_complex32
+
+   !> Copy device data into a host float32 complex array.
+   integer(c_int) function cuda_download_complex32(devptr, host) result(istat)
+      type(c_ptr), value :: devptr
+      complex(c_float_complex), target, contiguous, intent(out) :: host(:)
+
+      istat = cuda_memcpy(c_loc(host(1)), devptr, int(size(host), c_size_t)*bytes_per_complex32, &
+                          cuda_memcpy_device_to_host)
+   end function cuda_download_complex32
 
    !> Human readable CUDA error text.
    function cuda_error_message(code) result(message)

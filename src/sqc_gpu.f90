@@ -26,6 +26,9 @@ module sqc_gpu
    !! instance that sqcalc creates.
    real(rk), allocatable, target :: host_x(:), host_y(:), host_z(:)
    complex(c_double_complex), allocatable, target :: host_c(:), host_fk(:)
+   !> float32 staging buffers, used when the transform runs in single precision.
+   real(c_float), allocatable, target :: host_x32(:), host_y32(:), host_z32(:)
+   complex(c_float_complex), allocatable, target :: host_c32(:), host_fk32(:)
    !> |rho(q)|^2 of the kept modes for the current frame (parallel scratch).
    real(rk), allocatable :: mode_intensity(:)
 
@@ -37,6 +40,8 @@ module sqc_gpu
       type(cufinufft_opts_t) :: opts
       !> CUDA device to use.
       integer :: device = 0
+      !> Evaluate the transform in single precision (cufinufftf) instead of double.
+      logical :: single_precision = .false.
       !> Number of LAMMPS types present in the trajectory.
       integer :: nspecies = 0
       !> Species index of each atom and LAMMPS type id of each species.
@@ -60,6 +65,18 @@ module sqc_gpu
    end type cufinufft_structure_factor_t
 
 contains
+
+   !> Bytes per coordinate value in device memory (float32 or float64).
+   pure integer(c_size_t) function device_real_bytes(self) result(nbytes)
+      class(cufinufft_structure_factor_t), intent(in) :: self
+      nbytes = merge(bytes_per_real32, bytes_per_double, self%single_precision)
+   end function device_real_bytes
+
+   !> Bytes per transform value in device memory (complex float32 or float64).
+   pure integer(c_size_t) function device_complex_bytes(self) result(nbytes)
+      class(cufinufft_structure_factor_t), intent(in) :: self
+      nbytes = merge(bytes_per_complex32, bytes_per_complex, self%single_precision)
+   end function device_complex_bytes
 
    !> Allocate host and device buffers and create the cufinufft plan.
    subroutine gpu_setup(self, frame, scheme, ierr, message)
@@ -107,19 +124,29 @@ contains
       host_z = 0.0_rk
       host_c = (0.0_rk, 0.0_rk)
       host_fk = (0.0_rk, 0.0_rk)
+      if (self%single_precision) then
+         allocate (host_x32(frame%natoms), host_y32(frame%natoms), host_z32(frame%natoms))
+         allocate (host_c32(int(self%nspecies, lk)*int(frame%natoms, lk)))
+         allocate (host_fk32(int(self%nspecies, lk)*self%gridpoints))
+         host_x32 = 0.0_c_float
+         host_y32 = 0.0_c_float
+         host_z32 = 0.0_c_float
+         host_c32 = (0.0_c_float, 0.0_c_float)
+         host_fk32 = (0.0_c_float, 0.0_c_float)
+      end if
 
       ! Device buffers.
-      istat = cuda_malloc(self%d_x, int(frame%natoms, c_size_t)*bytes_per_double)
+      istat = cuda_malloc(self%d_x, int(frame%natoms, c_size_t)*device_real_bytes(self))
       if (istat == cuda_success) &
-         istat = cuda_malloc(self%d_y, int(frame%natoms, c_size_t)*bytes_per_double)
+         istat = cuda_malloc(self%d_y, int(frame%natoms, c_size_t)*device_real_bytes(self))
       if (istat == cuda_success) &
-         istat = cuda_malloc(self%d_z, int(frame%natoms, c_size_t)*bytes_per_double)
+         istat = cuda_malloc(self%d_z, int(frame%natoms, c_size_t)*device_real_bytes(self))
       if (istat == cuda_success) &
          istat = cuda_malloc(self%d_c, int(self%nspecies, c_size_t) &
-                             *int(frame%natoms, c_size_t)*bytes_per_complex)
+                             *int(frame%natoms, c_size_t)*device_complex_bytes(self))
       if (istat == cuda_success) &
          istat = cuda_malloc(self%d_fk, int(self%nspecies, c_size_t)*self%gridpoints &
-                             *bytes_per_complex)
+                             *device_complex_bytes(self))
       if (istat /= cuda_success) then
          ierr = 1
          message = 'cannot allocate device memory ('//cuda_error_message(istat)//')'
@@ -130,8 +157,13 @@ contains
       self%opts%modeord = mode_cmcl
       self%opts%gpu_device_id = int(self%device, c_int)
       n_modes = int(self%modes, c_int64_t)
-      ier = cufinufft_makeplan(type1, 3_c_int, n_modes, 1_c_int, int(self%nspecies, c_int), &
-                               real(self%eps, c_double), self%plan, self%opts)
+      if (self%single_precision) then
+         ier = cufinufftf_makeplan(type1, 3_c_int, n_modes, 1_c_int, int(self%nspecies, c_int), &
+                                   real(self%eps, c_float), self%plan, self%opts)
+      else
+         ier = cufinufft_makeplan(type1, 3_c_int, n_modes, 1_c_int, int(self%nspecies, c_int), &
+                                  real(self%eps, c_double), self%plan, self%opts)
+      end if
       if (ier /= 0) then
          ierr = 1
          message = 'cufinufft failed to create a plan: '//cufinufft_error_message(ier)
@@ -164,17 +196,31 @@ contains
          host_y(i) = two_pi*s(2) - pi
          host_z(i) = two_pi*s(3) - pi
       end do
-      istat = cuda_upload_real(self%d_x, host_x)
-      if (istat == cuda_success) istat = cuda_upload_real(self%d_y, host_y)
-      if (istat == cuda_success) istat = cuda_upload_real(self%d_z, host_z)
+      if (self%single_precision) then
+         host_x32 = real(host_x, c_float)
+         host_y32 = real(host_y, c_float)
+         host_z32 = real(host_z, c_float)
+         istat = cuda_upload_real32(self%d_x, host_x32)
+         if (istat == cuda_success) istat = cuda_upload_real32(self%d_y, host_y32)
+         if (istat == cuda_success) istat = cuda_upload_real32(self%d_z, host_z32)
+      else
+         istat = cuda_upload_real(self%d_x, host_x)
+         if (istat == cuda_success) istat = cuda_upload_real(self%d_y, host_y)
+         if (istat == cuda_success) istat = cuda_upload_real(self%d_z, host_z)
+      end if
       if (istat /= cuda_success) then
          ierr = 1
          message = 'cannot upload coordinates ('//cuda_error_message(istat)//')'
          return
       end if
 
-      ier = cufinufft_setpts(self%plan, int(frame%natoms, c_int64_t), self%d_x, self%d_y, &
-                             self%d_z, 0_c_int, c_null_ptr, c_null_ptr, c_null_ptr)
+      if (self%single_precision) then
+         ier = cufinufftf_setpts(self%plan, int(frame%natoms, c_int64_t), self%d_x, self%d_y, &
+                                 self%d_z, 0_c_int, c_null_ptr, c_null_ptr, c_null_ptr)
+      else
+         ier = cufinufft_setpts(self%plan, int(frame%natoms, c_int64_t), self%d_x, self%d_y, &
+                                self%d_z, 0_c_int, c_null_ptr, c_null_ptr, c_null_ptr)
+      end if
       if (ier /= 0) then
          ierr = 1
          message = 'cufinufft setpts failed: '//cufinufft_error_message(ier)
@@ -189,20 +235,42 @@ contains
             if (self%species_of(i) == isp) host_c(base + i) = (1.0_rk, 0.0_rk)
          end do
       end do
-      istat = cuda_upload_complex(self%d_c, host_c)
+      if (self%single_precision) then
+         host_c32 = cmplx(host_c, kind=c_float_complex)
+         istat = cuda_upload_complex32(self%d_c, host_c32)
+      else
+         istat = cuda_upload_complex(self%d_c, host_c)
+      end if
       if (istat /= cuda_success) then
          ierr = 1
          message = 'cannot upload strengths ('//cuda_error_message(istat)//')'
          return
       end if
 
-      ier = cufinufft_execute(self%plan, self%d_c, self%d_fk)
+      if (self%single_precision) then
+         ier = cufinufftf_execute(self%plan, self%d_c, self%d_fk)
+      else
+         ier = cufinufft_execute(self%plan, self%d_c, self%d_fk)
+      end if
       if (ier /= 0) then
          ierr = 1
          message = 'cufinufft execute failed: '//cufinufft_error_message(ier)
          return
       end if
-      istat = cuda_download_complex(self%d_fk, host_fk)
+      if (self%single_precision) then
+         istat = cuda_download_complex32(self%d_fk, host_fk32)
+         if (istat == cuda_success) then
+            ! Widen for the (double precision) combine and accumulation.
+            !$omp parallel do schedule(static)
+            do i = 1, int(size(host_fk, kind=lk))
+               host_fk(i) = cmplx(real(host_fk32(i)), aimag(host_fk32(i)), &
+                                  kind=c_double_complex)
+            end do
+            !$omp end parallel do
+         end if
+      else
+         istat = cuda_download_complex(self%d_fk, host_fk)
+      end if
       if (istat /= cuda_success) then
          ierr = 1
          message = 'cannot download the transform ('//cuda_error_message(istat)//')'
@@ -271,6 +339,11 @@ contains
       if (allocated(host_z)) deallocate (host_z)
       if (allocated(host_c)) deallocate (host_c)
       if (allocated(host_fk)) deallocate (host_fk)
+      if (allocated(host_x32)) deallocate (host_x32)
+      if (allocated(host_y32)) deallocate (host_y32)
+      if (allocated(host_z32)) deallocate (host_z32)
+      if (allocated(host_c32)) deallocate (host_c32)
+      if (allocated(host_fk32)) deallocate (host_fk32)
       if (allocated(mode_intensity)) deallocate (mode_intensity)
    end subroutine gpu_finalize
 

@@ -22,7 +22,7 @@ program sqcalc
    character(len=512) :: message
    integer :: ierr, shell_unit, grid_unit, tick, tick_rate, progress_step
    integer(ik) :: natoms
-   real(rk) :: ref_a(3, 3), elapsed, wall0, wall1
+   real(rk) :: ref_a(3, 3), elapsed, wall0, wall1, eps_used
    logical :: first_frame
 
    call parse_options(opts, ierr, message)
@@ -84,6 +84,7 @@ program sqcalc
          select type (method)
          type is (cufinufft_structure_factor_t)
             method%device = opts%gpu_id
+            method%single_precision = opts%precision == precision_single
          end select
 #else
          write (error_unit, '(a)') 'sqcalc: this build has no GPU support; '// &
@@ -98,7 +99,14 @@ program sqcalc
    method%nq = opts%nq
    method%qmin = opts%qmin
    method%qmax = opts%qmax
-   method%eps = opts%eps
+   eps_used = opts%eps
+   if (opts%device == device_gpu .and. opts%precision == precision_single .and. &
+       .not. opts%eps_given) then
+      ! float32 cannot reach the double precision default; 1e-5 is a good and
+      ! fast choice for S(q) (cufinufft itself would clamp anything smaller).
+      eps_used = 1.0e-5_rk
+   end if
+   method%eps = eps_used
    method%nthreads = opts%threads
    method%want_grid = opts%want_grid
 
@@ -243,6 +251,13 @@ contains
       end if
       write (error_unit, '(a,i0)') '  threads    : ', opt%threads
       if (opt%device == device_gpu) write (error_unit, '(a,i0)') '  gpu device : ', opt%gpu_id
+      if (opt%device == device_gpu) then
+         if (opt%precision == precision_single) then
+            write (error_unit, '(a)') '  precision  : single (float32, cufinufftf)'
+         else
+            write (error_unit, '(a)') '  precision  : double (float64, cufinufft)'
+         end if
+      end if
    end subroutine report_setup
 
    subroutine report_grid(m)
@@ -281,7 +296,11 @@ contains
          text = 'direct summation'
       case default
          if (opt%device == device_gpu) then
-            text = 'NUFFT on GPU (cufinufft/cuFFT)'
+            if (opt%precision == precision_single) then
+               text = 'NUFFT on GPU, float32 (cufinufftf/cuFFT)'
+            else
+               text = 'NUFFT on GPU, float64 (cufinufft/cuFFT)'
+            end if
          else
             text = 'NUFFT on CPU (FINUFFT)'
          end if

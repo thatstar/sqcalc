@@ -7,11 +7,16 @@ module sqc_options
    implicit none
    private
 
-   public :: options_t, parse_options, print_usage, program_version, device_cpu, device_gpu
+   public :: options_t, parse_options, print_usage, program_version, device_cpu, device_gpu, &
+             precision_double, precision_single
 
    !> Where the NUFFT transforms run.
    integer, parameter :: device_cpu = 0
    integer, parameter :: device_gpu = 1
+
+   !> Precision of the GPU transform.
+   integer, parameter :: precision_double = 0
+   integer, parameter :: precision_single = 1
 
    character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
 
@@ -25,6 +30,9 @@ module sqc_options
       integer :: norm = norm_mean
       integer :: device = device_cpu
       integer :: gpu_id = 0
+      integer :: precision = precision_double
+      !> True when the user gave --eps explicitly.
+      logical :: eps_given = .false.
       integer :: nq = 500
       real(rk) :: qmin = 0.0_rk
       real(rk) :: qmax = 20.0_rk
@@ -86,7 +94,7 @@ contains
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
-                  '--device', '--gpu-id')
+                  '--device', '--gpu-id', '--precision')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -152,6 +160,18 @@ contains
                      message = '--eps must be a positive number'
                      return
                   end if
+                  self%eps_given = .true.
+               case ('--precision')
+                  select case (trim(value))
+                  case ('double', 'float64', 'f64')
+                     self%precision = precision_double
+                  case ('single', 'float', 'float32', 'f32')
+                     self%precision = precision_single
+                  case default
+                     ierr = 1
+                     message = 'unknown precision "'//trim(value)//'" (use single or double)'
+                     return
+                  end select
                case ('--method')
                   select case (trim(value))
                   case ('nufft', 'finufft')
@@ -243,6 +263,11 @@ contains
          message = 'the direct method runs on the CPU; use --device cpu or --method nufft'
          return
       end if
+      if (self%precision == precision_single .and. self%device == device_cpu) then
+         ierr = 1
+         message = 'single precision is only available on the GPU path (--device gpu)'
+         return
+      end if
       if (.not. self%want_grid) self%grid_output = ''
    end subroutine parse_options
 
@@ -268,6 +293,7 @@ contains
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
       write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
       write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
+      write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'
       write (unit, '(a)') '      --norm NAME     mean (default), self or n'
       write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'
       write (unit, '(a)') '  -q, --quiet         do not write progress information to stderr'

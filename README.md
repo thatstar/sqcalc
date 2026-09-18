@@ -51,6 +51,7 @@ sqcalc -i DUMP [options] OUTPUT
 | `--method NAME` | `nufft` (default) or `direct` (O(N * Nmodes) reference) |
 | `--device NAME` | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`) |
 | `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
+| `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--norm NAME` | `mean` (default), `self` or `n` |
 | `--eps VALUE` | FINUFFT tolerance (default 1e-9) |
 | `-q, --quiet` | suppress progress output on stderr |
@@ -71,6 +72,10 @@ sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
 
 # same calculation on the GPU (cufinufft / cuFFT)
 sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
+
+# float32 GPU transform: about 2.5x faster than float64 on a consumer GPU,
+# accurate to a few 1e-6 in S(q)
+sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --precision single S_q_gpu32.dat
 ```
 
 ## GPU execution (cuFFT)
@@ -107,6 +112,14 @@ Notes
   1/32 of fp32), so the GPU win is limited by the FP64 FFT and spreading; a
   single precision GPU transform would be substantially faster and is accurate
   enough for S(q) - a possible follow-up.
+* `--precision single` selects the float32 GPU transform (cufinufftf).  It only
+  affects the transform: coordinates and strengths are converted down before the
+  upload and the grid is widened back to double for the combine/binning, so the
+  accumulators stay in double.  Because float32 cannot reach the double
+  precision default, `--eps` defaults to `1e-5` in that mode (pass `--eps`
+  explicitly to override).  Measured on the RTX 2060 (10k atoms, 10 frames,
+  193^3 grid): CPU 17.3 s, GPU float64 5.6 s, GPU float32 2.1 s; float32 differs
+  from float64 by ~2e-6 in S(q).
 
 ## Output
 
