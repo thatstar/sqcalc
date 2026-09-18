@@ -142,8 +142,8 @@ histograms over the trajectory - the recipe used by the `debyer` program:
 
 $$
 S(q) = \frac{1}{W(q)} \left[
-  \sum_{ab} f_a(q) f_b(q) \sum_k n_{ab}[k] \frac{\sin(q r_k)}{q r_k}
-  + \sum_a N_a f_a(q)^2 \right]
+  \sum_{ab} f_a(q) f_b(q) \sum_k n_{ab}[k] \frac{\sin(q r_k)}{q r_k} +
+  \sum_a N_a f_a(q)^2 \right]
 $$
 
 with $r_k = (k - \tfrac{1}{2})\,dr$ the bin centers, the second sum the $r = 0$
