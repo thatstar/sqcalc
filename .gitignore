@@ -15,4 +15,5 @@ log.lammps
 *.dump
 build*/*
 .cpm-cache/
+.devdocs/
 __pycache__/
