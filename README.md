@@ -1,0 +1,156 @@
+# sqcalc
+
+`sqcalc` computes the total structure factor S(q) of a LAMMPS trajectory.  It
+reads the default LAMMPS `atoms` dump style, evaluates the scattering amplitude
+on the reciprocal lattice of the dump box with a non-uniform FFT (FINUFFT),
+averages |rho(q)|^2 over all snapshots and writes a `# q S(q)` table.
+
+```
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
+```
+
+## Building
+
+Requirements
+
+* a Fortran 2008 compiler (gfortran >= 10), CMake >= 3.20 and OpenMP
+* an FFTW3 installation (library and headers); CMake looks in `FFTW_ROOT`,
+  `$CONDA_PREFIX`, any `~/.pixi/envs/*` and the usual system prefixes
+* FINUFFT, which is vendored in `external/finufft` (git subtree, v2.5.1) and
+  built together with sqcalc, so nothing has to be downloaded by hand
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build          # optional, runs the physics test suite
+```
+
+If FFTW lives in a non standard prefix pass `-DFFTW_ROOT=/path/to/fftw`.  The
+first configure of the vendored FINUFFT fetches `CPM.cmake`, `findFFTW` and
+`xsimd` (network access needed once, cached in the build directory afterwards);
+set `-DCPM_SOURCE_CACHE=/path` to keep that cache outside the build tree.  With
+`-DSQC_USE_SYSTEM_FINUFFT=ON -DSQC_FINUFFT_ROOT=/path` an installed FINUFFT can
+be used instead.
+
+## Usage
+
+```
+sqcalc -i DUMP [options] OUTPUT
+```
+
+`OUTPUT` is the shell averaged S(q) table; use `-` to write it to stdout.
+
+| option | meaning |
+| --- | --- |
+| `-i, --input FILE` | LAMMPS dump trajectory (required) |
+| `-m, --mapping LIST` | LAMMPS type id to element symbol, e.g. `1:Si,2:O` |
+| `-w, --weight SCHEME` | `unit` (default), `neutron` or `xray` |
+| `-t, --threads N` | OpenMP threads (default: all available) |
+| `--qmin`, `--qmax`, `--nq` | q range and number of shells (defaults 0, 20 1/A, 500) |
+| `--grid FILE` | also write S(q) on every reciprocal lattice point |
+| `--method NAME` | `nufft` (default) or `direct` (O(N * Nmodes) reference) |
+| `--norm NAME` | `mean` (default), `self` or `n` |
+| `--eps VALUE` | FINUFFT tolerance (default 1e-9) |
+| `-q, --quiet` | suppress progress output on stderr |
+
+Examples
+
+```sh
+# unit weights, stdout, 4 threads
+sqcalc -i traj.dump -t 4 - > S_q.dat
+
+# neutron weighting of a two component glass, plus the reciprocal grid table
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
+       --grid S_q_grid.dat S_q.dat
+
+# X-ray weighting (q dependent form factors) and a cross check with the
+# brute force implementation
+sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
+```
+
+## Output
+
+The first table is the isotropic average over q shells:
+
+```
+# q S(q)
+      0.100000    1.234567890123E+00
+      ...
+```
+
+`--grid FILE` writes every reciprocal lattice vector of the requested range,
+averaged over the trajectory:
+
+```
+# qx qy qz S(q)
+```
+
+Both tables exclude the trivial q = 0 mode.
+
+## Conventions
+
+For every frame the scattering amplitude is evaluated on the reciprocal lattice
+of the dump box, q = h b1 + k b2 + l b3 with a_i . b_j = 2 pi delta_ij
+(orthogonal and restricted triclinic boxes are supported):
+
+```
+rho(q) = sum_j w_j exp(i q . r_j)
+```
+
+with the per-atom weight `w_j`
+
+* `unit`   : w = 1 for every atom,
+* `neutron`: w = b(element), the bound coherent neutron scattering length,
+* `xray`   : w = f(element, q) = sum_i a_i exp(-b_i (q/4pi)^2) + c (IT92).
+
+S(q) is the trajectory average
+
+```
+S(q) = < |rho(q)|^2 > / W(q)
+```
+
+where the normalization is
+
+| `--norm` | W(q) |
+| --- | --- |
+| `mean` (default) | N <w>^2, the Faber-Ziman total S(q) |
+| `self` | sum_j w_j^2, so that S(q) -> 1 at large q |
+| `n` | N (the convention used by the debyer program) |
+
+The weights are looked up from a table of 104 elements covering the periodic
+table.  Without `-m` no element is known, so every atom has weight 1.0; a
+weighted scheme therefore requires a type id mapping.
+
+Element data (masses, IT92 X-ray coefficients, NN92 neutron scattering lengths)
+was converted from the debyer program (`debyer/debyer/atomtables.c`, GPL-2 for
+the code, data taken from the International Tables for Crystallography Vol. C
+(1992) table 6.1.1.4 and from Neutron News 3 (1992) 29-37).  Only the tabulated
+numbers are reused here, via `tools/gen_element_data.py`.
+
+More about the debyer program: <https://github.com/wojdyr/debyer>.
+
+## Assumptions and limits
+
+* The simulation box must not change along the trajectory (the reciprocal grid
+  is built once from the first frame); the program stops with an error if it
+  does.
+* Atom coordinates are taken as dumped.  A wrapped coordinate set (`x y z`,
+  the LAMMPS default) is what the reciprocal grid method expects; `xu yu zu`
+  columns are accepted and wrapped internally.
+* Atoms with a type that has no entry in `-m`, or an element without tabulated
+  X-ray/neutron data, are rejected with a clear message.
+* The grid cost grows like (qmax * L)^3; the program refuses grids larger than
+  4e8 points (about 6 GB) and asks for a smaller `--qmax`.
+* `--grid` is written single threaded; the shell table is not affected.
+
+## Tests
+
+`ctest` runs
+
+* `finufft_opts`: verifies at run time that the Fortran mirror of
+  `finufft_opts` matches the linked FINUFFT library,
+* `sqcalc_physics`: NUFFT versus direct summation versus an independent numpy
+  implementation (`test/ref_sq.py`) for unit, neutron and X-ray weights,
+  an ideal gas (`S -> 1`), a simple cubic lattice (Bragg peaks, elsewhere zero),
+  the reciprocal grid output and a triclinic box with `xu yu zu` columns,
+  plus command line error handling.

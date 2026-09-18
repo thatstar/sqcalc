@@ -28,6 +28,16 @@ def xray_f(symbol, q):
     return sum(ai * np.exp(-bi * stol2) for ai, bi in zip(a, b)) + c
 
 
+def amplitude_of(type_id, q, mapping, weight):
+    """Scattering amplitude of one LAMMPS type id at momentum transfer q."""
+    symbol = mapping[type_id]
+    if weight == "unit":
+        return np.ones_like(q)
+    if weight == "neutron":
+        return np.full_like(q, NEUTRON_B[symbol])
+    return xray_f(symbol, q)
+
+
 def parse_mapping(spec):
     mapping = {}
     for item in spec.split(","):
@@ -67,7 +77,8 @@ def read_dump(path):
             body = np.array([list(map(float, lines[i + 1 + k].split())) for k in range(natoms)])
             i += 1 + natoms
             types = body[:, columns.index("type")].astype(int)
-            ix = [columns.index(name) for name in ("x", "y", "z")]
+            ix = [columns.index(name) for name in ("x", "y", "z")] if "x" in columns else \
+                 [columns.index(name) for name in ("xu", "yu", "zu")]
             pos = body[:, ix]
             yield types, pos, cell, origin
         else:
@@ -75,11 +86,14 @@ def read_dump(path):
 
 
 def modes_for(cell, qmin, qmax):
-    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    # cell has the lattice vectors in its rows, so r = A s with A = cell.T and
+    # the reciprocal vectors are the columns of 2 pi (A^-1)^T.
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell.T).T
     dims = [
         2 * int(np.ceil(qmax * np.linalg.norm(cell[i]) / (2.0 * np.pi))) + 1 for i in range(3)
     ]
-    ranges = [np.arange(m) - (m + 1) // 2 for m in dims]
+    # Odd grid sizes with CMCL ordering: indices -(m-1)/2 ... (m-1)/2.
+    ranges = [np.arange(m) - (m - 1) // 2 for m in dims]
     grids = np.meshgrid(*ranges, indexing="ij")
     hkl = np.stack([g.ravel() for g in grids], axis=1)
     hkl = hkl[np.any(hkl != 0, axis=1)]
@@ -106,7 +120,6 @@ def main():
     num = np.zeros(args.nq)
     den = np.zeros(args.nq)
     first = True
-    denominator_ready = False
 
     for types, pos, cell, origin in read_dump(args.input):
         if first:
@@ -132,28 +145,19 @@ def main():
         rho = np.sum(amplitudes * np.exp(1j * phases), axis=1)
         num += np.bincount(shell, weights=np.abs(rho) ** 2, minlength=args.nq)
 
-        if not denominator_ready:
-            per_type = {t: np.count_nonzero(types == t) for t in set(types)}
-            if args.norm == "n":
-                dmode = np.full(len(hkl), float(natoms))
-            else:
-                def amplitude(t, q):
-                    symbol = mapping[t]
-                    if args.weight == "unit":
-                        return np.ones_like(q)
-                    if args.weight == "neutron":
-                        return np.full_like(q, NEUTRON_B[symbol])
-                    return xray_f(symbol, q)
-
-                sum_w = np.zeros(len(hkl))
-                sum_w2 = np.zeros(len(hkl))
-                for t, count in per_type.items():
-                    w = amplitude(t, qlen)
-                    sum_w += count * w
-                    sum_w2 += count * w * w
-                dmode = sum_w**2 / natoms if args.norm == "mean" else sum_w2
-            den += np.bincount(shell, weights=dmode, minlength=args.nq)
-            denominator_ready = True
+        # Denominator of S(q): the per-frame normalization, accumulated once
+        # per frame so that num/den is the trajectory average.
+        if args.norm == "n":
+            dmode = np.full(len(hkl), float(natoms))
+        else:
+            sum_w = np.zeros(len(hkl))
+            sum_w2 = np.zeros(len(hkl))
+            for type_id, count in {t: np.count_nonzero(types == t) for t in set(types)}.items():
+                w = amplitude_of(type_id, qlen, mapping, args.weight)
+                sum_w += count * w
+                sum_w2 += count * w * w
+            dmode = sum_w**2 / natoms if args.norm == "mean" else sum_w2
+        den += np.bincount(shell, weights=dmode, minlength=args.nq)
 
     s_of_q = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
     q_centers = args.qmin + (np.arange(args.nq) + 0.5) * dq

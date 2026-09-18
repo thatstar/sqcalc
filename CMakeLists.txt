@@ -11,6 +11,14 @@ option(SQC_BUILD_TESTS "Build the sqcalc tests" ON)
 option(SQC_USE_SYSTEM_FINUFFT "Use an installed FINUFFT instead of external/finufft" OFF)
 set(SQC_FINUFFT_ROOT "" CACHE PATH "Prefix of an installed FINUFFT (SQC_USE_SYSTEM_FINUFFT=ON)")
 
+# FINUFFT's own build system obtains its helper packages (CPM.cmake, findFFTW,
+# xsimd, poet) with CPM.  Keep that download cache next to the sources instead
+# of inside the build tree, so that reconfiguring, or building a second build
+# directory, does not need network access again.
+if(NOT DEFINED CPM_SOURCE_CACHE)
+  set(CPM_SOURCE_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/.cpm-cache" CACHE PATH "CPM download cache")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -94,7 +102,9 @@ set_target_properties(sqcalc_lib PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CU
 
 target_compile_options(
   sqcalc_lib
-  PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wextra>
+  # -Wno-unused-dummy-argument: the deferred type bound procedures share one
+  # signature, so a method may legitimately ignore e.g. the weight scheme.
+  PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wextra;-Wno-unused-dummy-argument>
           $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Debug>>:-fcheck=all;-fbacktrace;-ffpe-trap=invalid,zero,overflow>
 )
 

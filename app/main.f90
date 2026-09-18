@@ -60,7 +60,8 @@ program sqcalc
 
    call reader%next_frame(frame, ierr)
    if (ierr /= 0) then
-      write (error_unit, '(a)') 'sqcalc: no complete frame found in "'//opts%input//'"'
+      write (error_unit, '(a,i0,a)') 'sqcalc: no complete frame found in "'//opts%input// &
+         '" (reader error ', ierr, ')'
       error stop 5
    end if
    natoms = frame%natoms
@@ -136,7 +137,7 @@ program sqcalc
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       error stop 11
    end if
-   grid_unit = -1
+   grid_unit = no_unit
    if (opts%want_grid) then
       call open_output(opts%grid_output, grid_unit, ierr, message)
       if (ierr /= 0) then
@@ -150,7 +151,7 @@ program sqcalc
       error stop 13
    end if
    if (shell_unit /= output_unit) close (shell_unit)
-   if (grid_unit >= 0 .and. grid_unit /= output_unit) close (grid_unit)
+   if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
 
    if (.not. opts%quiet) then
       write (error_unit, '(a,i0,a,a,a,f0.2,a,i0,a)') 'averaged ', method%nframes, ' frames (', &
@@ -230,7 +231,7 @@ contains
       class(structure_factor_t), intent(in) :: m
       write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes
       write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
-      write (error_unit, '(a,i0,a,f0.4,a,f0.4)') '  q range    : ', m%nmodes, &
+      write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q range    : ', m%nmodes, &
          ' modes in [', m%qmin, ', ', m%qmax, '] 1/A'
    end subroutine report_grid
 

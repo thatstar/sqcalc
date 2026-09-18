@@ -62,9 +62,9 @@ contains
 
       inv = inverse3(self%a)
       ! b_j = 2 pi * (row j of A^-1) so that a_i . b_j = 2 pi delta_ij.
-      self%b(1, :) = two_pi*inv(1, :)
-      self%b(2, :) = two_pi*inv(2, :)
-      self%b(3, :) = two_pi*inv(3, :)
+      self%b(:, 1) = two_pi*inv(1, :)
+      self%b(:, 2) = two_pi*inv(2, :)
+      self%b(:, 3) = two_pi*inv(3, :)
       self%volume = abs(determinant3(self%a))
    end subroutine cell_setup
 
@@ -76,7 +76,8 @@ contains
       real(rk) :: inv(3, 3)
 
       inv = inverse3(self%a)
-      s = matmul(transpose(inv), position - self%origin)
+      ! r = A s with the lattice vectors in the columns of A, hence s = A^-1 r.
+      s = matmul(inv, position - self%origin)
    end function cell_fractional
 
    pure real(rk) function determinant3(m) result(det)

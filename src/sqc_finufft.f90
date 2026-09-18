@@ -98,7 +98,7 @@ contains
       ok = opts%modeord == 0 .and. opts%spreadinterponly == 0 &
            .and. opts%debug == 0 .and. opts%spread_debug == 0 .and. opts%showwarn == 1 &
            .and. opts%nthreads == 0 .and. (opts%fftw == 64 .or. opts%fftw == -1) &
-           .and. opts%spread_sort == 2 .and. opts%upsampfac == 0.0_c_double &
+           .and. opts%spread_sort == 2 .and. abs(opts%upsampfac) <= 1.0e-12_c_double &
            .and. opts%maxbatchsize == 0 .and. opts%spread_nthr_atomic == -1 &
            .and. opts%spread_max_sp_size == 0 .and. opts%spread_kerformula == 0 &
            .and. opts%allow_eps_too_small == 0 &

@@ -14,3 +14,5 @@ fort.*
 log.lammps
 *.dump
 build*/*
+.cpm-cache/
+__pycache__/

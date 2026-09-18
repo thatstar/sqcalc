@@ -67,7 +67,9 @@ def main():
     def generate(out, **kwargs):
         cmd = [sys.executable, os.path.join(HERE, "gen_dump.py"), "--output", path(out)]
         for key, value in kwargs.items():
-            cmd += ["--" + key.replace("_", "-"), str(value)]
+            flag = "--" + key.replace("_", "-")
+            # --tilt takes three numbers, every other option a single token.
+            cmd += [flag] + str(value).split() if key == "tilt" else [flag, str(value)]
         run(cmd)
         return path(out)
 
@@ -164,9 +166,14 @@ def main():
     sqcalc(dump_tri, "tri_nufft.dat", "-w", "unit", "--norm", "self", *common)
     sqcalc(dump_tri, "tri_direct.dat", "-w", "unit", "--norm", "self", "--method",
            "direct", *common)
+    run([sys.executable, os.path.join(HERE, "ref_sq.py"), "--input", dump_tri,
+         "--weight", "unit", "--norm", "self", "--qmax", "6", "--nq", "120",
+         "--output", path("tri_ref.dat")])
     _, s_tri_nufft = read_table(path("tri_nufft.dat"))
     _, s_tri_direct = read_table(path("tri_direct.dat"))
+    _, s_tri_ref = read_table(path("tri_ref.dat"))
     compare(s_tri_direct, s_tri_nufft, "NUFFT vs direct (triclinic, xu yu zu)")
+    compare(s_tri_direct, s_tri_ref, "direct vs numpy reference (triclinic)")
 
     # --- 6. command line errors -------------------------------------------
     print("command line handling")

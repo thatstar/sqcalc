@@ -234,7 +234,7 @@ contains
       write (unit, '(a)') '      --qmin VALUE    smallest |q| in the output [1/A] (default 0)'
       write (unit, '(a)') '      --qmax VALUE    largest |q| in the output [1/A] (default 20)'
       write (unit, '(a)') '      --nq N          number of q shells (default 500)'
-      write (unit, '(a)') '      --grid [FILE]   also write S(q) on every reciprocal lattice point'
+      write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
       write (unit, '(a)') '      --norm NAME     mean (default), self or n'
       write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'

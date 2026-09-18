@@ -30,7 +30,11 @@ module sqc_structure
    private
 
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
-             method_nufft, method_direct, norm_mean, norm_self, norm_natom
+             method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit
+
+   !> Sentinel for "do not write this table".  A plain negative test would be
+   !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
+   integer, parameter :: no_unit = -huge(1)
 
    !> Available evaluation methods.
    integer, parameter :: method_nufft = 1
@@ -124,8 +128,10 @@ module sqc_structure
       integer(ik), allocatable :: species_of(:)
       !> LAMMPS type id of each species.
       integer(ik), allocatable :: species_type(:)
-      !> Scaled coordinates x_j in [-pi, pi) for all atoms.
-      real(rk), allocatable :: scaled(:, :)
+      !> Scaled coordinates x_j in [-pi, pi) for all atoms, one array per axis:
+      !! the FINUFFT C interface needs contiguous data, so a (3, natoms) array
+      !! sliced by rows must not be passed directly.
+      real(rk), allocatable :: xa(:), ya(:), za(:)
       !> True when the amplitude depends on q (X-ray).
       logical :: q_dependent = .false.
       !> Precomputed amplitude of each species at each kept mode.
@@ -168,10 +174,10 @@ contains
       character(len=*), intent(out) :: message
       integer(ik), allocatable :: type_counts(:)
       real(rk), allocatable :: qvec_all(:, :), qlen_all(:), qlen_keep(:), qvec_keep(:, :)
-      integer, allocatable :: hkl_all(:, :), shell_keep(:), hkl_keep(:, :)
+      integer, allocatable :: hkl_all(:, :), hkl_keep(:, :)
       integer(lk), allocatable :: gidx_all(:), gidx_keep(:)
       real(rk) :: q(3), ql, dmode, length_a
-      integer :: i, p(3), h(3), n_keep, t, maxtype
+      integer :: i, p1, p2, p3, h(3), n_keep, t, maxtype
       integer(lk) :: nmax, g
 
       ierr = 0
@@ -223,12 +229,12 @@ contains
       nmax = self%gridpoints
       allocate (hkl_all(3, nmax), qvec_all(3, nmax), qlen_all(nmax), gidx_all(nmax))
       n_keep = 0
-      do p(3) = 1, self%modes(3)
-         h(3) = p(3) - (self%modes(3) + 1)/2
-         do p(2) = 1, self%modes(2)
-            h(2) = p(2) - (self%modes(2) + 1)/2
-            do p(1) = 1, self%modes(1)
-               h(1) = p(1) - (self%modes(1) + 1)/2
+      do p3 = 1, self%modes(3)
+         h(3) = p3 - (self%modes(3) + 1)/2
+         do p2 = 1, self%modes(2)
+            h(2) = p2 - (self%modes(2) + 1)/2
+            do p1 = 1, self%modes(1)
+               h(1) = p1 - (self%modes(1) + 1)/2
                if (all(h == 0)) cycle
                q = frame%cell%b(:, 1)*real(h(1), rk) + frame%cell%b(:, 2)*real(h(2), rk) &
                    + frame%cell%b(:, 3)*real(h(3), rk)
@@ -239,8 +245,8 @@ contains
                hkl_all(:, n_keep) = h
                qvec_all(:, n_keep) = q
                qlen_all(n_keep) = ql
-               g = int(p(1), lk) + int(self%modes(1), lk)*(int(p(2), lk) - 1 &
-                   + int(self%modes(2), lk)*(int(p(3), lk) - 1))
+               g = int(p1, lk) + int(self%modes(1), lk)*(int(p2, lk) - 1 &
+                   + int(self%modes(2), lk)*(int(p3, lk) - 1))
                gidx_all(n_keep) = g
             end do
          end do
@@ -331,28 +337,31 @@ contains
       integer, intent(in) :: shell_unit, grid_unit
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
-      real(rk) :: qc, value
+      real(rk) :: qc, value, frames
       integer :: s
       integer(lk) :: i, g
 
       ierr = 0
       message = ''
-      if (shell_unit >= 0) then
+      ! num(:) accumulates every frame while den(:) is the single frame
+      ! normalization, so the average over frames is num/(nframes*den).
+      frames = real(max(self%nframes, 1_lk), rk)
+      if (shell_unit /= no_unit) then
          write (shell_unit, '(a)') '# q S(q)'
          do s = 1, self%nq
             qc = self%qmin + (real(s, rk) - 0.5_rk)*self%shell_dq
             value = 0.0_rk
-            if (self%den(s) > 0.0_rk) value = self%num(s)/self%den(s)
+            if (self%den(s) > 0.0_rk) value = self%num(s)/(frames*self%den(s))
             write (shell_unit, '(f14.6,2x,es20.12)') qc, value
          end do
       end if
 
-      if (grid_unit >= 0 .and. self%want_grid) then
+      if (grid_unit /= no_unit .and. self%want_grid) then
          write (grid_unit, '(a)') '# qx qy qz S(q)'
          do i = 1, self%nmodes
             g = self%gidx(i)
             value = 0.0_rk
-            if (self%gden(g) > 0.0_rk) value = self%gnum(g)/self%gden(g)
+            if (self%gden(g) > 0.0_rk) value = self%gnum(g)/(frames*self%gden(g))
             write (grid_unit, '(3(f14.8,2x),es20.12)') self%qvec(1, i), self%qvec(2, i), &
                self%qvec(3, i), value
          end do
@@ -413,7 +422,7 @@ contains
       end if
 
       ! Allocate work arrays and build the FINUFFT plan.
-      allocate (self%scaled(3, frame%natoms))
+      allocate (self%xa(frame%natoms), self%ya(frame%natoms), self%za(frame%natoms))
       allocate (self%strengths(frame%natoms))
       allocate (self%fk(self%gridpoints))
       allocate (self%total(self%gridpoints))
@@ -442,7 +451,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: s(3), amp, value
-      real(rk) :: dummy(1)
+      real(rk) :: dummy(1), pi
       integer(c_int) :: ier
       integer :: i, im, isp, sh
       integer(lk) :: g
@@ -450,16 +459,18 @@ contains
       ierr = 0
       message = ''
       dummy = 0.0_rk
+      pi = acos(-1.0_rk)
 
       ! Scaled coordinates in [-pi, pi) for the type-1 transform.
       do i = 1, frame%natoms
          s = frame%cell%fractional(frame%pos(:, i))
          s = s - floor(s)
-         self%scaled(:, i) = two_pi*s - acos(-1.0_rk)
+         self%xa(i) = two_pi*s(1) - pi
+         self%ya(i) = two_pi*s(2) - pi
+         self%za(i) = two_pi*s(3) - pi
       end do
-      ier = finufft_setpts(self%plan, int(frame%natoms, c_int64_t), self%scaled(1, :), &
-                           self%scaled(2, :), self%scaled(3, :), 0_c_int64_t, dummy, &
-                           dummy, dummy)
+      ier = finufft_setpts(self%plan, int(frame%natoms, c_int64_t), self%xa, self%ya, &
+                           self%za, 0_c_int64_t, dummy, dummy, dummy)
       if (ier /= 0) then
          ierr = 1
          write (message, '(a,i0)') 'FINUFFT setpts failed (ier = ', ier
@@ -574,7 +585,6 @@ contains
          total = (0.0_rk, 0.0_rk)
          do isp = 1, self%ntypes
             amp = scheme%amplitude(int(isp, ik), self%qlen(im))
-            if (amp == 0.0_rk) cycle
             acc = (0.0_rk, 0.0_rk)
             do i = 1, frame%natoms
                if (self%type_of(i) /= isp) cycle

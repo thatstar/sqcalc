@@ -9,6 +9,9 @@ module sqc_dump
 
    integer, parameter :: max_line_length = 1024
    integer, parameter :: max_columns = 64
+   !> Sentinel for "no unit is associated with this reader" (NEWUNIT may return
+   !! negative unit numbers, so zero or a sign test would be wrong).
+   integer, parameter :: unopened_unit = -huge(1)
 
    !> A single trajectory snapshot.
    type :: frame_t
@@ -54,7 +57,7 @@ module sqc_dump
    !> Reader for the default LAMMPS atoms dump style.
    type, extends(frame_reader_t) :: lammps_dump_reader_t
       character(len=:), allocatable :: path
-      integer :: unit = -1
+      integer :: unit = unopened_unit
       !> Column positions of the quantities we need (0 = not present).
       integer :: idx_id = 0, idx_type = 0, idx_x = 0, idx_y = 0, idx_z = 0
       integer :: ncol = 0
@@ -69,7 +72,7 @@ module sqc_dump
       procedure :: open => lammps_open
       procedure :: next_frame => lammps_next_frame
       procedure :: close => lammps_close
-      procedure :: final => lammps_final
+      final :: lammps_final
    end type lammps_dump_reader_t
 
 contains
@@ -105,9 +108,9 @@ contains
 
    subroutine lammps_close(self)
       class(lammps_dump_reader_t), intent(inout) :: self
-      if (self%unit > 0) then
+      if (self%unit /= unopened_unit) then
          close(self%unit)
-         self%unit = -1
+         self%unit = unopened_unit
       end if
    end subroutine lammps_close
 
@@ -130,7 +133,7 @@ contains
       logical :: have_atoms, have_box, triclinic
 
       ierr = 0
-      if (self%unit < 0) then
+      if (self%unit == unopened_unit) then
          ierr = 3
          return
       end if

@@ -111,9 +111,9 @@ def main():
     add("   integer, parameter, public :: element_z(n_elements) = [ &")
     add(_wrapped(["%d" % pse[s][0] for s in symbols], "      "))
     add("   character(len=2), parameter, public :: element_symbol(n_elements) = [ &")
-    add(_wrapped(['"%s"' % s for s in symbols], "      "))
+    add(_wrapped(['"%-2s"' % s for s in symbols], "      "))
     add("   character(len=16), parameter, public :: element_name(n_elements) = [ &")
-    add(_wrapped(['"%s"' % pse[s][1] for s in symbols], "      "))
+    add(_wrapped(['"%-16s"' % pse[s][1] for s in symbols], "      "))
     add("   real(rk), parameter, public :: element_mass(n_elements) = [ &")
     add(_wrapped([fortran_real(pse[s][2]) for s in symbols], "      "))
     add("")
@@ -125,10 +125,10 @@ def main():
     add("")
     add("   ! X-ray IT92 (Cromer-Mann) coefficients: f(q) = sum_i a_i exp(-b_i (q/4pi)^2) + c")
     add("   real(rk), parameter, public :: element_xray_a(4, n_elements) = reshape([ &")
-    add(_wrapped([fortran_real(x) for s in symbols for x in it92.get(s, ([0.0] * 4, [0.0] * 4, 0.0))[0]], "      "))
+    add(_wrapped([fortran_real(x) for s in symbols for x in it92.get(s, ([0.0] * 4, [0.0] * 4, 0.0))[0]], "      ", closer=" &"))
     add("     ], [4, n_elements])")
     add("   real(rk), parameter, public :: element_xray_b(4, n_elements) = reshape([ &")
-    add(_wrapped([fortran_real(x) for s in symbols for x in it92.get(s, ([0.0] * 4, [0.0] * 4, 0.0))[1]], "      "))
+    add(_wrapped([fortran_real(x) for s in symbols for x in it92.get(s, ([0.0] * 4, [0.0] * 4, 0.0))[1]], "      ", closer=" &"))
     add("     ], [4, n_elements])")
     add("   real(rk), parameter, public :: element_xray_c(n_elements) = [ &")
     add(_wrapped([fortran_real(it92.get(s, ([0.0] * 4, [0.0] * 4, 0.0))[2]) for s in symbols], "      "))
@@ -149,14 +149,18 @@ def main():
     )
 
 
-def _wrapped(items, indent, per_line=4):
-    """Format a Fortran array constructor body, a few items per line."""
+def _wrapped(items, indent, per_line=4, closer=" ]"):
+    """Format a Fortran array constructor body, a few items per line.
+
+    The last line is terminated with `closer`: either the closing bracket, or a
+    continuation marker when the caller writes the bracket on the next line.
+    """
     out = []
     for start in range(0, len(items), per_line):
         chunk = items[start : start + per_line]
-        sep = ", " if start + per_line < len(items) else ""
-        out.append(indent + ", ".join(chunk) + sep + " &")
-    out[-1] = out[-1][:-2].rstrip()
+        last = start + per_line >= len(items)
+        sep = "" if last else ","
+        out.append(indent + ", ".join(chunk) + sep + (closer if last else " &"))
     return "\n".join(out)
 
 
