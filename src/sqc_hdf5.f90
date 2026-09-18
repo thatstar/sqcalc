@@ -23,7 +23,7 @@ module sqc_hdf5
    implicit none
    private
 
-   public :: hdf5_write_results, hdf5_support
+   public :: hdf5_write_results, hdf5_support, hdf5_write_rdf
 
    !> HDF5 was compiled into this binary.
    logical, parameter :: hdf5_support = .true.
@@ -379,5 +379,131 @@ contains
       call h5tclose_f(type_id, hdferr)
       call h5sclose_f(space_id, hdferr)
    end subroutine write_string_attr
+
+   !> Pair distribution functions: `/rdf/r`, `/rdf/g` (total), one dataset per
+   !! pair under `/rdf/g/<label>` and the label list in `/rdf/pairs`.
+   subroutine hdf5_write_rdf(path, r, g_total, g_partial, labels, ierr, message)
+      character(len=*), intent(in) :: path
+      real(rk), intent(in) :: r(:), g_total(:), g_partial(:, :, :)
+      character(len=*), intent(in) :: labels(:)
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id, subgroup_id
+      integer(hsize_t) :: dims(1), dims2(2)
+      integer :: hdferr, ia, ib, k, p, ntypes, nbins, npair, idum
+      real(real64), allocatable :: one_d(:)
+      character(len=18), allocatable :: label_buf(:)
+
+      ierr = 0
+      message = ''
+      ntypes = size(g_partial, 1)
+      nbins = size(g_partial, 3)
+      npair = size(labels)
+
+      call h5open_f(hdferr)
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'cannot create HDF5 file "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+      call h5gcreate_f(file_id, 'rdf', group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /rdf group'
+         call h5fclose_f(file_id, idum)
+         return
+      end if
+
+      dims = [int(nbins, hsize_t)]
+      allocate (one_d(nbins))
+      one_d = real(r, real64)
+      call write_dataset_f(group_id, 'r', H5T_NATIVE_DOUBLE, dims, one_d, ierr, message)
+      if (ierr /= 0) return
+      one_d = real(g_total, real64)
+      call write_dataset_f(group_id, 'g', H5T_NATIVE_DOUBLE, dims, one_d, ierr, message)
+      if (ierr /= 0) return
+
+      ! labels of the pair list
+      allocate (label_buf(npair))
+      do p = 1, npair
+         label_buf(p) = labels(p)
+      end do
+      dims2 = [int(npair, hsize_t), 1_hsize_t]
+      call write_string_dataset(group_id, 'pairs', label_buf, ierr, message)
+      if (ierr /= 0) return
+
+      ! one dataset per partial pair, under /rdf/g/<label>
+      call h5gcreate_f(group_id, 'g', subgroup_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /rdf/g group'
+         return
+      end if
+      p = 0
+      do ia = 1, ntypes
+         do ib = ia, ntypes
+            p = p + 1
+            do k = 1, nbins
+               one_d(k) = real(g_partial(ia, ib, k), real64)
+            end do
+            call write_dataset_f(subgroup_id, trim(label_buf(p)), H5T_NATIVE_DOUBLE, &
+                                 dims, one_d, ierr, message)
+            if (ierr /= 0) return
+         end do
+      end do
+
+      call h5gclose_f(subgroup_id, hdferr)
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (one_d, label_buf)
+   end subroutine hdf5_write_rdf
+
+   !> Fixed length string dataset (1D).
+   subroutine write_string_dataset(group, name, values, ierr, message)
+      integer(hid_t), intent(in) :: group
+      character(len=*), intent(in) :: name
+      character(len=*), intent(in) :: values(:)
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: space_id, dset_id, type_id
+      integer(hsize_t) :: dims(1)
+      integer(size_t) :: text_len
+      integer :: hdferr
+      character(len=18), allocatable :: buffer(:)
+
+      ierr = 0
+      message = ''
+      allocate (buffer(size(values)))
+      buffer = values
+      text_len = len(buffer(1))
+      dims = [int(size(values), hsize_t)]
+      call h5screate_simple_f(1, dims, space_id, hdferr)
+      call h5tcopy_f(H5T_NATIVE_CHARACTER, type_id, hdferr)
+      call h5tset_size_f(type_id, text_len, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the string type of '//trim(name)
+         return
+      end if
+      call h5dcreate_f(group, trim(name), type_id, space_id, dset_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create dataset '//trim(name)
+         return
+      end if
+      call h5dwrite_f(dset_id, type_id, buffer, dims, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot write dataset '//trim(name)
+         return
+      end if
+      call h5dclose_f(dset_id, hdferr)
+      call h5tclose_f(type_id, hdferr)
+      call h5sclose_f(space_id, hdferr)
+      deallocate (buffer)
+   end subroutine write_string_dataset
 
 end module sqc_hdf5

@@ -3,7 +3,9 @@ module sqc_options
    use sqc_kinds
    use sqc_weights, only: weight_scheme_t, weight_unit, weight_neutron, weight_xray, &
                           scheme_from_name
-   use sqc_structure, only: method_nufft, method_direct, norm_mean, norm_self, norm_natom
+   use sqc_structure, only: method_nufft, method_direct, method_debye, norm_mean, &
+                            norm_self, norm_natom
+   use sqc_debye, only: debye_default_dr, debye_default_skin
    implicit none
    private
 
@@ -35,6 +37,14 @@ module sqc_options
       integer :: device = device_cpu
       integer :: gpu_id = 0
       integer :: precision = precision_double
+      !> Debye method settings (--rmax, --dr, --skin, --rdf).
+      real(rk) :: rmax = 0.0_rk
+      real(rk) :: dr = debye_default_dr
+      real(rk) :: skin = debye_default_skin
+      character(len=:), allocatable :: rdf_output
+      logical :: rmax_given = .false.
+      logical :: dr_given = .false.
+      logical :: skin_given = .false.
       !> True when the user gave --eps explicitly.
       logical :: eps_given = .false.
       integer :: nq = 500
@@ -100,7 +110,8 @@ contains
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
-                  '--device', '--gpu-id', '--precision', '--grid-format')
+                  '--device', '--gpu-id', '--precision', '--grid-format', &
+                  '--rmax', '--dr', '--skin', '--rdf')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -184,11 +195,39 @@ contains
                      self%method = method_nufft
                   case ('direct')
                      self%method = method_direct
+                  case ('debye')
+                     self%method = method_debye
                   case default
                      ierr = 1
-                     message = 'unknown method "'//trim(value)//'" (use nufft or direct)'
+                     message = 'unknown method "'//trim(value)//'" (use nufft, direct or debye)'
                      return
                   end select
+               case ('--rmax')
+                  read (value, *, iostat=ierr) self%rmax
+                  if (ierr /= 0 .or. self%rmax <= 0.0_rk) then
+                     ierr = 1
+                     message = '--rmax must be a positive number'
+                     return
+                  end if
+                  self%rmax_given = .true.
+               case ('--dr')
+                  read (value, *, iostat=ierr) self%dr
+                  if (ierr /= 0 .or. self%dr <= 0.0_rk) then
+                     ierr = 1
+                     message = '--dr must be a positive number'
+                     return
+                  end if
+                  self%dr_given = .true.
+               case ('--skin')
+                  read (value, *, iostat=ierr) self%skin
+                  if (ierr /= 0 .or. self%skin < 0.0_rk) then
+                     ierr = 1
+                     message = '--skin must be zero or positive'
+                     return
+                  end if
+                  self%skin_given = .true.
+               case ('--rdf')
+                  self%rdf_output = trim(value)
                case ('--device')
                   select case (trim(value))
                   case ('cpu')
@@ -286,6 +325,25 @@ contains
          message = 'single precision is only available on the GPU path (--device gpu)'
          return
       end if
+      if (self%method == method_debye) then
+         if (self%want_grid) then
+            ierr = 1
+            message = 'the Debye method evaluates S(q) directly; --grid is not available'
+            return
+         end if
+         if (self%device == device_gpu) then
+            ierr = 1
+            message = 'the Debye method runs on the CPU; use --device cpu'
+            return
+         end if
+      else
+         if (self%rmax_given .or. self%dr_given .or. self%skin_given .or. &
+             allocated(self%rdf_output)) then
+            ierr = 1
+            message = '--rmax, --dr, --skin and --rdf belong to --method debye'
+            return
+         end if
+      end if
       if (.not. self%want_grid) self%grid_output = ''
       ! Default the grid format from the file name.
       if (self%want_grid .and. .not. self%grid_format_given) then
@@ -325,6 +383,12 @@ contains
       write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
       write (unit, '(a)') '      --grid-format NAME  text (default) or hdf5 (.h5/.hdf5 implies hdf5)'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
+      write (unit, '(a)') '                      debye: real space pair histograms'
+      write (unit, '(a)') '      --rmax VALUE    Debye pair cutoff [1/A] (default: half the'
+      write (unit, '(a)') '                      smallest periodic box side)'
+      write (unit, '(a)') '      --dr VALUE      Debye radial bin width [1/A] (default 0.01)'
+      write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [1/A] (default 1.0)'
+      write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
       write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
       write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
       write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'

@@ -142,6 +142,7 @@ add_library(
   src/sqc_weights.f90
   src/sqc_finufft.f90
   src/sqc_structure.f90
+  src/sqc_debye.f90
   src/sqc_options.f90
 )
 if(SQC_ENABLE_CUDA)

@@ -125,6 +125,61 @@ Notes
   193^3 grid): CPU 17.3 s, GPU float64 5.6 s, GPU float32 2.1 s; float32 differs
   from float64 by ~2e-6 in S(q).
 
+## Debye method (real space pair histograms)
+
+`--method debye` replaces the reciprocal space transform by counting atom pairs
+as a function of distance, for every pair of chemical types, and averaging those
+histograms over the trajectory - the recipe used by the `debyer` program:
+
+```
+S(q) = [ sum_ab f_a(q) f_b(q) sum_k n_ab[k] sin(q r_k)/(q r_k)
+         + sum_a N_a f_a(q)^2 ] / W(q)
+```
+
+with `r_k = (k-1/2) dr` the bin centers, the second sum the r = 0 self term (an
+atom with itself, added analytically because no histogram can hold it) and `W(q)`
+the same normalization as the grid method, so `--weight`, `--norm` and the output
+format behave identically:
+
+```sh
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
+       --rmax 12 --dr 0.01 --skin 1.0 --rdf g_of_r.dat S_q.dat
+```
+
+| option | meaning |
+| --- | --- |
+| `--rmax VALUE` | pair cutoff [A]; default: half of the smallest periodic box side (minimum image convention, so no self images), or all pairs when the box is not periodic |
+| `--dr VALUE` | radial bin width (default 0.01 A, reliable up to q ~ pi/(2 dr) ~ 150 1/A) |
+| `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
+| `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`) |
+
+`--grid` is not available with this method (it evaluates S(q) directly) and it
+runs on the CPU.
+
+The RDF file holds one row per r bin, `# r g(r) g(a-a) g(a-b) ...` in the order
+given by `-m`; the partials are normalized so that `g_ab -> 1` at large r (HDF5:
+`/rdf/r`, `/rdf/g`, one dataset per pair under `/rdf/g/<label>` and the labels in
+`/rdf/pairs`).  The weighted total uses the q -> 0 amplitudes, the usual PDF
+convention.
+
+When to use it (measured here, 10k atoms, 3-10 frames, qmax 20 1/A):
+
+| system | Debye | reciprocal grid (CPU, 4 threads) |
+| --- | --- | --- |
+| 30 A box (rmax = L/2, essentially all pairs) | 44.5 s | 8.1 s |
+| 60 A box (rmax = 15 A, ~650 neighbours per atom) | 5.7 s | 83.9 s |
+
+The pair count grows like `N * neighbours(rmax)` while the grid method grows like
+`(qmax*L)^3`, so Debye wins for large boxes and high q, and the grid method wins
+for small, dense, periodically replicated cells.  Debye is also the only option
+for non-periodic systems (clusters, nanoparticles, surfaces).
+
+The Verlet skin only pays off when consecutive frames are *correlated*: on a
+rattled trajectory the list survives many frames (the test suite checks that 20
+rattled frames cost a single rebuild), while on a series of independent random
+configurations every frame rebuilds the list and the larger candidate list makes
+`--skin 0` about 4x faster.  Use `--skin 0` for uncorrelated frames.
+
 ## Output
 
 The first table is the isotropic average over q shells:

@@ -289,6 +289,74 @@ def main():
             print("  ok   %-42s max deviation %.2e"
                   % ("GPU vs CPU (reciprocal grid)", worst))
 
+    # --- 8. Debye method --------------------------------------------------
+    print("debye method")
+    ref_debye = os.path.join(HERE, "debye_ref.py")
+    debye_q = ["--qmax", "6", "--nq", "30", "--rmax", "6", "--dr", "0.01"]
+    for weight, norm in (("unit", "self"), ("neutron", "mean"), ("xray", "mean")):
+        sqcalc(dump, "deb_f_%s.dat" % weight, "-w", weight, "--norm", norm,
+               "--method", "debye", *debye_q)
+        run([sys.executable, ref_debye, "--input", dump, "--mapping", "1:Si,2:O",
+             "--weight", weight, "--norm", norm, "--output", path("deb_r_%s.dat" % weight),
+             *debye_q])
+        _, s_fortran = read_table(path("deb_f_%s.dat" % weight))
+        _, s_ref = read_table(path("deb_r_%s.dat" % weight))
+        compare(s_ref, s_fortran, "Debye vs numpy reference (%s)" % weight, rtol=1.0e-9)
+
+    # The default cut off is half of the smallest periodic side (20 A -> 10 A).
+    sqcalc(dump, "deb_default.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+           "--qmax", "6", "--nq", "30", "--dr", "0.01")
+    sqcalc(dump, "deb_rmax10.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+           "--qmax", "6", "--nq", "30", "--dr", "0.01", "--rmax", "10")
+    _, s_default = read_table(path("deb_default.dat"))
+    _, s_rmax = read_table(path("deb_rmax10.dat"))
+    compare(s_rmax, s_default, "Debye default rmax = half the box side", rtol=1.0e-12)
+
+    # Skin reuse must not change a single number.
+    sqcalc(dump, "deb_skin0.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+           "--skin", "0", *debye_q)
+    _, s_skin0 = read_table(path("deb_skin0.dat"))
+    _, s_skin1 = read_table(path("deb_f_unit.dat"))
+    compare(s_skin0, s_skin1, "Debye skin 0 vs skin 1", rtol=1.0e-12)
+
+    # Pair distribution function: total g(r) against the reference, and the
+    # ideal gas limit g -> 1 away from the cut off.
+    sqcalc(dump, "deb_shell.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+           "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+           "--rdf", path("deb.rdf"))
+    run([sys.executable, ref_debye, "--input", dump, "--mapping", "1:Si,2:O",
+         "--weight", "unit", "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+         "--output", path("deb_r_rdf.dat"), "--rdf", path("deb_ref.rdf")])
+    rdf = read_matrix(path("deb.rdf"))
+    rdf_ref = read_matrix(path("deb_ref.rdf"))
+    if rdf.shape[0] != rdf_ref.shape[0]:
+        raise SystemExit("FAIL rdf row count %d vs %d" % (rdf.shape[0], rdf_ref.shape[0]))
+    worst = np.max(np.abs(rdf[:, 1] - rdf_ref[:, 1]))
+    if worst > 1.0e-12:
+        raise SystemExit("FAIL total g(r) vs reference: %.3e" % worst)
+    print("  ok   %-42s max deviation %.2e" % ("total g(r) vs reference", worst))
+    mid = (rdf[:, 0] > 4.0) & (rdf[:, 0] < 8.0)
+    mean_g = float(np.mean(rdf[mid, 1]))
+    if abs(mean_g - 1.0) > 0.25:
+        raise SystemExit("FAIL ideal gas g(r) = %.3f for 4 < r < 8 A" % mean_g)
+    print("  ok   %-42s mean g(r) = %.3f" % ("ideal gas g(r) -> 1", mean_g))
+
+    # Lattice: the RDF peaks at the neighbour shell distances of a cubic
+    # lattice with a = 4 A (4, 5.66, 6.93, 8 A).
+    lattice_dump = generate("lattice_debye.dump", natoms=125, length=20, frames=1,
+                            seed=3, mode="lattice", fractions="1.0")
+    run([exe, "-i", lattice_dump, "-m", "1:Si", "-w", "unit", "--norm", "self",
+         "--method", "debye", "--qmax", "4", "--nq", "8", "--rmax", "9", "--dr", "0.02",
+         "--rdf", path("lattice.rdf"), path("lattice_sq.dat")])
+    rdf_lat = read_matrix(path("lattice.rdf"))
+    found = []
+    for expected in (4.0, 5.657, 6.928, 8.0):
+        window = np.abs(rdf_lat[:, 0] - expected) < 0.08
+        if not np.any(window) or np.max(rdf_lat[window, 1]) < 1.5:
+            raise SystemExit("FAIL lattice g(r) has no peak near %.3f A" % expected)
+        found.append(round(float(rdf_lat[window, 0][np.argmax(rdf_lat[window, 1])]), 3))
+    print("  ok   %-42s peaks at %s A" % ("lattice g(r) neighbour shells", found))
+
     print("all sqcalc tests passed")
 
 

@@ -23,6 +23,8 @@ module sqc_weights
       character(len=2), allocatable :: symbols(:)
       !> Index of each type id in the element table (0 when unmapped).
       integer, allocatable :: element(:)
+      !> Largest type id that was actually mapped (0 when none).
+      integer(ik) :: n_mapped = 0
    contains
       procedure :: grow => scheme_grow
       procedure :: set_mapping => scheme_set_mapping
@@ -80,6 +82,7 @@ contains
          call self%grow(type_id)
          self%symbols(type_id) = element_table%symbol_of(idx)
          self%element(type_id) = idx
+         self%n_mapped = max(self%n_mapped, int(type_id, ik))
       end do
    end subroutine scheme_set_mapping
 
@@ -112,15 +115,12 @@ contains
 
    !> Number of mapped LAMMPS type ids (0 when no mapping was given).
    !!
-   !! The per-type arrays are only allocated once a mapping is supplied, so all
-   !! consumers must ask here instead of looking at size(symbols) directly.
+   !! The per-type arrays are grown in blocks, so their size is the capacity and
+   !! not the number of mapped types; consumers must ask here instead of looking
+   !! at size(symbols) directly.
    pure integer function scheme_mapped_types(self) result(n)
       class(weight_scheme_t), intent(in) :: self
-      if (allocated(self%symbols)) then
-         n = size(self%symbols)
-      else
-         n = 0
-      end if
+      n = int(self%n_mapped)
    end function scheme_mapped_types
 
    !> Scattering amplitude of one LAMMPS type id at momentum transfer q.
@@ -206,7 +206,11 @@ contains
       pos = 1
       do while (pos <= n)
          start = pos
-         do while (pos <= n .and. text(pos:pos) /= delimiter)
+         ! note: Fortran does not short-circuit .and., so the comparison must
+         ! not be evaluated once pos has run past the end of the string
+         do
+            if (pos > n) exit
+            if (text(pos:pos) == delimiter) exit
             pos = pos + 1
          end do
          nitems = nitems + 1

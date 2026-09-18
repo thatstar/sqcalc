@@ -32,7 +32,7 @@ module sqc_structure
 
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
              method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit, &
-             sf_prepare_species
+             sf_prepare_species, mode_denominator, method_debye
 
    !> Sentinel for "do not write this table".  A plain negative test would be
    !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
@@ -41,6 +41,7 @@ module sqc_structure
    !> Available evaluation methods.
    integer, parameter :: method_nufft = 1
    integer, parameter :: method_direct = 2
+   integer, parameter :: method_debye = 3
 
    !> Normalization conventions.
    integer, parameter :: norm_mean = 1
@@ -98,6 +99,7 @@ module sqc_structure
       procedure :: write_results => sf_write_results
       procedure :: accumulate_modes => sf_accumulate_modes
       procedure :: accumulate_values => sf_accumulate_values
+      procedure :: prepare_output => sf_prepare_output
       procedure :: shell_value => sf_shell_value
       procedure :: grid_value => sf_grid_value
       procedure(sf_setup_iface), deferred :: method_setup
@@ -399,6 +401,17 @@ contains
       end if
       self%nframes = self%nframes + 1
    end subroutine sf_accumulate_values
+
+   !> Hook for methods that fill the output arrays rather than the per-frame
+   !! accumulators (the Debye method computes S(q) from histograms at the end).
+   subroutine sf_prepare_output(self, scheme, ierr, message)
+      class(structure_factor_t), intent(inout) :: self
+      type(weight_scheme_t), intent(in) :: scheme
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      ierr = 0
+      message = ''
+   end subroutine sf_prepare_output
 
    !> Normalized S(q) of one shell.
    pure real(rk) function sf_shell_value(self, shell) result(value)

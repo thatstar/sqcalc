@@ -25,6 +25,8 @@ module sqc_dump
       integer(ik), allocatable :: type_id(:)
       !> Simulation cell of this frame.
       type(cell_t) :: cell
+      !> Periodicity of the box as written in the dump (pp = periodic).
+      logical :: pbc(3) = .true.
    contains
       procedure :: destroy => frame_destroy
    end type frame_t
@@ -196,6 +198,7 @@ contains
             end if
          else if (is_item(line, 'BOX BOUNDS')) then
             triclinic = has_tilt_header(line)
+            call read_pbc(line, frame%pbc)
             do irow = 1, 3
                call read_line(self, line, ios)
                if (ios /= 0) then
@@ -278,6 +281,22 @@ contains
       triclinic = index(line, 'xy') > 0 .or. index(line, 'xy xz yz') > 0
    end function has_tilt_header
 
+   !> Read the periodicity tokens at the end of a BOX BOUNDS header line
+   !! ("pp", "ff" or "ss" per direction).
+   subroutine read_pbc(line, pbc)
+      character(len=*), intent(in) :: line
+      logical, intent(out) :: pbc(3)
+      character(len=16) :: tokens(max_columns)
+      integer :: ntok, i
+
+      pbc = .true.
+      call split_tokens(adjustl(line(len('ITEM: BOX BOUNDS') + 1:)), tokens, ntok)
+      if (ntok < 3) return
+      do i = 1, 3
+         pbc(i) = tokens(ntok - 3 + i)(1:1) == 'p'
+      end do
+   end subroutine read_pbc
+
    !> Split a record into whitespace separated tokens.
    subroutine split_tokens(line, tokens, ntok)
       character(len=*), intent(in) :: line
@@ -289,12 +308,17 @@ contains
       n = len_trim(line)
       pos = 1
       do while (pos <= n .and. ntok < size(tokens))
-         do while (pos <= n .and. line(pos:pos) == ' ')
+         ! Fortran does not short-circuit .and., so index tests must be explicit
+         do
+            if (pos > n) exit
+            if (line(pos:pos) /= ' ') exit
             pos = pos + 1
          end do
          if (pos > n) exit
          start = pos
-         do while (pos <= n .and. line(pos:pos) /= ' ')
+         do
+            if (pos > n) exit
+            if (line(pos:pos) == ' ') exit
             pos = pos + 1
          end do
          ntok = ntok + 1

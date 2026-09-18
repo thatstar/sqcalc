@@ -298,6 +298,8 @@ contains
          self%pair_start(i + 1) = self%pair_start(i + 1) + self%pair_start(i)
       end do
       self%npairs = self%pair_start(self%natoms + 1) - 1
+      if (allocated(self%pair_atom)) deallocate (self%pair_atom)
+      if (allocated(self%pair_shift)) deallocate (self%pair_shift)
       allocate (self%pair_atom(self%npairs), self%pair_shift(3, self%npairs))
       ! Second pass: fill.
       pos_pair = 0

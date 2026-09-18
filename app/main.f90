@@ -7,6 +7,7 @@ program sqcalc
    use sqc_cell, only: cell_t
    use sqc_elements, only: element_table
    use sqc_structure
+   use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
    use sqc_gpu, only: cufinufft_structure_factor_t
@@ -80,6 +81,15 @@ program sqcalc
    select case (opts%method)
    case (method_direct)
       allocate (direct_structure_factor_t :: method)
+   case (method_debye)
+      allocate (debye_structure_factor_t :: method)
+      select type (method)
+      type is (debye_structure_factor_t)
+         method%rmax = opts%rmax
+         method%dr = opts%dr
+         method%skin = opts%skin
+         if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
+      end select
    case default
       if (opts%device == device_gpu) then
 #ifdef SQC_ENABLE_CUDA
@@ -155,6 +165,11 @@ program sqcalc
       end if
    end do
    call reader%close()
+   call method%prepare_output(opts%scheme, ierr, message)
+   if (ierr /= 0) then
+      write (error_unit, '(a)') 'sqcalc: '//trim(message)
+      stop 19
+   end if
    call system_clock(tick, tick_rate)
    wall1 = real(tick, rk)/real(tick_rate, rk)
    elapsed = wall1 - wall0
@@ -167,6 +182,16 @@ program sqcalc
       stop 17
    end if
 #endif
+   if (opts%method == method_debye .and. allocated(opts%rdf_output)) then
+      select type (method)
+      type is (debye_structure_factor_t)
+         call method%write_rdf(opts%scheme, opts%rdf_output, ierr, message)
+      end select
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 20
+      end if
+   end if
    call open_output(opts%output, shell_unit, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -273,6 +298,19 @@ contains
       end if
       write (error_unit, '(a,i0)') '  threads    : ', opt%threads
       if (opt%device == device_gpu) write (error_unit, '(a,i0)') '  gpu device : ', opt%gpu_id
+      if (opt%method == method_debye) then
+         if (opt%rmax > 0.0_rk) then
+            write (error_unit, '(a,f0.3,a)') '  pair cutoff: ', opt%rmax, ' A'
+         else
+            write (error_unit, '(a)') '  pair cutoff: half the smallest periodic side'
+         end if
+         write (error_unit, '(a,f0.4,a,f0.3,a)') '  r bins     : ', opt%dr, ' A (skin ', &
+            opt%skin, ' A)'
+         if (opt%dr > 0.5_rk*acos(-1.0_rk)/opt%qmax) then
+            write (error_unit, '(a,f0.2,a)') '  note       : the radial bin width limits the '// &
+               'reliable range to q ~ ', 0.5_rk*acos(-1.0_rk)/opt%dr, ' 1/A'
+         end if
+      end if
       if (opt%device == device_gpu) then
          if (opt%precision == precision_single) then
             write (error_unit, '(a)') '  precision  : single (float32, cufinufftf)'
@@ -316,6 +354,8 @@ contains
       select case (opt%method)
       case (method_direct)
          text = 'direct summation'
+      case (method_debye)
+         text = 'Debye pair histograms'
       case default
          if (opt%device == device_gpu) then
             if (opt%precision == precision_single) then
