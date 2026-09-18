@@ -4,7 +4,7 @@ module sqc_cell
    implicit none
    private
 
-   public :: cell_t, two_pi
+   public :: cell_t, two_pi, inverse3
 
    real(rk), parameter :: two_pi = 2.0_rk*acos(-1.0_rk)
 
@@ -20,7 +20,9 @@ module sqc_cell
       real(rk) :: volume = 0.0_rk
    contains
       procedure :: init_from_bounds => cell_init_from_bounds
+      procedure :: set_vectors => cell_set_vectors
       procedure :: fractional => cell_fractional
+      procedure :: widths => cell_widths
    end type cell_t
 
 contains
@@ -55,6 +57,16 @@ contains
       call cell_setup(self)
    end subroutine cell_init_from_bounds
 
+   !> Set the cell from three lattice vectors (columns) and refresh the
+   !! reciprocal basis and volume.
+   subroutine cell_set_vectors(self, vectors)
+      class(cell_t), intent(inout) :: self
+      real(rk), intent(in) :: vectors(3, 3)
+      self%a = vectors
+      self%origin = 0.0_rk
+      call cell_setup(self)
+   end subroutine cell_set_vectors
+
    !> Invert the direct lattice basis and store the reciprocal basis.
    subroutine cell_setup(self)
       class(cell_t), intent(inout) :: self
@@ -79,6 +91,34 @@ contains
       ! r = A s with the lattice vectors in the columns of A, hence s = A^-1 r.
       s = matmul(inv, position - self%origin)
    end function cell_fractional
+
+   !> Perpendicular widths of the cell, i.e. the distance between the pairs of
+   !! lattice planes, in the order of the lattice vectors.
+   pure function cell_widths(self) result(widths)
+      class(cell_t), intent(in) :: self
+      real(rk) :: widths(3)
+      real(rk) :: n(3)
+      integer :: i, j, k
+
+      if (self%volume <= 0.0_rk) then
+         widths = 0.0_rk
+         return
+      end if
+      do i = 1, 3
+         j = mod(i, 3) + 1
+         k = mod(j, 3) + 1
+         n = cross3(self%a(:, j), self%a(:, k))
+         widths(i) = self%volume/sqrt(sum(n*n))
+      end do
+   end function cell_widths
+
+   pure function cross3(u, v) result(w)
+      real(rk), intent(in) :: u(3), v(3)
+      real(rk) :: w(3)
+      w(1) = u(2)*v(3) - u(3)*v(2)
+      w(2) = u(3)*v(1) - u(1)*v(3)
+      w(3) = u(1)*v(2) - u(2)*v(1)
+   end function cross3
 
    pure real(rk) function determinant3(m) result(det)
       real(rk), intent(in) :: m(3, 3)

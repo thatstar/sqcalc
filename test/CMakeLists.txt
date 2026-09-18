@@ -11,6 +11,11 @@ add_executable(test_finufft_opts test_finufft_opts.f90)
 target_link_libraries(test_finufft_opts PRIVATE sqcalc_lib)
 add_test(NAME finufft_opts COMMAND test_finufft_opts)
 
+# Cell list: pair list versus brute force enumeration.
+add_executable(test_neighbour_list test_neighbour_list.f90)
+target_link_libraries(test_neighbour_list PRIVATE sqcalc_lib)
+add_test(NAME neighbour_list COMMAND test_neighbour_list)
+
 if(Python3_Interpreter_FOUND)
   set(_sqc_h5read "")
   if(SQC_HAVE_HDF5)
