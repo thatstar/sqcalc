@@ -18,7 +18,7 @@ module sqc_hdf5
    use, intrinsic :: iso_c_binding, only: c_loc, c_ptr
    use hdf5
    use sqc_kinds
-   use sqc_structure, only: structure_factor_t
+   use sqc_structure_factor, only: structure_factor_t
    use sqc_weights, only: weight_scheme_t
    implicit none
    private
@@ -189,7 +189,7 @@ contains
       end subroutine check
    end subroutine hdf5_write_results
 
-   !> Text label of a normalization code (kept in sync with sqc_structure).
+   !> Text label of a normalization code (kept in sync with sqc_structure_factor).
    pure function norm_label(norm) result(label)
       integer, intent(in) :: norm
       character(len=:), allocatable :: label

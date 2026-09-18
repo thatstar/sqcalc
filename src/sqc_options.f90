@@ -3,7 +3,7 @@ module sqc_options
    use sqc_kinds
    use sqc_weights, only: weight_scheme_t, weight_unit, weight_neutron, weight_xray, &
                           scheme_from_name
-   use sqc_structure, only: method_nufft, method_direct, method_debye, norm_mean, &
+   use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
                             norm_self, norm_natom
    use sqc_debye, only: debye_default_dr, debye_default_skin
    implicit none

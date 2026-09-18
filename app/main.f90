@@ -6,7 +6,7 @@ program sqcalc
    use sqc_weights
    use sqc_cell, only: cell_t
    use sqc_elements, only: element_table
-   use sqc_structure
+   use sqc_structure_factor
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA

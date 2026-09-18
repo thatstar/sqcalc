@@ -11,7 +11,7 @@ module sqc_gpu
    use sqc_cell, only: two_pi
    use sqc_dump, only: frame_t
    use sqc_weights, only: weight_scheme_t
-   use sqc_structure, only: structure_factor_t, sf_prepare_species
+   use sqc_structure_factor, only: structure_factor_t, sf_prepare_species
    use sqc_finufft, only: mode_cmcl, type1
    use sqc_cufinufft
    use, intrinsic :: iso_c_binding

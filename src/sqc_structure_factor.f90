@@ -16,7 +16,7 @@
 !! The 1D output is the average of S over the q shells [qmin, qmax]; the
 !! optional grid output writes S at every reciprocal lattice point of that
 !! range.
-module sqc_structure
+module sqc_structure_factor
    use sqc_kinds
    use sqc_cell, only: cell_t, two_pi
    use sqc_dump, only: frame_t
@@ -754,4 +754,4 @@ contains
       call self%accumulate_values(self%intensity)
    end subroutine direct_accumulate
 
-end module sqc_structure
+end module sqc_structure_factor
