@@ -1,12 +1,12 @@
 # sqcalc
 
 `sqcalc` computes the total structure factor S(q) of a LAMMPS trajectory.  It
-reads the default LAMMPS `atoms` dump style, averages |rho(q)|^2 over all
-snapshots and writes a `# q S(q)` table.  Two independent evaluations are
-available: the reciprocal space transform with a non-uniform FFT (FINUFFT) on
-the CPU, or on a CUDA GPU with cuFFT, and the real space Debye pair-histogram
-method.  With an element mapping the table also carries the partial structure
-factors S_ab(q).
+reads the default LAMMPS `atoms` dump style, averages over all snapshots and
+writes a `# q S(q)` table.  Two independent evaluations are available: the
+reciprocal space transform with a non-uniform FFT (FINUFFT) on the CPU, or on a
+CUDA GPU with cuFFT, which averages |rho(q)|^2, and the real space Debye
+pair-histogram method.  With an element mapping the table also carries the
+partial structure factors S_ab(q).
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -160,8 +160,8 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
 | `--rmax VALUE` | pair cutoff [A]; default: half of the smallest periodic box side (minimum image convention, so no self images), or all pairs when the box is not periodic |
 | `--dr VALUE` | radial bin width (default 0.01 A, reliable up to q ~ pi/(2 dr) ~ 150 1/A) |
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
-| `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`) |
-| `--no-cutoff-correction` | disable the cut-off density correction (for comparison; on by default when the box is periodic) |
+| `--rdf FILE` | total and all partial g(r) in one file (text, or HDF5 for `.h5`/`.hdf5`) |
+| `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic) |
 
 ### Partial structure factors
 
@@ -237,16 +237,16 @@ The pair count grows like `N * neighbours(rmax)` while the grid method grows lik
 `(qmax*L)^3`, so Debye wins for large boxes and high q, and the grid method wins
 for small, dense, periodically replicated cells.
 
-Both methods accept non-periodic boxes (`ITEM: BOX BOUNDS ff ff ff`; the
-`pp`/`ff` tokens are honoured per axis).  The reciprocal method wraps each atom
-into the dump box, which leaves `rho(q)` exactly unchanged for that box's
-reciprocal lattice vectors, so a non-periodic configuration is transformed
-correctly - but q is only sampled on that lattice, so a cluster needs enough
-vacuum padding that `2*pi/L` resolves the structure, and the `(qmax*L)^3` grid
-cost grows with the padding.  Debye needs no padding: it evaluates S(q) on any
-requested q grid and defaults to all pairs (`--rmax` = diagonal of the atom
-cloud) when no direction is periodic, which usually makes it the cheaper choice
-for clusters, nanoparticles and surfaces.
+Both methods accept non-periodic boxes (`ITEM: BOX BOUNDS ff ff ff`).  The
+reciprocal method wraps each atom into the dump box, which leaves `rho(q)`
+exactly unchanged for that box's reciprocal lattice vectors, so a non-periodic
+configuration is transformed correctly - but q is only sampled on that lattice,
+so a cluster needs enough vacuum padding that `2*pi/L` resolves the structure,
+and the `(qmax*L)^3` grid cost grows with the padding.  Debye needs no padding:
+it reads the `pp`/`ff` flags per axis, evaluates S(q) on any requested q grid and
+defaults to all pairs (`--rmax` = diagonal of the atom cloud) when no direction
+is periodic, which usually makes it the cheaper choice for clusters,
+nanoparticles and surfaces.
 
 The Verlet skin only pays off when consecutive frames are *correlated*: on a
 rattled trajectory the list survives many frames (the test suite checks that 20
@@ -406,9 +406,10 @@ More about the debyer program: <https://github.com/wojdyr/debyer>.
 * Non-periodic boxes (`ITEM: BOX BOUNDS ff ff ff`, for example a cluster in a
   bounding box) are accepted by every method.  The reciprocal methods still
   sample q on the reciprocal lattice of that box, so the shell resolution and
-  the grid cost stay tied to its size; Debye ignores periodicity, counts the
-  finite pair list, and applies its cut-off density correction only to the
-  periodic directions.
+  the grid cost stay tied to its size; Debye reads the `pp`/`ff` flags per
+  direction, counts the finite pair list, and applies its isotropic cut-off
+  density correction whenever at least one direction is periodic (it is skipped
+  entirely for a fully non-periodic box).
 * Atom coordinates are taken as dumped.  A wrapped coordinate set (`x y z`,
   the LAMMPS default) is what the reciprocal grid method expects; `xu yu zu`
   columns are accepted and wrapped internally.
