@@ -34,7 +34,7 @@ program sqcalc
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       call print_usage(error_unit)
-      error stop 2
+      stop 2
    end if
 
    ! --- thread setup ----------------------------------------------------
@@ -44,7 +44,7 @@ program sqcalc
    if (opts%method == method_nufft .and. .not. finufft_opts_is_consistent()) then
       write (error_unit, '(a)') 'sqcalc: the linked FINUFFT library uses an incompatible '// &
          'finufft_opts layout; rebuild against the vendored FINUFFT version'
-      error stop 3
+      stop 3
    end if
 
    ! --- open the trajectory and inspect the first frame -----------------
@@ -55,14 +55,14 @@ program sqcalc
    end select
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: cannot open dump file "'//opts%input//'"'
-      error stop 4
+      stop 4
    end if
 
    call reader%next_frame(frame, ierr)
    if (ierr /= 0) then
       write (error_unit, '(a,i0,a)') 'sqcalc: no complete frame found in "'//opts%input// &
          '" (reader error ', ierr, ')'
-      error stop 5
+      stop 5
    end if
    natoms = frame%natoms
    ref_a = frame%cell%a
@@ -88,7 +88,7 @@ program sqcalc
    call method%configure(frame, opts%scheme, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
-      error stop 6
+      stop 6
    end if
    if (.not. opts%quiet) call report_grid(method)
 
@@ -104,15 +104,15 @@ program sqcalc
          if (ierr /= 0) then
             write (error_unit, '(a,i0,a,i0,a)') 'sqcalc: malformed dump near line ', &
                reader_line(reader), ' (reader error ', ierr, ')'
-            error stop 7
+            stop 7
          end if
          if (frame%natoms /= natoms) then
             write (error_unit, '(a)') 'sqcalc: number of atoms changes between frames'
-            error stop 8
+            stop 8
          end if
          if (maxval(abs(frame%cell%a - ref_a)) > 1.0e-6_rk*max(1.0_rk, maxval(abs(ref_a)))) then
             write (error_unit, '(a)') 'sqcalc: the simulation box changes between frames'
-            error stop 9
+            stop 9
          end if
       end if
       first_frame = .false.
@@ -120,7 +120,7 @@ program sqcalc
       call method%accumulate_frame(frame, opts%scheme, ierr, message)
       if (ierr /= 0) then
          write (error_unit, '(a)') 'sqcalc: '//trim(message)
-         error stop 10
+         stop 10
       end if
       if (.not. opts%quiet .and. mod(method%nframes, int(progress_step, lk)) == 0) then
          write (error_unit, '(a,i0,a)') '  processed ', method%nframes, ' frames'
@@ -135,20 +135,20 @@ program sqcalc
    call open_output(opts%output, shell_unit, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
-      error stop 11
+      stop 11
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
       call open_output(opts%grid_output, grid_unit, ierr, message)
       if (ierr /= 0) then
          write (error_unit, '(a)') 'sqcalc: '//trim(message)
-         error stop 12
+         stop 12
       end if
    end if
    call method%write_results(shell_unit, grid_unit, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
-      error stop 13
+      stop 13
    end if
    if (shell_unit /= output_unit) close (shell_unit)
    if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
@@ -179,23 +179,23 @@ contains
          if (t > size(scheme%symbols)) then
             write (error_unit, '(a,i0,a)') 'sqcalc: atom type ', t, &
                ' appears in the dump but is missing from the element mapping'
-            error stop 14
+            stop 14
          end if
          idx = scheme%element(t)
          if (idx == 0) then
             write (error_unit, '(a,i0,a)') 'sqcalc: atom type ', t, &
                ' has no element symbol in the mapping'
-            error stop 14
+            stop 14
          end if
          if (scheme%kind == weight_neutron .and. .not. element_table%has_neutron(idx)) then
             write (error_unit, '(a,a,a)') 'sqcalc: no neutron scattering length for ', &
                trim(element_table%symbol_of(idx)), '; use --weight xray or unit'
-            error stop 15
+            stop 15
          end if
          if (scheme%kind == weight_xray .and. .not. element_table%has_xray(idx)) then
             write (error_unit, '(a,a,a)') 'sqcalc: no X-ray form factor for ', &
                trim(element_table%symbol_of(idx)), '; use --weight neutron or unit'
-            error stop 15
+            stop 15
          end if
       end do
    end subroutine validate_mapping
