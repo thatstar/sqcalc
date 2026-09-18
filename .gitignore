@@ -1,0 +1,16 @@
+TAGS
+*.mod
+*.o
+*~
+*.orig*
+*.bak
+*.backup
+tests/*
+.vscode/*
+callgrind.out.*
+*.a
+*.so
+fort.*
+log.lammps
+*.dump
+build*/*

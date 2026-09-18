@@ -1,0 +1,246 @@
+!> Command line handling for sqcalc.
+module sqc_options
+   use sqc_kinds
+   use sqc_weights, only: weight_scheme_t, weight_unit, weight_neutron, weight_xray, &
+                          scheme_from_name
+   use sqc_structure, only: method_nufft, method_direct, norm_mean, norm_self, norm_natom
+   implicit none
+   private
+
+   public :: options_t, parse_options, print_usage, program_version
+
+   character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
+
+   !> Everything configurable from the command line.
+   type :: options_t
+      character(len=:), allocatable :: input
+      character(len=:), allocatable :: output
+      character(len=:), allocatable :: grid_output
+      integer :: threads = 0
+      integer :: method = method_nufft
+      integer :: norm = norm_mean
+      integer :: nq = 500
+      real(rk) :: qmin = 0.0_rk
+      real(rk) :: qmax = 20.0_rk
+      real(rk) :: eps = 1.0e-9_rk
+      logical :: want_grid = .false.
+      logical :: quiet = .false.
+      logical :: show_help = .false.
+      logical :: show_version = .false.
+      type(weight_scheme_t) :: scheme
+   end type options_t
+
+contains
+
+   !> Parse the argument vector into an options_t.
+   subroutine parse_options(self, ierr, message)
+      type(options_t), intent(inout) :: self
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=256) :: arg, name, value, positional(4)
+      integer :: i, nargs, npos, eq, kind
+      logical :: has_inline, needs_value
+
+      ierr = 0
+      message = ''
+      npos = 0
+      nargs = command_argument_count()
+      i = 1
+      do while (i <= nargs)
+         call get_command_argument(i, arg)
+         arg = trim(adjustl(arg))
+         if (len_trim(arg) == 0) then
+            i = i + 1
+            cycle
+         end if
+
+         ! A bare "-" is the stdout marker and counts as positional.
+         if (arg(1:1) == '-' .and. len_trim(arg) > 1) then
+            eq = index(arg, '=')
+            if (eq > 0) then
+               name = arg(:eq - 1)
+               value = arg(eq + 1:)
+               has_inline = .true.
+            else
+               name = arg
+               value = ''
+               has_inline = .false.
+            end if
+
+            needs_value = .true.
+            select case (trim(name))
+            case ('-h', '--help')
+               self%show_help = .true.
+               needs_value = .false.
+            case ('-v', '--version')
+               self%show_version = .true.
+               needs_value = .false.
+            case ('-q', '--quiet')
+               self%quiet = .true.
+               needs_value = .false.
+            case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
+                  '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid')
+               if (.not. has_inline) then
+                  if (i + 1 > nargs) then
+                     ierr = 1
+                     message = 'missing value for option '//trim(name)
+                     return
+                  end if
+                  i = i + 1
+                  call get_command_argument(i, value)
+               end if
+            case default
+               ierr = 1
+               message = 'unknown option "'//trim(name)//'"'
+               return
+            end select
+
+            if (needs_value) then
+               select case (trim(name))
+               case ('-i', '--input')
+                  self%input = trim(value)
+               case ('-m', '--mapping')
+                  call self%scheme%set_mapping(trim(value), ierr, message)
+                  if (ierr /= 0) return
+               case ('-w', '--weight')
+                  kind = scheme_from_name(value)
+                  if (kind < 0) then
+                     ierr = 1
+                     message = 'unknown weight scheme "'//trim(value)//'" (use unit, neutron or xray)'
+                     return
+                  end if
+                  self%scheme%kind = kind
+               case ('-t', '--threads')
+                  read (value, *, iostat=ierr) self%threads
+                  if (ierr /= 0 .or. self%threads < 1) then
+                     ierr = 1
+                     message = 'thread count must be a positive integer'
+                     return
+                  end if
+               case ('--qmin')
+                  read (value, *, iostat=ierr) self%qmin
+                  if (ierr /= 0 .or. self%qmin < 0.0_rk) then
+                     ierr = 1
+                     message = '--qmin must be a non-negative number'
+                     return
+                  end if
+               case ('--qmax')
+                  read (value, *, iostat=ierr) self%qmax
+                  if (ierr /= 0 .or. self%qmax <= 0.0_rk) then
+                     ierr = 1
+                     message = '--qmax must be a positive number'
+                     return
+                  end if
+               case ('--nq')
+                  read (value, *, iostat=ierr) self%nq
+                  if (ierr /= 0 .or. self%nq < 1) then
+                     ierr = 1
+                     message = '--nq must be a positive integer'
+                     return
+                  end if
+               case ('--eps')
+                  read (value, *, iostat=ierr) self%eps
+                  if (ierr /= 0 .or. self%eps <= 0.0_rk) then
+                     ierr = 1
+                     message = '--eps must be a positive number'
+                     return
+                  end if
+               case ('--method')
+                  select case (trim(value))
+                  case ('nufft', 'finufft')
+                     self%method = method_nufft
+                  case ('direct')
+                     self%method = method_direct
+                  case default
+                     ierr = 1
+                     message = 'unknown method "'//trim(value)//'" (use nufft or direct)'
+                     return
+                  end select
+               case ('--norm')
+                  select case (trim(value))
+                  case ('mean', 'fz')
+                     self%norm = norm_mean
+                  case ('self')
+                     self%norm = norm_self
+                  case ('n', 'natom')
+                     self%norm = norm_natom
+                  case default
+                     ierr = 1
+                     message = 'unknown normalization "'//trim(value)//'" (use mean, self or n)'
+                     return
+                  end select
+               case ('--grid')
+                  self%want_grid = .true.
+                  self%grid_output = trim(value)
+               end select
+            end if
+         else
+            npos = npos + 1
+            if (npos > size(positional)) then
+               ierr = 1
+               message = 'too many positional arguments'
+               return
+            end if
+            positional(npos) = trim(arg)
+         end if
+         i = i + 1
+      end do
+
+      if (self%show_help .or. self%show_version) return
+      if (npos < 1) then
+         ierr = 1
+         message = 'missing output argument (use - for stdout)'
+         return
+      end if
+      if (npos > 1) then
+         ierr = 1
+         message = 'only one output argument is allowed'
+         return
+      end if
+      self%output = trim(positional(1))
+      if (.not. allocated(self%input)) then
+         ierr = 1
+         message = 'missing input dump file (-i)'
+         return
+      end if
+      if (self%qmax <= self%qmin) then
+         ierr = 1
+         message = 'qmax must be larger than qmin'
+         return
+      end if
+      if (self%scheme%kind /= weight_unit .and. .not. self%scheme%has_mapping()) then
+         ierr = 1
+         message = 'weighted schemes need an element mapping, e.g. -m 1:Si,2:O'
+         return
+      end if
+      if (.not. self%want_grid) self%grid_output = ''
+   end subroutine parse_options
+
+   subroutine print_usage(unit)
+      integer, intent(in) :: unit
+      write (unit, '(a)') program_version
+      write (unit, '(a)') ''
+      write (unit, '(a)') 'Total structure factor S(q) from LAMMPS dump files.'
+      write (unit, '(a)') ''
+      write (unit, '(a)') 'usage: sqcalc -i DUMP [options] OUTPUT'
+      write (unit, '(a)') ''
+      write (unit, '(a)') 'OUTPUT is the shell averaged S(q) table, use - for stdout.'
+      write (unit, '(a)') ''
+      write (unit, '(a)') 'options:'
+      write (unit, '(a)') '  -i, --input FILE    LAMMPS dump trajectory (required)'
+      write (unit, '(a)') '  -m, --mapping LIST  LAMMPS type id to element symbol, e.g. 1:Si,2:O'
+      write (unit, '(a)') '  -w, --weight SCHEME unit (default), neutron or xray'
+      write (unit, '(a)') '  -t, --threads N     OpenMP threads (default: all available)'
+      write (unit, '(a)') '      --qmin VALUE    smallest |q| in the output [1/A] (default 0)'
+      write (unit, '(a)') '      --qmax VALUE    largest |q| in the output [1/A] (default 20)'
+      write (unit, '(a)') '      --nq N          number of q shells (default 500)'
+      write (unit, '(a)') '      --grid [FILE]   also write S(q) on every reciprocal lattice point'
+      write (unit, '(a)') '      --method NAME   nufft (default) or direct'
+      write (unit, '(a)') '      --norm NAME     mean (default), self or n'
+      write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'
+      write (unit, '(a)') '  -q, --quiet         do not write progress information to stderr'
+      write (unit, '(a)') '  -h, --help          show this help'
+      write (unit, '(a)') '  -v, --version       show the program version'
+   end subroutine print_usage
+
+end module sqc_options
