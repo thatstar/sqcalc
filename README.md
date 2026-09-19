@@ -8,6 +8,12 @@ CUDA GPU with cuFFT, which averages $|\rho(q)|^2$, and the real space Debye
 pair-histogram method.  The table also carries the partial structure factors
 $S_{ab}(q)$, one column per pair of LAMMPS types.
 
+With `--dyn` the time axis is kept instead of being averaged away, and the
+run writes the dynamic structure factor $S(q,\omega)$ along a line in
+reciprocal space, plus optionally the intermediate scattering function
+$F(q,t)$.  That method correlates the density amplitudes in time rather than
+averaging their squares.
+
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
 ```
@@ -96,6 +102,13 @@ With `--method debye` these options select the pair histogram:
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
 | `--rdf FILE` | total and all partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic) |
+| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
+| `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
+| `--maxframes L` | correlation window in frames (largest lag kept), required by `--dyn` |
+| `--lag N` | frames between consecutive time origins (default 1) |
+| `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
+| `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
+| `--sqw-format NAME` | `text` (default) or `hdf5` for the two files above |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -121,6 +134,12 @@ sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
 sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
        --rmax 12 --dr 0.01 --skin 1.0 --rdf g_of_r.dat S_q.dat
+
+# dynamic structure factor along (1,1,0): 101 q points from 0.5 to 20 1/A,
+# frames every 10 steps of dt = 0.005, a 400 frame correlation window
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
+       --dyn 100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat S_q.dat
 ```
 
 ## Theoretical background
@@ -175,6 +194,46 @@ and the output format behave identically.  A finite pair cutoff biases the low
 $q$ region; sqcalc applies the same cut-off density correction as `debyer`
 whenever at least one direction is periodic (`--no-cutoff-correction` disables
 it).  `--grid` is not available with this method, and it runs on the CPU.
+
+### Dynamic structure factor
+
+`--dyn` follows the recipe used by the dynasor and MDANSE packages: pick a
+line in reciprocal space, evaluate the density amplitudes there, correlate
+them in time and Fourier transform the correlation.  With
+`q_i = s_i \hat{u}`, `s_i = S_0 + i (S_1-S_0)/N_{\rm int}` (the line always
+passes through $\Gamma$, the origin of reciprocal space),
+
+$$
+F(q,t) = \frac{1}{W(q)} \sum_{ab} w_a(q) w_b(q)
+         \frac{\langle \rho_a(q,t'+\tau)\,\rho_b^*(q,t')\rangle}{N_{\rm origins}(\tau)},
+\qquad
+S(q,\omega) = \frac{1}{2\pi}\int_{-\infty}^{\infty} e^{i\omega t} F(q,t)\,dt
+$$
+
+with the same $\rho$, $w$ and $W(q)$ as the static calculation, so the
+normalization conventions (`--weight`, `--norm`) carry over unchanged and the
+zeroth moment is exact: $\int S(q,\omega)\,d\omega = F(q,0) = S(q)$ of the
+`OUTPUT` table.
+
+The average over time origins accumulates a sum *and* a count for every lag,
+which is what makes the estimator exact for a trajectory that is not a whole
+number of windows long, and the ring buffer means the memory does not grow
+with the trajectory.  `--maxframes L` sets the largest lag kept (and hence the
+resolution $\Delta\omega = \pi/(L\Delta t)$), while `--lag N` thins the time
+origins for cheaper or more nearly independent averages.  The frame interval
+$\Delta t$ is `--dt` times the step increment read from the dump, which must
+be constant; the highest frequency the spectrum can represent is
+$\pi/\Delta t$, so the dump cadence - not `--maxframes` - decides what is
+resolvable.
+
+The $q$ line may be off the reciprocal lattice of the box.  That is the
+experimental situation (the $q$ of an inelastic scattering experiment is set by
+the scattering angle, not by the simulation box) and it is why the amplitudes
+are summed directly instead of being transformed on a grid: for the ~100 q
+points of a line scan the direct sum costs $O(N\,n_q)$ per frame, far less
+than transforming the $(q_{\max}L)^3$ grid.  Off-lattice $q$ requires
+unwrapped coordinates, which `--dyn` reconstructs while reading if the dump
+carries only wrapped `x y z` (preferring `xu yu zu` when available).
 
 ### Partial structure factors
 

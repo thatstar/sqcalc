@@ -12,6 +12,7 @@ program sqcalc
    use sqc_cell, only: cell_t
    use sqc_elements, only: element_table
    use sqc_structure_factor
+   use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
@@ -30,7 +31,7 @@ program sqcalc
    type(frame_t) :: frame
    character(len=512) :: message
    integer :: ierr, shell_unit, grid_unit, tick, tick_rate, progress_step
-   integer(ik) :: natoms
+   integer(ik) :: natoms, step
    real(rk) :: ref_a(3, 3), elapsed, wall0, wall1, eps_used
    logical :: first_frame
 
@@ -96,6 +97,21 @@ program sqcalc
          method%correct_cutoff = .not. opts%no_cutoff_correction
          if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
       end select
+   case (method_dynamic)
+      allocate (dynamics_structure_factor_t :: method)
+      select type (method)
+      type is (dynamics_structure_factor_t)
+         method%nintervals = opts%dyn_intervals
+         method%s0 = opts%dyn_s0
+         method%s1 = opts%dyn_s1
+         method%direction = opts%dyn_dir
+         method%maxframes = opts%maxframes
+         method%lag_stride = opts%lag_stride
+         method%sqw_format = dyn_format_text
+         if (opts%sqw_format == grid_format_hdf5) method%sqw_format = dyn_format_hdf5
+         if (allocated(opts%sqw_output)) method%sqw_path = opts%sqw_output
+         if (allocated(opts%fsq_output)) method%fsq_path = opts%fsq_output
+      end select
    case default
       if (opts%device == device_gpu) then
 #ifdef SQC_ENABLE_CUDA
@@ -147,6 +163,15 @@ program sqcalc
       if (.not. first_frame) then
          call reader%next_frame(frame, ierr)
          if (ierr == 1) exit
+         if (ierr == 10) then
+            write (error_unit, '(a)') 'sqcalc: the atom order (id) changes between frames; '// &
+               'sort the dump (for example dump_modify ... sort id) or keep the order fixed'
+            stop 24
+         end if
+         if (ierr == 11) then
+            write (error_unit, '(a)') 'sqcalc: the number of atoms changes between frames'
+            stop 25
+         end if
          if (ierr /= 0) then
             write (error_unit, '(a,i0,a,i0,a)') 'sqcalc: malformed dump near line ', &
                reader_line(reader), ' (reader error ', ierr, ')'
@@ -173,6 +198,31 @@ program sqcalc
       end if
    end do
    call reader%close()
+
+   ! --- the dynamic method needs a constant time between frames ----------
+   if (opts%method == method_dynamic) then
+      step = reader_step_stride(reader)
+      if (.not. reader_uniform_steps(reader) .or. step <= 0) then
+         write (error_unit, '(a)') 'sqcalc: the dump must sample the trajectory at a '// &
+            'constant timestep interval for --dyn'
+         stop 21
+      end if
+      select type (method)
+      type is (dynamics_structure_factor_t)
+         method%frame_dt = opts%dt*real(step, rk)
+         if (.not. opts%quiet) then
+            write (error_unit, '(a,f0.6,a,f0.6,a,i0,a)') '  frame dt   : ', method%frame_dt, &
+               ' = dt ', opts%dt, ' x ', step, ' steps'
+            write (error_unit, '(a,f0.4,a)') '  omega max  : ', &
+               acos(-1.0_rk)/method%frame_dt, ' 1/time (Nyquist, from the dump interval)'
+         end if
+      end select
+      if (reader_ambiguous(reader) > 0 .and. .not. opts%quiet) then
+         write (error_unit, '(a,i0,a)') '  note       : ', reader_ambiguous(reader), &
+            ' atom displacements were too large to unwrap reliably; dump more often'
+      end if
+   end if
+
    call method%prepare_output(opts%scheme, ierr, message)
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -219,6 +269,27 @@ program sqcalc
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       stop 13
+   end if
+   if (opts%method == method_dynamic) then
+      select type (method)
+      type is (dynamics_structure_factor_t)
+         if (allocated(method%sqw_path)) then
+            call method%write_sqw(method%sqw_path, method%sqw_format, opts%scheme, opts%input, &
+                                  ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 22
+            end if
+         end if
+         if (allocated(method%fsq_path)) then
+            call method%write_fsq(method%fsq_path, method%sqw_format, opts%scheme, opts%input, &
+                                  ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 23
+            end if
+         end if
+      end select
    end if
    if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
 #ifdef SQC_HAVE_HDF5
@@ -330,10 +401,18 @@ contains
 
    subroutine report_grid(m)
       class(structure_factor_t), intent(in) :: m
-      write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes
-      write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
-      write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q range    : ', m%nmodes, &
-         ' modes in [', m%qmin, ', ', m%qmax, '] 1/A'
+      select type (m)
+      type is (dynamics_structure_factor_t)
+         write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q line     : ', &
+            m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
+         write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
+            ' frames, origin lag ', m%lag_stride
+      class default
+         write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes
+         write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
+         write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q range    : ', m%nmodes, &
+            ' modes in [', m%qmin, ', ', m%qmax, '] 1/A'
+      end select
    end subroutine report_grid
 
    !> Open the requested output target; "-" means standard output.
@@ -364,6 +443,8 @@ contains
          text = 'direct summation'
       case (method_debye)
          text = 'Debye pair histograms'
+      case (method_dynamic)
+         text = 'dynamic structure factor (direct summation on a q line)'
       case default
          if (opt%device == device_gpu) then
             if (opt%precision == precision_single) then
@@ -409,5 +490,35 @@ contains
          line = 0
       end select
    end function reader_line
+
+   !> Timestep increment between consecutive frames (0 when not determined).
+   integer(ik) function reader_step_stride(r) result(step)
+      class(frame_reader_t), intent(in) :: r
+      step = 0
+      select type (r)
+      type is (lammps_dump_reader_t)
+         step = r%step_stride
+      end select
+   end function reader_step_stride
+
+   !> True while every frame was written after the same number of steps.
+   logical function reader_uniform_steps(r) result(uniform)
+      class(frame_reader_t), intent(in) :: r
+      uniform = .false.
+      select type (r)
+      type is (lammps_dump_reader_t)
+         uniform = r%uniform_timestep
+      end select
+   end function reader_uniform_steps
+
+   !> Number of atom displacements that were too large to unwrap reliably.
+   integer function reader_ambiguous(r) result(n)
+      class(frame_reader_t), intent(in) :: r
+      n = 0
+      select type (r)
+      type is (lammps_dump_reader_t)
+         n = r%n_ambiguous
+      end select
+   end function reader_ambiguous
 
 end program sqcalc

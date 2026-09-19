@@ -13,6 +13,10 @@ type pair as a `# q S(q)` table.  Two independent routes are available: a
 reciprocal space non-uniform FFT (FINUFFT on the CPU, cufinufft/cuFFT on a GPU)
 and a real space Debye pair histogram, which can also write $g(r)$.
 
+With `--dyn` it instead keeps the time axis and writes the dynamic structure
+factor $S(q,\omega)$ along a line in reciprocal space (`--sqw`), optionally
+with the intermediate scattering function $F(q,t)$ (`--fsq`).
+
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
 sqcalc` is the check that it resolves.  Nothing else has to be located to run a
@@ -50,6 +54,15 @@ It needs matplotlib and nothing else; `--output` picks the format from the
 suffix, so `.pdf` or `.svg` gives vector output.  A dashed line marks the 1 that
 S(q), g(r) and the Faber-Ziman partials tend to; `--refline 0` or
 `--refline none` changes or removes it.
+
+`scripts/plot_sqw.py` plots a `--sqw`/`--fsq` table instead: the map of the
+quantity over $(|q|,\omega)$ next to a few selected spectra, or single curves
+with `--mode spectra --q 1,4`:
+
+```sh
+python3 scripts/plot_sqw.py S_qw.dat
+python3 scripts/plot_sqw.py --mode spectra --q 1,4 -o spectra.pdf F_qt.dat
+```
 
 `scripts/choose_q.py DUMP` picks the q sampling from the box, which the
 reciprocal methods need because their q grid is the lattice of that box:

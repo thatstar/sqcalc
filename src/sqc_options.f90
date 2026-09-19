@@ -9,7 +9,7 @@ module sqc_options
    use sqc_weights, only: weight_scheme_t, weight_unit, weight_neutron, weight_xray, &
                           scheme_from_name
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
-                            norm_self, norm_natom
+                            norm_self, norm_natom, method_dynamic
    use sqc_debye, only: debye_default_dr, debye_default_skin
    implicit none
    private
@@ -38,6 +38,7 @@ module sqc_options
       character(len=:), allocatable :: grid_output
       integer :: threads = 0
       integer :: method = method_nufft
+      logical :: method_given = .false.
       integer :: norm = norm_mean
       integer :: device = device_cpu
       integer :: gpu_id = 0
@@ -69,6 +70,23 @@ module sqc_options
       logical :: quiet = .false.
       logical :: show_help = .false.
       logical :: show_version = .false.
+      !> Dynamic structure factor (--dyn and its parameters).
+      logical :: dynamic = .false.
+      !> q line: NINT intervals, scale from S0 to S1 along (DX, DY, DZ).
+      integer :: dyn_intervals = 0
+      real(rk) :: dyn_s0 = 0.0_rk
+      real(rk) :: dyn_s1 = 0.0_rk
+      real(rk) :: dyn_dir(3) = 0.0_rk
+      !> MD time step [time units] and the correlation window settings.
+      real(rk) :: dt = 0.0_rk
+      integer :: maxframes = 0
+      integer :: lag_stride = 1
+      logical :: lag_given = .false.
+      !> Optional dynamic outputs.
+      character(len=:), allocatable :: sqw_output
+      character(len=:), allocatable :: fsq_output
+      integer :: sqw_format = grid_format_text
+      logical :: sqw_format_given = .false.
       type(weight_scheme_t) :: scheme
    end type options_t
 
@@ -138,7 +156,8 @@ contains
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
                   '--device', '--gpu-id', '--precision', '--grid-format', &
-                  '--rmax', '--dr', '--skin', '--rdf')
+                  '--rmax', '--dr', '--skin', '--rdf', &
+                  '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fsq', '--sqw-format')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -229,6 +248,7 @@ contains
                      message = 'unknown method "'//trim(value)//'" (use nufft, direct or debye)'
                      return
                   end select
+                  self%method_given = .true.
                case ('--rmax')
                   read (value, *, iostat=ierr) self%rmax
                   if (ierr /= 0 .or. self%rmax <= 0.0_rk) then
@@ -255,6 +275,47 @@ contains
                   self%skin_given = .true.
                case ('--rdf')
                   self%rdf_output = trim(value)
+               case ('--dyn')
+                  call parse_dyn(self, trim(value), ierr, message)
+                  if (ierr /= 0) return
+               case ('--dt')
+                  read (value, *, iostat=ierr) self%dt
+                  if (ierr /= 0 .or. self%dt <= 0.0_rk) then
+                     ierr = 1
+                     message = '--dt must be a positive number (the MD time step)'
+                     return
+                  end if
+               case ('--maxframes')
+                  read (value, *, iostat=ierr) self%maxframes
+                  if (ierr /= 0 .or. self%maxframes < 1) then
+                     ierr = 1
+                     message = '--maxframes must be a positive integer'
+                     return
+                  end if
+               case ('--lag')
+                  read (value, *, iostat=ierr) self%lag_stride
+                  if (ierr /= 0 .or. self%lag_stride < 1) then
+                     ierr = 1
+                     message = '--lag must be a positive integer'
+                     return
+                  end if
+                  self%lag_given = .true.
+               case ('--sqw')
+                  self%sqw_output = trim(value)
+               case ('--fsq')
+                  self%fsq_output = trim(value)
+               case ('--sqw-format')
+                  select case (trim(value))
+                  case ('text', 'txt', 'ascii')
+                     self%sqw_format = grid_format_text
+                  case ('hdf5', 'h5', 'hdf')
+                     self%sqw_format = grid_format_hdf5
+                  case default
+                     ierr = 1
+                     message = 'unknown sqw format "'//trim(value)//'" (use text or hdf5)'
+                     return
+                  end select
+                  self%sqw_format_given = .true.
                case ('--device')
                   select case (trim(value))
                   case ('cpu')
@@ -352,6 +413,43 @@ contains
          message = 'single precision is only available on the GPU path (--device gpu)'
          return
       end if
+      if (self%dynamic) then
+         if (self%method_given) then
+            ierr = 1
+            message = '--dyn selects the dynamic method; do not pass --method as well'
+            return
+         end if
+         self%method = method_dynamic
+         if (self%dt <= 0.0_rk) then
+            ierr = 1
+            message = '--dyn needs --dt DT, the time step of the trajectory'
+            return
+         end if
+         if (self%maxframes < 1) then
+            ierr = 1
+            message = '--dyn needs --maxframes L, the correlation window in frames'
+            return
+         end if
+         if (self%want_grid) then
+            ierr = 1
+            message = 'the dynamic method samples a q line; --grid is not available'
+            return
+         end if
+         if (self%device == device_gpu) then
+            ierr = 1
+            message = 'the dynamic method runs on the CPU; use --device cpu'
+            return
+         end if
+      else if (allocated(self%sqw_output) .or. allocated(self%fsq_output)) then
+         ierr = 1
+         message = '--sqw and --fsq belong to --dyn'
+         return
+      else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
+               self%sqw_format_given) then
+         ierr = 1
+         message = '--dt, --maxframes, --lag and --sqw-format belong to --dyn'
+         return
+      end if
       if (self%method == method_debye) then
          if (self%want_grid) then
             ierr = 1
@@ -378,7 +476,82 @@ contains
             self%grid_format = grid_format_hdf5
          end if
       end if
+      if (allocated(self%sqw_output) .and. .not. self%sqw_format_given) then
+         if (ends_with(self%sqw_output, '.h5') .or. ends_with(self%sqw_output, '.hdf5')) then
+            self%sqw_format = grid_format_hdf5
+         end if
+      end if
    end subroutine parse_options
+
+   !> Parse the packed `--dyn` specification "NINT,S0,S1,DX,DY,DZ".
+   !!
+   !! NINT is the number of intervals of the q line (so NINT+1 q points), S0/S1
+   !! the range of its scale in 1/A, and DX,DY,DZ the (unnormalized) direction.
+   subroutine parse_dyn(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=48) :: fields(6)
+      real(rk) :: values(6)
+      integer :: i, j, n, start, last
+      logical :: at_end
+
+      ierr = 0
+      message = ''
+      fields = ' '
+      values = 0.0_rk
+      n = 0
+      start = 1
+      last = len_trim(spec)
+      do i = 1, last + 1
+         ! Fortran does not short-circuit .or., so the end of the string has to
+         ! be tested separately before spec(i:i) is evaluated.
+         at_end = i > last
+         if (.not. at_end) at_end = spec(i:i) == ','
+         if (at_end) then
+            if (i > start) then
+               n = n + 1
+               if (n > 6) exit
+               fields(n) = spec(start:i - 1)
+            end if
+            start = i + 1
+         end if
+      end do
+      if (n /= 6) then
+         ierr = 1
+         message = '--dyn wants NINT,S0,S1,DX,DY,DZ, e.g. --dyn 100,0.5,20,1,1,0'
+         return
+      end if
+      do j = 1, 6
+         read (fields(j), *, iostat=ierr) values(j)
+         if (ierr /= 0) then
+            ierr = 1
+            message = 'cannot read "'//trim(fields(j))//'" as a number in --dyn'
+            return
+         end if
+      end do
+      self%dyn_intervals = nint(values(1))
+      self%dyn_s0 = values(2)
+      self%dyn_s1 = values(3)
+      self%dyn_dir = values(4:6)
+      if (self%dyn_intervals < 1) then
+         ierr = 1
+         message = '--dyn needs at least one interval on the q line'
+         return
+      end if
+      if (self%dyn_s1 <= self%dyn_s0 .or. self%dyn_s0 < 0.0_rk) then
+         ierr = 1
+         message = '--dyn needs 0 <= S0 < S1 for the scale of the q line'
+         return
+      end if
+      if (sum(self%dyn_dir**2) <= 0.0_rk) then
+         ierr = 1
+         message = '--dyn needs a non-zero direction, e.g. 1,1,0'
+         return
+      end if
+      self%dynamic = .true.
+   end subroutine parse_dyn
 
    !> Case sensitive file suffix test used for the grid format default.
    pure logical function ends_with(text, suffix) result(found)
@@ -417,6 +590,15 @@ contains
       write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [A] (default 1.0)'
       write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
       write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
+      write (unit, '(a)') '      --dyn SPEC      dynamic structure factor S(q,w) along a q line:'
+      write (unit, '(a)') '                      NINT,S0,S1,DX,DY,DZ, e.g. 100,0.5,20,1,1,0'
+      write (unit, '(a)') '                      NINT intervals, scale S0..S1 [1/A], direction'
+      write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (with --dyn)'
+      write (unit, '(a)') '      --maxframes N   correlation window in frames (with --dyn)'
+      write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'
+      write (unit, '(a)') '      --sqw FILE      S(q,w) spectra, one row per (q,w) (.h5 = HDF5)'
+      write (unit, '(a)') '      --fsq FILE      F(q,t) intermediate scattering function'
+      write (unit, '(a)') '      --sqw-format NAME  text (default) or hdf5'
       write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
       write (unit, '(a)') '      --partials      write the partial structure factor columns (default)'
       write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'

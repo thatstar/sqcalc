@@ -32,6 +32,13 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--skin VALUE` | Debye Verlet skin for reusing the pair list [A] (default 1.0, `0` rebuilds every frame) |
 | `--rdf FILE` | total and partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
+| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
+| `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
+| `--maxframes L` | correlation window in frames (the largest lag kept), required by `--dyn` |
+| `--lag N` | frames between two consecutive time origins (default 1) |
+| `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
+| `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
+| `--sqw-format NAME` | `text` (default) or `hdf5`, applies to `--sqw` and `--fsq` |
 | `-q, --quiet` | suppress the progress output on stderr |
 | `-h, --help` | option summary |
 | `-v, --version` | program version |
@@ -127,6 +134,49 @@ asymptote and can be compared directly with the partials of other systems,
 while the default (OVITO) partials tend to the concentrations $x_a$ and hide
 the structure behind the composition.
 
+### Dynamic structure factor (`--dyn`)
+
+The other methods average the snapshots as an unordered ensemble and return
+$S(q)$; `--dyn` keeps the time axis and returns $S(q,\omega)$ along one line in
+reciprocal space.  The line is one comma separated argument,
+
+```sh
+--dyn NINT,S0,S1,DX,DY,DZ
+```
+
+`NINT` intervals (so `NINT+1` q points) with the scale running from `S0` to
+`S1` in 1/A along the direction `(DX,DY,DZ)`; every line passes through the
+Gamma point.  `--dyn 100,0.5,20,1,1,0` is therefore 101 q points from 0.5 to
+20 1/A along (1,1,0).  Off-lattice $q$ is the point of the method: it is what
+an experiment at that $q$ measures, and the reciprocal grid methods cannot
+reach it.
+
+The dynamics come from the same density amplitudes $\rho_a(q,t)$, evaluated by
+direct summation on the line and correlated in time with a multi-origin
+estimator over a ring buffer,
+
+$$C_{ab}(q,\tau) = \langle \rho_a(q,t+\tau)\rho_b^*(q,t)\rangle,$$
+
+accumulating a sum *and* a count per lag, so the memory does not grow with the
+trajectory length and a trajectory whose length is not a multiple of the window
+needs no padding.  `--maxframes L` is the window: the largest lag kept, and
+hence the resolution $\Delta\omega = \pi/(L\,\Delta t_{\rm frame})$.  `--lag N`
+is the distance in frames between consecutive time origins (default 1, the most
+overlapping averages; larger values are cheaper and more nearly independent).
+
+`--dt` is the time step of the trajectory, i.e. the LAMMPS `timestep` value:
+the frame interval is `dt` times the step increment found in the dump, which
+must be constant (a dump written at an irregular cadence is rejected).  The
+unit of $\omega$ is the inverse of the unit of `--dt` (a `dt` in ps gives
+$\omega$ in rad/ps); the trajectory carries no unit, so it is up to the user to
+keep `--dt` and the interpretation consistent.
+
+The transform uses the one-sided folding $S(q,-\omega) = S(q,\omega)$ and the
+normalization $W(q)$ of the static table, so the zeroth moment is exact:
+$\int S(q,\omega)\,d\omega = F(q,0) = S(q)$, the value in `OUTPUT`.  Chemical
+weighting (`-w neutron`/`xray`, `--norm`) is applied to the partial correlation
+functions exactly as for the static partials, so the same conventions hold.
+
 ## Output
 
 The shell table is text:
@@ -156,6 +206,17 @@ the order of `-m`, with the partials normalized to $g_{ab} \to 1$ at large $r$
 (HDF5: `/rdf/r`, `/rdf/g`, `/rdf/g_partial/<label>`, `/rdf/pairs`).  The
 weighted total uses the $q \to 0$ amplitudes.
 
+`--sqw FILE` (dynamic method) holds one row per $(q,\omega)$ sample,
+`# qx qy qz omega S(q,w) S(a-a) ...`, and `--fsq FILE` the intermediate
+scattering function with `tau` in place of `omega` and the same columns.  Both
+accept a `.h5`/`.hdf5` name (or `--sqw-format hdf5`) for HDF5, where the
+datasets are `/sqw/q` (one row per q: `qx qy qz |q|`), `/sqw/omega`,
+`/sqw/S`, `/sqw/count` (the time origins actually accumulated per lag),
+`/sqw/pairs` and `/sqw/S_partial/<pair>`, with the same layout under `/fsq`.
+The partial spectra are always in the plain (OVITO) convention of the static
+partial columns: transforming to the Faber-Ziman form would need the self part,
+which the method does not separate, so `-fz` applies to the static table only.
+
 The shell, `g(r)` and grid tables are plain text, with the column names in the
 header line, so any plotting tool reads them as they are.  The skill ships
 `scripts/plot_sq.py` for this: it takes the axis labels and the partials from
@@ -179,6 +240,12 @@ sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
 # Debye method with partial g(r), and a GPU transform
 sqcalc -i traj.dump -m 1:Si,2:O --method debye --rmax 12 --rdf g_of_r.dat S_q.dat
 sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
+
+# dynamic structure factor along (1,1,0), 101 q points, dumped every 10 steps
+# of dt = 0.005 (frame interval 0.05), window 400 frames
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
+       --dyn 100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat S_q.dat
 ```
 
 ## Limits and pitfalls
@@ -192,7 +259,15 @@ sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
 * A finite Debye cutoff biases the low $q$ region, which is what the cut-off
   density correction removes; on uncorrelated frames `--skin 0` is faster.
 * Coordinates are taken as dumped: `x y z` is native, `xu yu zu` is wrapped
-  internally.
+  internally.  The dynamic method always needs *unwrapped* coordinates: it
+  prefers `xu yu zu` and otherwise reconstructs them from `x y z` while
+  reading, which requires the atom order (`id`) to be stable between frames.
+* `--dyn` needs a dump written at a constant timestep interval, and enough of
+  them: the frame interval sets the highest frequency the spectrum can see
+  ($\omega_{\max} = \pi/\Delta t_{\rm frame}$), so a trajectory dumped every
+  100 MD steps resolves far less than one dumped every 10.  sqcalc prints the
+  derived frame interval and warns when the frame-to-frame displacements
+  suggest the dynamics are undersampled.
 * With `-w neutron`/`xray` a type missing from the mapping, or an element
   without tabulated data, is rejected with a clear message; `-w unit` needs no
   mapping and labels the partials by type id instead.

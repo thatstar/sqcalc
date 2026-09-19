@@ -21,12 +21,15 @@ program h5read
    real(real64), allocatable :: q(:), s(:), qx(:), qy(:), qz(:)
    integer(int32), allocatable :: h(:), k(:), l(:)
    real(real64), allocatable :: part(:, :), pv(:)
+   real(real64), allocatable :: part3(:, :, :)
+   real(real64), allocatable :: q2(:, :), spec(:, :), spec2(:, :), axis(:)
    character(len=18), allocatable :: dnames(:)
+   integer :: nq, ncol, naxis, naxis_check, nq_check, kk
 
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fsq)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -109,6 +112,58 @@ program h5read
          write (output_unit, '(a)') ''
       end do
       call h5gclose_f(group_id, hdferr)
+   case ('sqw', 'fsq')
+      ! dynamic structure factor (or F(q,t)): one row per (q, axis) sample,
+      ! the same long table the text writer produces
+      call h5gopen_f(file_id, trim(which), group_id, hdferr)
+      call read_real_2d(group_id, 'q', q2, nq, ncol)
+      call read_real_1d(group_id, axis_of(trim(which)), axis, naxis)
+      if (trim(which) == 'sqw') then
+         call read_real_2d(group_id, 'S', spec, nq, naxis_check)
+         call read_string_1d(group_id, 'pairs', dnames, npairs)
+         allocate (part3(nq, naxis, max(npairs, 1)))
+         part3 = 0.0_real64
+         do i = 1, npairs
+            call h5gopen_f(group_id, 'S_partial', subgroup_id, hdferr)
+            call read_real_2d(subgroup_id, trim(dnames(i)), spec2, nq_check, naxis_check)
+            part3(:, :, i) = spec2
+            call h5gclose_f(subgroup_id, hdferr)
+            deallocate (spec2)
+         end do
+      else
+         call read_real_2d(group_id, 'F', spec, nq, naxis_check)
+         call read_string_1d(group_id, 'pairs', dnames, npairs)
+         allocate (part3(nq, naxis, max(npairs, 1)))
+         part3 = 0.0_real64
+         do i = 1, npairs
+            call h5gopen_f(group_id, 'F_partial', subgroup_id, hdferr)
+            call read_real_2d(subgroup_id, trim(dnames(i)), spec2, nq_check, naxis_check)
+            part3(:, :, i) = spec2
+            call h5gclose_f(subgroup_id, hdferr)
+            deallocate (spec2)
+         end do
+      end if
+      write (output_unit, '(a)', advance='no') '# qx qy qz '//trim(axis_of(trim(which)))
+      if (trim(which) == 'sqw') then
+         write (output_unit, '(a)', advance='no') ' S(q,w)'
+      else
+         write (output_unit, '(a)', advance='no') ' F(q,t)'
+      end if
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' '//trim(dnames(i))
+      end do
+      write (output_unit, '(a)') ''
+      do j = 1, nq
+         do i = 1, naxis
+            write (output_unit, '(3(f14.8,2x),f16.8,2x,es20.12)', advance='no') &
+               q2(j, 1), q2(j, 2), q2(j, 3), axis(i), spec(j, i)
+            do kk = 1, npairs
+               write (output_unit, '(2x,es20.12)', advance='no') part3(j, i, kk)
+            end do
+            write (output_unit, '(a)') ''
+         end do
+      end do
+      call h5gclose_f(group_id, hdferr)
    case default
       write (error_unit, '(a)') 'unknown table "'//trim(which)//'"'
       stop 3
@@ -117,6 +172,38 @@ program h5read
    call h5close_f(hdferr)
 
 contains
+
+   !> Name of the frequency (or time) axis dataset of a dynamic group.
+   pure function axis_of(which) result(name)
+      character(len=*), intent(in) :: which
+      character(len=8) :: name
+      if (trim(which) == 'sqw') then
+         name = 'omega'
+      else
+         name = 'tau'
+      end if
+   end function axis_of
+
+   !> Read a 2D real dataset.
+   subroutine read_real_2d(group, name, values, n1, n2)
+      integer(hid_t), intent(in) :: group
+      character(len=*), intent(in) :: name
+      real(real64), allocatable, intent(out) :: values(:, :)
+      integer, intent(out) :: n1, n2
+      integer(hid_t) :: dset_id, space_id
+      integer(hsize_t) :: dims(2), maxdims(2)
+      integer :: hdferr
+
+      call h5dopen_f(group, trim(name), dset_id, hdferr)
+      call h5dget_space_f(dset_id, space_id, hdferr)
+      call h5sget_simple_extent_dims_f(space_id, dims, maxdims, hdferr)
+      n1 = int(dims(1))
+      n2 = int(dims(2))
+      allocate (values(n1, n2))
+      call h5dread_f(dset_id, H5T_NATIVE_DOUBLE, values, dims, hdferr)
+      call h5sclose_f(space_id, hdferr)
+      call h5dclose_f(dset_id, hdferr)
+   end subroutine read_real_2d
 
    subroutine read_real_1d(group, name, values, n)
       integer(hid_t), intent(in) :: group
@@ -146,7 +233,16 @@ contains
       integer(hid_t) :: dset_id, space_id, type_id
       integer(hsize_t) :: dims(1), maxdims(1)
       integer :: hdferr
+      logical :: exists
 
+      call h5lexists_f(group, trim(name), exists, hdferr)
+      if (.not. exists) then
+         ! optional dataset (for example the pair labels of a run written
+         ! without partials): report an empty list instead of failing
+         n = 0
+         allocate (values(0))
+         return
+      end if
       call h5dopen_f(group, trim(name), dset_id, hdferr)
       call h5dget_space_f(dset_id, space_id, hdferr)
       call h5sget_simple_extent_dims_f(space_id, dims, maxdims, hdferr)

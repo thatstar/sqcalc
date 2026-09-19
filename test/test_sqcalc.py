@@ -373,6 +373,17 @@ def main():
          "--output", path("deb_r_rdf.dat"), "--rdf", path("deb_ref.rdf")])
     rdf = read_matrix(path("deb.rdf"))
     rdf_ref = read_matrix(path("deb_ref.rdf"))
+    # g_ab is symmetric in a <-> b for the same reason as S_ab: the ordered
+    # pair counts satisfy n_ab = n_ba and the normalizations N_a rho_b and
+    # N_b rho_a are equal, so swapping -m must not change the cross column.
+    run([exe, "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "self",
+         "--method", "debye", "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+         "--rdf", path("deb_swap.rdf"), path("deb_swap_sq.dat")])
+    rdf_swap = read_matrix(path("deb_swap.rdf"))
+    worst_swap = float(np.max(np.abs(rdf_swap[:, 3] - rdf[:, 3])))
+    if worst_swap != 0.0:
+        raise SystemExit("FAIL g_ab is not symmetric in a <-> b (%.3e)" % worst_swap)
+    print("  ok   %-42s cross column identical" % "partial g(r) symmetry a<->b")
     if rdf.shape[0] != rdf_ref.shape[0]:
         raise SystemExit("FAIL rdf row count %d vs %d" % (rdf.shape[0], rdf_ref.shape[0]))
     worst = np.max(np.abs(rdf[:, 1] - rdf_ref[:, 1]))
@@ -441,6 +452,21 @@ def main():
                              % (method, saa, sab, aab))
         print("  ok   %-42s Saa=%.3f Sab=%.3f Aab=%.3f"
               % ("%s high-q partial limits" % method, saa, sab, aab))
+
+        # S_ab is symmetric under an exchange of the two types: it is a
+        # same-time product, so Re(rho_a rho_b*) and Re(rho_b rho_a*) are equal
+        # exactly (they are complex conjugates), and the Debye ordered pair
+        # counts satisfy n_ab = n_ba identically.  Swapping -m must therefore
+        # leave the cross column bit for bit unchanged.
+        run([exe, "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "n",
+             "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra,
+             path("part_swap_%s.dat" % method)])
+        swapped = read_matrix(path("part_swap_%s.dat" % method))
+        worst = float(np.max(np.abs(swapped[:, 3] - part[:, 3])))
+        if worst != 0.0:
+            raise SystemExit("FAIL %s: S_ab is not symmetric in a <-> b (%.3e)"
+                             % (method, worst))
+        print("  ok   %-42s cross column identical" % ("%s partial symmetry a<->b" % method))
 
     # --- 9b. partials without an element mapping ---------------------------
     # A model system (Kob-Andersen style binary mixture) has no elements, so
@@ -594,6 +620,191 @@ def main():
     print("  ok   %-42s total %.3f Si-Si %.3f Si-O %.3f O-O %.3f"
           % ("ideal gas partial g(r) -> 1", rdf[mid, 1].mean(), rdf[mid, 2].mean(),
              rdf[mid, 3].mean(), rdf[mid, 4].mean()))
+
+    # --- 11. dynamic structure factor along a q line (--dyn) --------------
+    print("dynamic structure factor (--dyn)")
+    ref_dyn = os.path.join(HERE, "ref_sqw.py")
+    dyn_spec = "4,1,4,1,0,0"          # 5 q points, |q| = 1..4 along x
+    dyn_q = ["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--lag", "1"]
+    nq_dyn = 5
+    dyn_dump = generate("dyn_ball.dump", natoms=1000, length=20, frames=40, seed=11,
+                        mode="ballistic", temperature=1.0, columns="id type xu yu zu")
+    sqcalc(dyn_dump, "dyn_sq.dat", "-w", "unit", "--norm", "mean", *dyn_q,
+           "--sqw", path("dyn_sqw.dat"), "--fsq", path("dyn_fsq.dat"))
+    run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
+         "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", "unit",
+         "--norm", "mean", "--output-fsq", path("dyn_ref_fsq.dat"),
+         "--output-sqw", path("dyn_ref_sqw.dat")])
+    fsq = read_matrix(path("dyn_fsq.dat"))
+    sqw = read_matrix(path("dyn_sqw.dat"))
+    compare(fsq, read_matrix(path("dyn_ref_fsq.dat")), "F(q,t) vs numpy reference", rtol=1.0e-9)
+    compare(sqw, read_matrix(path("dyn_ref_sqw.dat")), "S(q,w) vs numpy reference", rtol=1.0e-9)
+
+    # The spectrum integrates to F(q,0), which is the static OUTPUT column; the
+    # one-sided folding makes this exact (dw = pi/(maxframes*dt)).
+    naxis_dyn = 21
+    _, s_static = read_table(path("dyn_sq.dat"))
+    integral = sqw[:, 4].reshape(nq_dyn, naxis_dyn).sum(axis=1) * (np.pi/20.0)
+    compare(s_static, integral, "sum rule int S(q,w) dw = static S(q)", rtol=1.0e-9)
+    compare(s_static, fsq[:, 4].reshape(nq_dyn, naxis_dyn)[:, 0], "F(q,0) = static S(q)",
+            rtol=1.0e-9)
+
+    # Brownian particles: F(q,t) = exp(-D q^2 t) (the amplitude carries the
+    # frozen-in structure factor of the configuration, which decays away over
+    # the trajectory, so only the decay rate is a clean observable).
+    diff_dump = generate("dyn_diff.dump", natoms=500, length=20, frames=1000, seed=3,
+                         mode="diffusive", diffusivity=0.1, columns="id type xu yu zu")
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--dyn", "1,2,3,1,0,0", "--dt", "1", "--maxframes", "8", "--lag", "1",
+         "--fsq", path("dyn_diff_fsq.dat"), path("dyn_diff_sq.dat")])
+    diff_f = read_matrix(path("dyn_diff_fsq.dat"))
+    naxis_d = 9
+    f_d = diff_f[:, 4].reshape(2, naxis_d)
+    tau_d = diff_f[:, 3].reshape(2, naxis_d)[0]
+    worst = 0.0
+    for k, q_value in enumerate((2.0, 3.0)):
+        analytic = np.exp(-0.1 * q_value**2 * tau_d)
+        valid = analytic > 0.1
+        worst = max(worst, float(np.max(np.abs(f_d[k, valid] - analytic[valid]))))
+    if worst > 0.06:
+        raise SystemExit("FAIL diffusive F(q,t) deviates from exp(-D q2 t) by %.3f" % worst)
+    print("  ok   %-42s max deviation %.3f" % ("diffusive F(q,t) vs exp(-D q2 t)", worst))
+
+    # The same trajectory with wrapped coordinates: the reader reconstructs the
+    # unwrapped positions, so the result must not change.
+    dyn_wrapped = generate("dyn_ball_wrapped.dump", natoms=1000, length=20, frames=40,
+                           seed=11, mode="ballistic", temperature=1.0,
+                           columns="id type x y z")
+    sqcalc(dyn_wrapped, "dyn_sq_wrap.dat", "-w", "unit", "--norm", "mean", *dyn_q,
+           "--sqw", path("dyn_sqw_wrap.dat"))
+    compare(read_matrix(path("dyn_sqw_wrap.dat")), sqw,
+            "wrapped dump (reader unwraps) vs xu", rtol=1.0e-9)
+
+    # --dt is the time step of the trajectory: the same frames written every
+    # fifth step with dt/5 have to give the same spectrum.
+    dyn_step = generate("dyn_ball_step.dump", natoms=1000, length=20, frames=40, seed=11,
+                        mode="ballistic", temperature=1.0, columns="id type xu yu zu",
+                        step=5)
+    run([exe, "-i", dyn_step, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--dyn", dyn_spec, "--dt", "0.2", "--maxframes", "20", "--lag", "1",
+         "--sqw", path("dyn_sqw_step.dat"), path("dyn_sq_step.dat")])
+    compare(read_matrix(path("dyn_sqw_step.dat")), sqw,
+            "dt = 0.2 over 5 steps equals dt = 1 over 1", rtol=1.0e-9)
+
+    # Partial spectra: with unit weights and --norm n the OVITO sum rule
+    # S(q,w) = S_aa + 2 S_ab + S_bb holds sample by sample.
+    run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n", *dyn_q,
+         "--sqw", path("dyn_part.dat"), path("dyn_sq_n.dat")])
+    part = read_matrix(path("dyn_part.dat"))
+    worst = float(np.max(np.abs(part[:, 4] - (part[:, 5] + 2.0*part[:, 6] + part[:, 7]))))
+    if worst > 1.0e-9:
+        raise SystemExit("FAIL dynamic partial sum rule is off by %.3e" % worst)
+    print("  ok   %-42s sum rule %.1e"
+          % ("dynamic partials: S = Saa + 2Sab + Sbb", worst))
+
+    # Chemical weighting: the weighted total follows the same post-processing
+    # convention as the static partials (neutron b, X-ray f(q)).
+    for weight, norm in (("neutron", "mean"), ("xray", "self")):
+        sqcalc(dyn_dump, "dyn_w_%s.dat" % weight, "-w", weight, "--norm", norm, *dyn_q,
+               "--sqw", path("dyn_w_%s_sqw.dat" % weight))
+        run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
+             "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", weight,
+             "--norm", norm, "--mapping", "1:Si,2:O",
+             "--output-fsq", path("dyn_w_%s_ref_fsq.dat" % weight),
+             "--output-sqw", path("dyn_w_%s_ref_sqw.dat" % weight)])
+        compare(read_matrix(path("dyn_w_%s_sqw.dat" % weight)),
+                read_matrix(path("dyn_w_%s_ref_sqw.dat" % weight)),
+                "%s weighted S(q,w) vs reference" % weight, rtol=1.0e-9)
+
+    # --lag thins the time origins; the reference applies the same rule.
+    run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--lag", "3",
+         "--fsq", path("dyn_lag_fsq.dat"), path("dyn_lag_sq.dat")])
+    run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
+         "--maxframes", "20", "--lag", "3", "--dt", "1", "--weight", "unit",
+         "--norm", "mean", "--output-fsq", path("dyn_lag_ref_fsq.dat"),
+         "--output-sqw", path("dyn_lag_ref_sqw.dat")])
+    compare(read_matrix(path("dyn_lag_fsq.dat")), read_matrix(path("dyn_lag_ref_fsq.dat")),
+            "lag stride 3 vs reference", rtol=1.0e-9)
+
+    # A non-periodic direction must not be wrapped: the dump writes the true
+    # coordinate for it (x, not xu), so an atom that leaves the box has to be
+    # kept outside it.  Both spellings of the same slab trajectory must agree.
+    slab_kwargs = dict(natoms=400, length=10, frames=25, seed=9, mode="ballistic",
+                       temperature=0.5, boundary="pp pp ff")
+    slab_xu = generate("dyn_slab_xu.dump", columns="id type xu yu zu", **slab_kwargs)
+    slab_x = generate("dyn_slab_x.dump", columns="id type x y z", **slab_kwargs)
+    slab_q = ["--dyn", "2,1,3,0,0,1", "--dt", "1", "--maxframes", "5"]
+    for dump_file, tag in ((slab_xu, "xu"), (slab_x, "x")):
+        run([exe, "-i", dump_file, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+             *slab_q, "--fsq", path("dyn_slab_%s_fsq.dat" % tag),
+             path("dyn_slab_%s_sq.dat" % tag)])
+    compare(read_matrix(path("dyn_slab_x_fsq.dat")),
+            read_matrix(path("dyn_slab_xu_fsq.dat")),
+            "non-periodic axis: x y z (unwrapped) vs xu", rtol=1.0e-9)
+
+    plot_dyn = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts", "plot_sqw.py")
+    if os.path.isfile(plot_dyn) and have_matplotlib:
+        for mode in ("both", "map", "spectra"):
+            figure = path("plot_sqw_%s.png" % mode)
+            run([sys.executable, plot_dyn, "--mode", mode, path("dyn_sqw.dat"),
+                 "-o", figure])
+            if not os.path.isfile(figure) or os.path.getsize(figure) == 0:
+                raise SystemExit("FAIL plot_sqw.py wrote no figure in mode %s" % mode)
+        print("  ok   %-42s map / spectra / both" % "plot_sqw.py renders")
+
+    if args.h5read:
+        run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean", *dyn_q,
+             "--sqw", path("dyn_sqw.h5"), "--fsq", path("dyn_fsq.h5"), path("dyn_sq_h5.dat")])
+        with open(path("dyn_sqw_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("dyn_sqw.h5"), "sqw"]).stdout)
+        with open(path("dyn_fsq_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("dyn_fsq.h5"), "fsq"]).stdout)
+        compare(read_matrix(path("dyn_sqw_h5.txt")), sqw, "HDF5 S(q,w) vs text", rtol=1.0e-9)
+        compare(read_matrix(path("dyn_fsq_h5.txt")), fsq, "HDF5 F(q,t) vs text", rtol=1.0e-9)
+
+    # option validation
+    bad = [
+        (["--dyn", dyn_spec, "--maxframes", "20"], "--dyn without --dt"),
+        (["--dyn", dyn_spec, "--dt", "1"], "--dyn without --maxframes"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--grid", "g.dat"],
+         "--dyn with --grid"),
+        (["--sqw", "x.dat"], "--sqw without --dyn"),
+        (["--dyn", "0,1,4,1,0,0", "--dt", "1", "--maxframes", "20"], "--dyn without intervals"),
+        (["--dyn", "4,4,1,1,0,0", "--dt", "1", "--maxframes", "20"], "--dyn with S1 <= S0"),
+    ]
+    rejected = 0
+    for options, label in bad:
+        result = subprocess.run([exe, "-i", dyn_dump] + options + ["-"],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            raise SystemExit("FAIL %s was accepted" % label)
+        rejected += 1
+    print("  ok   %-42s %d cases rejected" % ("--dyn option validation", rejected))
+
+    # A trajectory that changes its atom count or its atom order cannot be
+    # unwrapped index by index: the reader has to say so instead of running
+    # past the end of its per atom arrays.
+    for name, columns, label in (("grow", "id type x y z", "atom count changes"),
+                                 ("reorder", "id type x y z", "atom order changes")):
+        broken = path("dyn_%s.dump" % name)
+        with open(broken, "w") as handle:
+            for frame in (0, 1, 2):
+                natoms = 20 if (name == "grow" and frame == 0) else 40
+                handle.write("ITEM: TIMESTEP\n%d\nITEM: NUMBER OF ATOMS\n%d\n" % (frame, natoms))
+                handle.write("ITEM: BOX BOUNDS pp pp pp\n0 10\n0 10\n0 10\n")
+                handle.write("ITEM: ATOMS %s\n" % columns)
+                order = range(natoms, 0, -1) if name == "reorder" and frame > 0 \
+                    else range(1, natoms + 1)
+                for index in order:
+                    handle.write("%d 1 %.6f %.6f %.6f\n" % (index, (index % 10)*1.0,
+                                                            (index % 7)*1.3, (index % 5)*1.7))
+        result = subprocess.run([exe, "-i", broken, "-w", "unit", "--dyn", dyn_spec,
+                                 "--dt", "1", "--maxframes", "20", "-"],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            raise SystemExit("FAIL %s was accepted" % label)
+        print("  ok   %-42s rejected" % label)
 
     print("all sqcalc tests passed")
 

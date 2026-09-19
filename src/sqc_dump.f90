@@ -26,12 +26,20 @@ module sqc_dump
       integer(ik) :: timestep = 0
       !> Cartesian coordinates, pos(:, i) for atom i.
       real(rk), allocatable :: pos(:, :)
+      !> LAMMPS atom id of each atom (only when the dump has an "id" column).
+      integer(ik), allocatable :: id(:)
       !> LAMMPS atom type of each atom (1-based).
       integer(ik), allocatable :: type_id(:)
       !> Simulation cell of this frame.
       type(cell_t) :: cell
       !> Periodicity of the box as written in the dump (pp = periodic).
       logical :: pbc(3) = .true.
+      !> True when pos holds unwrapped coordinates: either the dump itself
+      !! provided xu/yu/zu, or the reader reconstructed them from wrapped
+      !! x/y/z by tracking the image each atom crossed.
+      logical :: unwrapped = .false.
+      !> True when the unwrapped coordinates came straight from the dump.
+      logical :: unwrapped_from_dump = .false.
    contains
       procedure :: destroy => frame_destroy
    end type frame_t
@@ -69,6 +77,21 @@ module sqc_dump
       integer :: idx_id = 0, idx_type = 0, idx_x = 0, idx_y = 0, idx_z = 0
       integer :: ncol = 0
       real(rk), allocatable :: buffer(:)
+      !> The x/y/z columns were the unwrapped xu/yu/zu variants.
+      logical :: from_unwrapped = .false.
+      !> Unwrapping state: the wrapped fractional coordinates of the previous
+      !! frame and the accumulated (unwrapped) fractional coordinates.
+      real(rk), allocatable :: prev_frac(:, :), unwrapped_frac(:, :)
+      logical :: have_prev = .false.
+      !> Atom ids of the previous frame (used to detect a reordering that would
+      !! make the index based unwrapping invalid).
+      integer(ik), allocatable :: prev_id(:)
+      !> Frames whose displacement was so large that unwrapping is ambiguous.
+      integer :: n_ambiguous = 0
+      !> Timestep bookkeeping: the increment must be constant, it fixes the
+      !! physical time between frames together with the --dt time step.
+      integer(ik) :: prev_timestep = 0, step_stride = 0
+      logical :: have_timestep = .false., uniform_timestep = .true.
       !> True while the next expected line is "ITEM: TIMESTEP".
       logical :: expect_header = .true.
       !> Line number of the line last read (for error messages).
@@ -87,9 +110,12 @@ contains
    subroutine frame_destroy(self)
       class(frame_t), intent(inout) :: self
       if (allocated(self%pos)) deallocate(self%pos)
+      if (allocated(self%id)) deallocate(self%id)
       if (allocated(self%type_id)) deallocate(self%type_id)
       self%natoms = 0
       self%timestep = 0
+      self%unwrapped = .false.
+      self%unwrapped_from_dump = .false.
    end subroutine frame_destroy
 
    !> Open a dump file and position the reader on the first frame header.
@@ -110,6 +136,11 @@ contains
       self%lineno = 0
       self%expect_header = .true.
       self%nframes = 0
+      self%have_prev = .false.
+      self%have_timestep = .false.
+      self%step_stride = 0
+      self%uniform_timestep = .true.
+      self%n_ambiguous = 0
       ierr = 0
    end subroutine lammps_open
 
@@ -239,8 +270,7 @@ contains
          return
       end if
 
-      if (.not. allocated(frame%pos)) allocate(frame%pos(3, frame%natoms))
-      if (.not. allocated(frame%type_id)) allocate(frame%type_id(frame%natoms))
+      call frame_alloc_atoms(frame, frame%natoms)
       if (.not. allocated(self%buffer)) allocate(self%buffer(self%ncol))
 
       do i = 1, frame%natoms
@@ -253,16 +283,154 @@ contains
          frame%pos(2, i) = self%buffer(self%idx_y)
          frame%pos(3, i) = self%buffer(self%idx_z)
          frame%type_id(i) = nint(self%buffer(self%idx_type))
+         if (self%idx_id > 0) then
+            frame%id(i) = nint(self%buffer(self%idx_id))
+         else
+            frame%id(i) = int(i, ik)
+         end if
       end do
 
       call frame%cell%init_from_bounds(bounds(1, :), bounds(2, :), &
                                       [bounds(3, 1), bounds(3, 2), bounds(3, 3)])
       self%triclinic = triclinic
 
+      call unwrap_positions(self, frame, ierr)
+      if (ierr /= 0) return
+
+      ! The time step between dumped frames fixes the physical time axis; the
+      ! dynamics method needs it to be constant.
+      if (.not. self%have_timestep) then
+         self%have_timestep = .true.
+      else if (self%step_stride == 0) then
+         self%step_stride = frame%timestep - self%prev_timestep
+      else if (frame%timestep - self%prev_timestep /= self%step_stride) then
+         self%uniform_timestep = .false.
+      end if
+      self%prev_timestep = frame%timestep
+
       self%nframes = self%nframes + 1
       self%expect_header = .true.
       ierr = 0
    end subroutine lammps_next_frame
+
+   !> Make the frame coordinates unwrapped.
+   !!
+   !! An arbitrary (off lattice) q picks up the phase of every box crossing, so
+   !! the dynamic structure factor needs continuous coordinates.  When the dump
+   !! already carries xu/yu/zu nothing has to be done; otherwise the image each
+   !! atom crossed since the previous frame is accumulated from the
+   !! minimum-image displacement in fractional coordinates (the same trick
+   !! `sqc_neighbour_list` uses for its Verlet list).  The reconstruction is
+   !! index based, so a reordering of the atoms (`ITEM: ATOMS id` changing
+   !! between frames) is rejected.
+   subroutine unwrap_positions(self, frame, ierr)
+      type(lammps_dump_reader_t), intent(inout) :: self
+      type(frame_t), intent(inout) :: frame
+      integer, intent(out) :: ierr
+      real(rk) :: s(3), ds(3)
+      integer :: i, k
+      logical :: ambiguous
+
+      ierr = 0
+      if (self%from_unwrapped) then
+         frame%unwrapped = .true.
+         frame%unwrapped_from_dump = .true.
+         return
+      end if
+
+      ! An atom count change cannot be unwrapped across (the state is indexed
+      ! by atom): report it so the caller can complain about the dump.
+      if (self%have_prev) then
+         if (size(self%prev_frac, 2) /= frame%natoms) then
+            ierr = 11
+            return
+         end if
+      end if
+
+      ! Unwrapping is index based: the atom order must not change.
+      if (self%idx_id > 0) then
+         if (allocated(self%prev_id)) then
+            if (size(self%prev_id) /= frame%natoms .or. any(self%prev_id /= frame%id)) then
+               ierr = 10
+               return
+            end if
+         else
+            allocate (self%prev_id(frame%natoms))
+         end if
+         self%prev_id = frame%id
+      end if
+
+      if (.not. self%have_prev) then
+         allocate (self%prev_frac(3, frame%natoms), self%unwrapped_frac(3, frame%natoms))
+         do i = 1, frame%natoms
+            s = wrap_periodic(frame%cell%fractional(frame%pos(:, i)), frame%pbc)
+            self%prev_frac(:, i) = s
+            self%unwrapped_frac(:, i) = s
+         end do
+         self%have_prev = .true.
+      else
+         do i = 1, frame%natoms
+            s = wrap_periodic(frame%cell%fractional(frame%pos(:, i)), frame%pbc)
+            ds = s - self%prev_frac(:, i)
+            ambiguous = .false.
+            do k = 1, 3
+               if (.not. frame%pbc(k)) cycle
+               ds(k) = ds(k) - anint(ds(k))
+               if (abs(ds(k)) > 0.4_rk) ambiguous = .true.
+            end do
+            if (ambiguous) self%n_ambiguous = self%n_ambiguous + 1
+            self%prev_frac(:, i) = s
+            self%unwrapped_frac(:, i) = self%unwrapped_frac(:, i) + ds
+         end do
+      end if
+
+      do i = 1, frame%natoms
+         frame%pos(:, i) = matmul(frame%cell%a, self%unwrapped_frac(:, i))
+      end do
+      frame%unwrapped = .true.
+      frame%unwrapped_from_dump = .false.
+   end subroutine unwrap_positions
+
+   !> Wrap fractional coordinates into [0, 1) along the periodic directions
+   !! only.  A non-periodic direction has no lattice to wrap by, and the
+   !! coordinate the dump writes for it (x, not xu) is already the true one.
+   pure function wrap_periodic(s, pbc) result(wrapped)
+      real(rk), intent(in) :: s(3)
+      logical, intent(in) :: pbc(3)
+      real(rk) :: wrapped(3)
+      integer :: k
+
+      wrapped = s
+      do k = 1, 3
+         if (pbc(k)) wrapped(k) = wrapped(k) - floor(wrapped(k))
+      end do
+   end function wrap_periodic
+
+   !> (Re)allocate the per atom arrays of a frame for a given atom count.
+   !!
+   !! The methods require a constant atom count, but the reader has to survive
+   !! a frame that breaks it: reallocating here keeps the atom loop in bounds
+   !! (and the unwrapping state check below detects the change) so that the
+   !! caller reports the mismatch instead of the reader overrunning memory.
+   subroutine frame_alloc_atoms(frame, natoms)
+      type(frame_t), intent(inout) :: frame
+      integer(ik), intent(in) :: natoms
+
+      if (allocated(frame%pos)) then
+         if (size(frame%pos, 2) /= natoms) deallocate (frame%pos)
+      end if
+      if (.not. allocated(frame%pos)) allocate (frame%pos(3, natoms))
+
+      if (allocated(frame%id)) then
+         if (size(frame%id) /= natoms) deallocate (frame%id)
+      end if
+      if (.not. allocated(frame%id)) allocate (frame%id(natoms))
+
+      if (allocated(frame%type_id)) then
+         if (size(frame%type_id) /= natoms) deallocate (frame%type_id)
+      end if
+      if (.not. allocated(frame%type_id)) allocate (frame%type_id(natoms))
+   end subroutine frame_alloc_atoms
 
    subroutine read_line(self, line, ios)
       type(lammps_dump_reader_t), intent(inout) :: self
@@ -346,21 +514,38 @@ contains
       self%idx_x = 0
       self%idx_y = 0
       self%idx_z = 0
-      do i = 1, ntok
-         name = lowercase(trim(tokens(i)))
-         select case (name)
-         case ('id')
-            self%idx_id = i
-         case ('type')
-            self%idx_type = i
-         case ('x', 'xu')
-            if (self%idx_x == 0) self%idx_x = i
-         case ('y', 'yu')
-            if (self%idx_y == 0) self%idx_y = i
-         case ('z', 'zu')
-            if (self%idx_z == 0) self%idx_z = i
-         end select
-      end do
+      self%from_unwrapped = .false.
+      block
+         logical :: unwrapped_x, unwrapped_y, unwrapped_z
+         unwrapped_x = .false.
+         unwrapped_y = .false.
+         unwrapped_z = .false.
+         do i = 1, ntok
+            name = lowercase(trim(tokens(i)))
+            select case (name)
+            case ('id')
+               self%idx_id = i
+            case ('type')
+               self%idx_type = i
+            case ('x', 'xu')
+               if (self%idx_x == 0) then
+                  self%idx_x = i
+                  unwrapped_x = name == 'xu'
+               end if
+            case ('y', 'yu')
+               if (self%idx_y == 0) then
+                  self%idx_y = i
+                  unwrapped_y = name == 'yu'
+               end if
+            case ('z', 'zu')
+               if (self%idx_z == 0) then
+                  self%idx_z = i
+                  unwrapped_z = name == 'zu'
+               end if
+            end select
+         end do
+         self%from_unwrapped = unwrapped_x .and. unwrapped_y .and. unwrapped_z
+      end block
 
       ierr = 0
       if (self%idx_type == 0 .or. self%idx_x == 0 .or. self%idx_y == 0 &

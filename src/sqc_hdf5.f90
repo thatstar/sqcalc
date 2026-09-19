@@ -33,7 +33,7 @@ module sqc_hdf5
    implicit none
    private
 
-   public :: hdf5_write_results, hdf5_support, hdf5_write_rdf
+   public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics
 
    !> HDF5 was compiled into this binary.
    logical, parameter :: hdf5_support = .true.
@@ -205,6 +205,128 @@ contains
          end if
       end subroutine check
    end subroutine hdf5_write_results
+
+   !> Dynamic structure factor or intermediate scattering function of the
+   !! dynamic method: the q points, the frequency (or time) axis, the total and
+   !! the partials, plus the run metadata.  `group` is "sqw" (axis omega,
+   !! dataset S) or "fsq" (axis tau, dataset F).
+   subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
+                                  nframes, frame_dt, maxframes, lag, weight, norm, ierr, message)
+      character(len=*), intent(in) :: path, group, axis_name, weight, norm
+      real(rk), intent(in) :: q(:, :)          ! (nq, 4): qx qy qz |q|
+      real(rk), intent(in) :: axis(0:)
+      real(rk), intent(in) :: spec(:, 0:)
+      real(rk), intent(in) :: part(:, 0:, :)
+      character(len=*), intent(in) :: labels(:)
+      integer(lk), intent(in) :: count(:, 0:)
+      integer(lk), intent(in) :: nframes
+      real(rk), intent(in) :: frame_dt
+      integer, intent(in) :: maxframes, lag
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id, subgroup_id
+      integer(hsize_t) :: dims(2), dims1(1)
+      integer :: hdferr, im, p, nq, naxis, npair, idum
+      real(real64), allocatable :: flat(:), qflat(:), axis64(:)
+      integer(int64), allocatable :: cflat(:)
+      character(len=18), allocatable :: label_buf(:)
+      character(len=16) :: data_name, partial_group
+
+      ierr = 0
+      message = ''
+      nq = size(q, 1)
+      naxis = size(spec, 2)
+      npair = size(part, 3)
+      if (trim(group) == 'sqw') then
+         data_name = 'S'
+         partial_group = 'S_partial'
+      else
+         data_name = 'F'
+         partial_group = 'F_partial'
+      end if
+
+      call h5open_f(hdferr)
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+      call write_int_attr(file_id, 'nframes', int(nframes, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'frame_dt', real(frame_dt, real64), &
+                                          ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'maxframes', int(maxframes, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'lag', int(lag, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'nq', int(nq, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'naxis', int(naxis, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'n_partial', int(npair, int64), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'quantity', trim(group), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'axis', trim(axis_name), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'weight', trim(weight), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'norm', trim(norm), ierr, message)
+      if (ierr /= 0) then
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+
+      call h5gcreate_f(file_id, trim(group), group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /'//trim(group)//' group'
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+
+      allocate (qflat(nq*4))
+      qflat = reshape(real(q, real64), [nq*4])
+      dims = [int(nq, hsize_t), 4_hsize_t]
+      call write_dataset_f(group_id, 'q', H5T_NATIVE_DOUBLE, dims, qflat, ierr, message)
+
+      allocate (axis64(naxis))
+      axis64 = real(axis, real64)
+      dims1 = [int(naxis, hsize_t)]
+      if (ierr == 0) call write_dataset_f(group_id, trim(axis_name), H5T_NATIVE_DOUBLE, &
+                                          dims1, axis64, ierr, message)
+
+      allocate (flat(nq*naxis))
+      flat = reshape(real(spec, real64), [nq*naxis])
+      dims = [int(nq, hsize_t), int(naxis, hsize_t)]
+      if (ierr == 0) call write_dataset_f(group_id, trim(data_name), H5T_NATIVE_DOUBLE, &
+                                          dims, flat, ierr, message)
+
+      allocate (cflat(nq*naxis))
+      cflat = reshape(int(count, int64), [nq*naxis])
+      if (ierr == 0) call write_dataset_i8_f(group_id, 'count', dims, cflat, ierr, message)
+
+      if (npair > 0) then
+         allocate (label_buf(npair))
+         do p = 1, npair
+            label_buf(p) = labels(p)
+         end do
+         if (ierr == 0) call write_string_dataset(group_id, 'pairs', label_buf, ierr, message)
+         if (ierr == 0) call h5gcreate_f(group_id, trim(partial_group), subgroup_id, hdferr)
+         if (ierr == 0 .and. hdferr /= 0) then
+            ierr = 1
+            message = 'HDF5: cannot create the /'//trim(group)//'/'//trim(partial_group)//' group'
+         end if
+         do p = 1, npair
+            if (ierr /= 0) exit
+            flat = reshape(real(part(:, :, p), real64), [nq*naxis])
+            call write_dataset_f(subgroup_id, trim(label_buf(p)), H5T_NATIVE_DOUBLE, &
+                                 dims, flat, ierr, message)
+         end do
+         if (ierr == 0) call h5gclose_f(subgroup_id, hdferr)
+         deallocate (label_buf)
+      end if
+
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (qflat, axis64, flat, cflat)
+   end subroutine hdf5_write_dynamics
 
    !> Text label of a normalization code (kept in sync with sqc_structure_factor).
    pure function norm_label(norm) result(label)

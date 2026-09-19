@@ -41,7 +41,8 @@ module sqc_structure_factor
 
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
              method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit, &
-             sf_prepare_species, mode_denominator, method_debye
+             sf_prepare_species, sf_shared_setup, sf_alloc_partials, mode_denominator, &
+             method_debye, method_dynamic
 
    !> Sentinel for "do not write this table".  A plain negative test would be
    !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
@@ -51,6 +52,7 @@ module sqc_structure_factor
    integer, parameter :: method_nufft = 1
    integer, parameter :: method_direct = 2
    integer, parameter :: method_debye = 3
+   integer, parameter :: method_dynamic = 4
 
    !> Normalization conventions.
    integer, parameter :: norm_mean = 1
@@ -204,17 +206,20 @@ contains
    ! Base class
    ! ---------------------------------------------------------------------
 
-   !> Build the reciprocal grid and the accumulators from the first frame.
-   subroutine sf_configure(self, frame, scheme, ierr, message)
+   !> Classify the atoms of the reference frame by LAMMPS type id.
+   !!
+   !! This is the part of the setup every method needs, including the ones that
+   !! do not build a reciprocal grid (the Debye and dynamic methods call it
+   !! directly instead of going through `configure`).  It fills `natoms`,
+   !! `ntypes` and `type_counts`.
+   subroutine sf_shared_setup(self, frame, scheme, ierr, message)
       class(structure_factor_t), intent(inout) :: self
       type(frame_t), intent(in) :: frame
       type(weight_scheme_t), intent(in) :: scheme
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(ik), allocatable :: type_counts(:)
-      real(rk) :: q(3), ql, dmode, length_a
-      integer :: i, p1, p2, p3, h(3), n_keep, t, maxtype, pass
-      integer(lk) :: g
+      integer :: i, t, maxtype
 
       ierr = 0
       message = ''
@@ -243,6 +248,42 @@ contains
          return
       end if
       self%type_counts = type_counts
+   end subroutine sf_shared_setup
+
+   !> Allocate the partial structure factor bookkeeping (`nq` must be set).
+   subroutine sf_alloc_partials(self, scheme)
+      class(structure_factor_t), intent(inout) :: self
+      type(weight_scheme_t), intent(in) :: scheme
+      integer :: t, u
+
+      if (.not. self%partials) return
+      allocate (self%partial_num(self%ntypes, self%ntypes, self%nq))
+      self%partial_num = 0.0_rk
+      allocate (self%pair_label(self%ntypes, self%ntypes))
+      self%pair_label = ' '
+      do t = 1, self%ntypes
+         do u = t, self%ntypes
+            self%pair_label(t, u) = scheme%pair_label(t, u)
+         end do
+      end do
+   end subroutine sf_alloc_partials
+
+   !> Build the reciprocal grid and the accumulators from the first frame.
+   subroutine sf_configure(self, frame, scheme, ierr, message)
+      class(structure_factor_t), intent(inout) :: self
+      type(frame_t), intent(in) :: frame
+      type(weight_scheme_t), intent(in) :: scheme
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk) :: q(3), ql, dmode, length_a
+      integer :: i, p1, p2, p3, h(3), n_keep, pass
+      integer(lk) :: g
+
+      ierr = 0
+      message = ''
+
+      call sf_shared_setup(self, frame, scheme, ierr, message)
+      if (ierr /= 0) return
 
       ! Grid extent: enough reciprocal lattice points to reach qmax.
       do i = 1, 3
@@ -318,17 +359,7 @@ contains
       end do
       allocate (self%num(self%nq), self%den(self%nq), self%shell_count(self%nq))
       allocate (self%mode_values(self%nmodes))
-      if (self%partials) then
-         allocate (self%partial_num(self%ntypes, self%ntypes, self%nq))
-         self%partial_num = 0.0_rk
-         allocate (self%pair_label(self%ntypes, self%ntypes))
-         self%pair_label = ' '
-         do t = 1, self%ntypes
-            do i = t, self%ntypes
-               self%pair_label(t, i) = scheme%pair_label(t, i)
-            end do
-         end do
-      end if
+      call sf_alloc_partials(self, scheme)
       self%num = 0.0_rk
       self%den = 0.0_rk
       self%shell_count = 0
@@ -339,7 +370,7 @@ contains
          self%gden = 0.0_rk
       end if
       do i = 1, n_keep
-         dmode = mode_denominator(self%norm, scheme, self%natoms, type_counts, self%qlen(i))
+         dmode = mode_denominator(self%norm, scheme, self%natoms, self%type_counts, self%qlen(i))
          self%den(self%shell(i)) = self%den(self%shell(i)) + dmode
          self%shell_count(self%shell(i)) = self%shell_count(self%shell(i)) + 1
          if (self%want_grid) self%gden(self%gidx(i)) = dmode
