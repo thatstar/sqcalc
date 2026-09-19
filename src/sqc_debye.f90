@@ -350,7 +350,7 @@ contains
       do ia = 1, self%ntypes
          do ib = ia, self%ntypes
             p = p + 1
-            labels(p) = pair_label(scheme, ia, ib)
+            labels(p) = scheme%pair_label(ia, ib)
          end do
       end do
 
@@ -434,24 +434,6 @@ contains
       message = 'this build has no HDF5 support; use a text file name for --rdf'
 #endif
    end subroutine write_rdf_hdf5
-
-   !> Label of a type pair ("Si-O" when an element mapping is available).
-   pure function pair_label(scheme, ia, ib) result(label)
-      type(weight_scheme_t), intent(in) :: scheme
-      integer, intent(in) :: ia, ib
-      character(len=18) :: label
-      character(len=2) :: sa, sb
-
-      sa = ' '
-      sb = ' '
-      if (ia <= scheme%mapped_types()) sa = scheme%symbols(ia)
-      if (ib <= scheme%mapped_types()) sb = scheme%symbols(ib)
-      if (len_trim(sa) > 0 .and. len_trim(sb) > 0) then
-         label = trim(sa)//'-'//trim(sb)
-      else
-         write (label, '(i0,a,i0)') ia, '-', ib
-      end if
-   end function pair_label
 
    subroutine debye_finalize(self)
       type(debye_structure_factor_t), intent(inout) :: self

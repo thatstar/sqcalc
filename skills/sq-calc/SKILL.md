@@ -8,8 +8,8 @@ metadata:
 # sqcalc
 
 `sqcalc` reads a LAMMPS `atoms` dump trajectory, averages over the frames, and
-writes the total structure factor $S(q)$ - plus partials when an element mapping
-is given - as a `# q S(q)` table.  Two independent routes are available: a
+writes the total structure factor $S(q)$ plus one partial column per LAMMPS
+type pair as a `# q S(q)` table.  Two independent routes are available: a
 reciprocal space non-uniform FFT (FINUFFT on the CPU, cufinufft/cuFFT on a GPU)
 and a real space Debye pair histogram, which can also write $g(r)$.
 
@@ -51,8 +51,9 @@ suffix, so `.pdf` or `.svg` gives vector output.
 
 ## Reminders
 
-* `-m` (LAMMPS type id to element) is required for the `neutron`/`xray` weights
-  and for partial structure factors.
+* `-m` (LAMMPS type id to element) is required for the `neutron`/`xray` weights;
+  without it the partials are still written, labelled by LAMMPS type id
+  (`S(1-1)`, `S(1-2)`, ...).
 * The reciprocal methods sample $q$ on the lattice of the dump box, so the box
   must be constant and the grid costs $(q_{\max} L)^3$; the Debye method needs
   no periodic box and wins for large, sparse systems.

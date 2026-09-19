@@ -25,7 +25,7 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--norm NAME` | `mean` (default), `self` or `n` (see below) |
 | `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path) |
-| `--partials`, `--no-partials` | write / omit the partial structure factor columns (default: on when `-m` is given) |
+| `--partials`, `--no-partials` | write / omit the partial structure factor columns (default: on) |
 | `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
 | `--rmax VALUE` | Debye pair cutoff [A] (default: half the smallest periodic box side, or all pairs without periodicity) |
 | `--dr VALUE` | Debye radial bin width [A] (default 0.01, reliable up to $q \sim \pi/(2\,dr)$) |
@@ -71,14 +71,17 @@ from float64 by roughly 1e-6 in $S(q)$.
 
 ### Partials
 
-With a mapping, each type pair gets a column
+Each type pair gets a column
 ($S_{ab}(q) = \langle \sum_{j \in a} \sum_{k \in b} \sin(q r_{jk})/q r_{jk}
 \rangle / N$, OVITO convention, including the $r = 0$ self term).  They satisfy
 $S(q) = \sum_{ab} (2 - \delta_{ab}) S_{ab}(q)$ and tend to $S_{aa} \to x_a$,
 $S_{ab} \to 0$ at large $q$.  `-fz` reports instead
 $A_{ab}(q) = (S_{ab}(q) - x_a \delta_{ab})/(x_a x_b) + 1$, which tends to 1.
-Partials work with both the reciprocal and the Debye method.  The derivations
-are in the repository `README.md`.
+Partials work with both the reciprocal and the Debye method and are written by
+default, so a model system without elements (`-w unit`, no `-m`) still gets
+them: the pair is labelled with the LAMMPS type ids, `S(1-1) S(1-2) S(2-2)`,
+and `-m` only replaces those labels with element symbols.  The derivations are
+in the repository `README.md`.
 
 ## Output
 
@@ -90,7 +93,8 @@ The shell table is text:
 ```
 
 with one extra column per type pair when partials are written, e.g.
-`# q S(q) S(Si-Si) S(Si-O) S(O-O)`.
+`# q S(q) S(Si-Si) S(Si-O) S(O-O)` with `-m 1:Si,2:O` or
+`# q S(q) S(1-1) S(1-2) S(2-2)` without a mapping.
 
 `--grid FILE` writes every reciprocal lattice vector of the requested range as
 `# qx qy qz S(q)` (text), excluding the trivial $q = 0$ mode in both tables.
@@ -145,7 +149,8 @@ sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
   density correction removes; on uncorrelated frames `--skin 0` is faster.
 * Coordinates are taken as dumped: `x y z` is native, `xu yu zu` is wrapped
   internally.
-* Unknown type ids, or elements without tabulated X-ray/neutron data, are
-  rejected with a clear message.
+* With `-w neutron`/`xray` a type missing from the mapping, or an element
+  without tabulated data, is rejected with a clear message; `-w unit` needs no
+  mapping and labels the partials by type id instead.
 * Grids above 4e8 points are refused (about 6 GB); `--grid` is written single
   threaded and does not affect the shell table.

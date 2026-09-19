@@ -5,8 +5,8 @@ reads the default LAMMPS `atoms` dump style, averages over all snapshots and
 writes a `# q S(q)` table.  Two independent evaluations are available: the
 reciprocal space transform with a non-uniform FFT (FINUFFT) on the CPU, or on a
 CUDA GPU with cuFFT, which averages $|\rho(q)|^2$, and the real space Debye
-pair-histogram method.  With an element mapping the table also carries the
-partial structure factors $S_{ab}(q)$.
+pair-histogram method.  The table also carries the partial structure factors
+$S_{ab}(q)$, one column per pair of LAMMPS types.
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -61,7 +61,9 @@ shell table is text, `# q S(q)`; `--grid FILE` additionally writes every
 reciprocal lattice vector, in text (`# qx qy qz S(q)`) or as a one dimensional
 array per quantity in HDF5 when the file name ends in `.h5`/`.hdf5`.  Both
 tables exclude the trivial $q = 0$ mode.  When partials are written they appear
-as one extra column per type pair, e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`.
+as one extra column per type pair, labelled with the element symbols of `-m`
+(e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`) or, without a mapping, with the
+LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 
 | option | meaning |
 | --- | --- |
@@ -78,7 +80,7 @@ as one extra column per type pair, e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`.
 | `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--norm NAME` | `mean` (default), `self` or `n` |
 | `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path) |
-| `--partials` | append the partial structure factor columns (default: on when `-m` is given) |
+| `--partials` | append the partial structure factor columns (default: on) |
 | `--no-partials` | do not append the partial columns |
 | `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
 | `-q, --quiet` | suppress progress output on stderr |
@@ -176,8 +178,8 @@ it).  `--grid` is not available with this method, and it runs on the CPU.
 
 ### Partial structure factors
 
-Whenever an element mapping (`-m`) is given, the $S(q)$ table gets one extra
-column per type pair, using the convention of OVITO's structure factor modifier:
+The $S(q)$ table gets one extra column per type pair, using the convention of
+OVITO's structure factor modifier:
 
 $$
 S_{ab}(q) = \frac{1}{N} \left\langle
@@ -198,15 +200,18 @@ A_{ab}(q) = \frac{S_{ab}(q) - x_a \delta_{ab}}{x_a x_b} + 1,
 $$
 
 which tends to 1 for every pair.  Partials are available for both the
-reciprocal and the Debye method; `--no-partials` turns them off, and they are
-skipped automatically when no mapping is given.
+reciprocal and the Debye method; `--no-partials` turns them off.  They only
+need the LAMMPS type ids, so a model system without elements gets them too,
+labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with element
+symbols and is required for the weighted schemes.
 
 A few limits are worth keeping in mind: the simulation box must not change
 along the trajectory (the reciprocal grid is built once from the first frame),
 both methods accept a non-periodic box (the reciprocal one still samples $q$ on
 the lattice of that box, so a cluster needs enough vacuum padding, whereas
-Debye needs none), and atoms whose type has no entry in `-m`, or whose element
-has no tabulated X-ray/neutron data, are rejected with a clear message.
+Debye needs none), and atoms of a type missing from `-m` under `-w
+neutron`/`xray`, or with an element that has no tabulated data, are rejected
+with a clear message.
 
 ## License
 

@@ -371,8 +371,6 @@ contains
             return
          end if
       end if
-      ! Partial columns need to know which type is which element.
-      if (self%partials .and. .not. self%scheme%has_mapping()) self%partials = .false.
       if (.not. self%want_grid) self%grid_output = ''
       ! Default the grid format from the file name.
       if (self%want_grid .and. .not. self%grid_format_given) then

@@ -442,6 +442,44 @@ def main():
         print("  ok   %-42s Saa=%.3f Sab=%.3f Aab=%.3f"
               % ("%s high-q partial limits" % method, saa, sab, aab))
 
+    # --- 9b. partials without an element mapping ---------------------------
+    # A model system (Kob-Andersen style binary mixture) has no elements, so
+    # the partials have to fall back to the LAMMPS type ids.  The numbers must
+    # not depend on the labels, so a mapped run has to agree exactly.
+    print("partials without a mapping")
+    dump_ka = generate("ka.dump", natoms=400, length=16, frames=3, seed=5,
+                       fractions="0.8,0.2")
+    run([exe, "-i", dump_ka, "-w", "unit", "--qmax", "6", "--nq", "120",
+         path("ka_unmapped.dat")])
+    run([exe, "-i", dump_ka, "-m", "1:Si,2:O", "-w", "unit", "--qmax", "6",
+         "--nq", "120", path("ka_mapped.dat")])
+    with open(path("ka_unmapped.dat")) as handle:
+        header = handle.readline().split()
+    if header != ["#", "q", "S(q)", "S(1-1)", "S(1-2)", "S(2-2)"]:
+        raise SystemExit("FAIL unmapped partial columns: %s" % " ".join(header))
+    ka = read_matrix(path("ka_unmapped.dat"))
+    compare(read_matrix(path("ka_mapped.dat")), ka,
+            "unmapped vs mapped unit weights", rtol=1.0e-12)
+    # OVITO sum rule and the high-q concentration limits.
+    worst = float(np.max(np.abs(ka[:, 1] - (ka[:, 2] + 2.0*ka[:, 3] + ka[:, 4]))))
+    if worst > 0.02:
+        raise SystemExit("FAIL unmapped partials: sum rule is off by %.3e" % worst)
+    high = ka[:, 0] > 4.0
+    s_aa = float(np.mean(ka[high, 2]))
+    s_bb = float(np.mean(ka[high, 4]))
+    if abs(s_aa - 0.8) > 0.06 or abs(s_bb - 0.2) > 0.06:
+        raise SystemExit("FAIL unmapped partials: high-q S11=%.3f S22=%.3f" % (s_aa, s_bb))
+    print("  ok   %-42s sum rule %.1e, high-q S11=%.3f S22=%.3f"
+          % ("unmapped partials are type labelled", worst, s_aa, s_bb))
+    # The Debye g(r) partials carry the same type-id labels.
+    run([exe, "-i", dump_ka, "-w", "unit", "--method", "debye", "--rmax", "6",
+         "--rdf", path("ka.rdf"), path("ka_sq.dat")])
+    with open(path("ka.rdf")) as handle:
+        rdf_header = handle.readline().split()
+    if rdf_header != ["#", "r", "g(r)", "g(1-1)", "g(1-2)", "g(2-2)"]:
+        raise SystemExit("FAIL unmapped partial g(r) columns: %s"
+                         % " ".join(rdf_header))
+
     # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
     print("faber-ziman cross-check and partial g(r)")
     for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
