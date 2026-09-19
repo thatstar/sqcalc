@@ -15,8 +15,10 @@ LAMMPS dump trajectories.
 - `external/finufft/` — vendored FINUFFT (git subtree, do not edit).
 - `skills/sq-calc/` — the agent skill shipped with the code: its
   `references/usage.md` and `references/building.md` document the CLI and the
-  build, and `scripts/check_doc_sync.py` (run by the `skills_doc_sync` test)
-  keeps them in step with `src/sqc_options.f90` and `CMakeLists.txt`.
+  build, and `scripts/plot_sq.py` plots the output tables.
+- `tools/` — repository maintenance scripts, including
+  `check_doc_sync.py` (run by the `skills_doc_sync` test), which keeps the
+  skill references in step with `src/sqc_options.f90` and `CMakeLists.txt`.
 - `.devdocs/` — local design notes (gitignored).
 
 ## Build, Test, and Development Commands

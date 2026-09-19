@@ -61,8 +61,9 @@ A CUDA build links cufinufft as a shared library, which also makes the CPU
 * `sqcalc_gpu` (CUDA builds) - the GPU backend against the CPU, skipping itself
   when no device is visible.
 * `skills_doc_sync` - the documents in `skills/sq-calc/references/` against
-  `src/sqc_options.f90` and the CMake options above (registered only when
-  Python and the skill folder are present).
+  `src/sqc_options.f90` and the CMake options above, via
+  `tools/check_doc_sync.py` (registered only when Python is present).  The
+  checker is a development tool and does not ship with the skill.
 
 A single test: `ctest --test-dir build -R sqcalc_physics`.  Test data is
 generated at run time by `test/gen_dump.py`, so no trajectories are committed.

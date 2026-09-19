@@ -36,8 +36,18 @@ instead of reconstructing the details from `--help` or a build tree.
   versus system FINUFFT) and the test suite.  Read it when `sqcalc` is missing
   or the task is to change the code.
 
-`scripts/check_doc_sync.py` compares both documents with `src/sqc_options.f90`
-and `CMakeLists.txt`; run it after touching either file.
+`scripts/plot_sq.py` turns the text tables into a figure.  Pass the `S(q)` table,
+a Debye `g(r)` table or a reciprocal grid table and it labels the columns from
+the header line and draws the total plus the partials:
+
+```sh
+python3 scripts/plot_sq.py S_q.dat                     # -> S_q.png
+python3 scripts/plot_sq.py --output g.png --show g.dat # interactive window
+python3 scripts/plot_sq.py -o compare.png a.dat b.dat  # overlay two totals
+```
+
+It needs matplotlib and nothing else; `--output` picks the format from the
+suffix, so `.pdf` or `.svg` gives vector output.
 
 ## Reminders
 
@@ -47,5 +57,7 @@ and `CMakeLists.txt`; run it after touching either file.
   must be constant and the grid costs $(q_{\max} L)^3$; the Debye method needs
   no periodic box and wins for large, sparse systems.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
+* The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
+  plots them without further tooling.
 
 The formulas behind all of this are in the repository `README.md`.

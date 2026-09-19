@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
+# sqcalc - structure factors from LAMMPS dump trajectories
+# Copyright (C) 2026 Rui Su, Hangzhou Dianzi University
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Check the sq-calc skill documents against the sqcalc sources.
 
-The skill is distributed with the code, so its references are expected to stay
-in step with what they describe:
+This is a development tool for this repository, not part of the distributed
+skill: run it after touching the option parser or the build system to keep the
+skill references in step with what they describe.
 
 * every command line flag handled by ``src/sqc_options.f90`` appears in
-  ``references/usage.md``, and every flag documented there exists in the parser
+  ``skills/sq-calc/references/usage.md``, and every flag documented there
+  exists in the parser
 * every user facing CMake option in ``CMakeLists.txt`` appears in
-  ``references/building.md``, and every option documented there exists in the
-  build system
+  ``skills/sq-calc/references/building.md``, and every option documented there
+  exists in the build system
 
 Usage: check_doc_sync.py [checkout-root]
 
-The checkout root defaults to the repository this skill lives in.  Exits 0 when
-the documents are in sync and 1 otherwise, printing what drifted.
+The checkout root defaults to the repository this script lives in.  Exits 0
+when the documents are in sync and 1 otherwise, printing what drifted.
 """
 
 from __future__ import annotations
@@ -22,7 +29,8 @@ import re
 import sys
 from pathlib import Path
 
-SKILL_DIR = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent
+SKILL_DIR = ROOT / "skills" / "sq-calc"
 
 # Flags: short or long option spellings in the option parser.
 FLAG_IN_SOURCE = re.compile(r"'(-{1,2}[a-z][a-z0-9-]*)'")
@@ -81,7 +89,7 @@ def report(label: str, documented: set[str], actual: set[str], path: Path) -> bo
 
 
 def main() -> int:
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else SKILL_DIR.parent.parent
+    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT
     parser = root / "src" / "sqc_options.f90"
     cmake = root / "CMakeLists.txt"
     usage = SKILL_DIR / "references" / "usage.md"

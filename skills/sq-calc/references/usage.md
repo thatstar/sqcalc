@@ -108,6 +108,13 @@ the order of `-m`, with the partials normalized to $g_{ab} \to 1$ at large $r$
 (HDF5: `/rdf/r`, `/rdf/g`, `/rdf/g_partial/<label>`, `/rdf/pairs`).  The
 weighted total uses the $q \to 0$ amplitudes.
 
+The shell, `g(r)` and grid tables are plain text, with the column names in the
+header line, so any plotting tool reads them as they are.  The skill ships
+`scripts/plot_sq.py` for this: it takes the axis labels and the partials from
+the header and saves a figure (matplotlib is its only dependency).  HDF5 output
+is meant for further analysis rather than plotting and needs h5py or the test
+helper `h5read`.
+
 ## Examples
 
 ```sh

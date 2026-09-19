@@ -44,8 +44,9 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # The distributed skill documents the command line flags and the CMake options;
-# keep those documents in step with the parser and this build.
-set(_sqc_skill_check "${CMAKE_SOURCE_DIR}/skills/sq-calc/scripts/check_doc_sync.py")
+# tools/check_doc_sync.py keeps those documents in step with the parser and
+# this build (a development tool, not part of the skill).
+set(_sqc_skill_check "${CMAKE_SOURCE_DIR}/tools/check_doc_sync.py")
 if(Python3_Interpreter_FOUND AND EXISTS "${_sqc_skill_check}")
   add_test(
     NAME skills_doc_sync
