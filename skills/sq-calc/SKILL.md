@@ -13,21 +13,34 @@ is given) as a `# q S(q)` table.  Two independent routes are available: a
 reciprocal space non-uniform FFT (FINUFFT on the CPU, cufinufft/cuFFT on a GPU)
 and a real space Debye pair histogram, which can also write $g(r)$.
 
-The checkout is normally `~/develop/sqcalc` (upstream
-<https://github.com/thatstar/sqcalc>); work in whichever copy the user points
-at, and if the repository is not at hand, clone it first.
+## Locating the program
+
+Running sqcalc needs nothing but the `sqcalc` executable: a single binary with
+no data files, plugins or environment variables.  Call it as `sqcalc` and let
+the shell find it; when in doubt, `command -v sqcalc` proves it is on `PATH`.
+A build tree is not required at all, so do not go looking for a source checkout
+unless the binary is missing, plainly out of date, or the task is to change the
+code.
+
+This skill is versioned inside the sqcalc repository at `skills/sq-calc/`, so if
+a build does turn out to be necessary, the checkout root is the parent of this
+skill's own directory (upstream <https://github.com/thatstar/sqcalc>) - resolve
+it from there instead of assuming a remembered location.
 
 ## Building
 
 Needs a Fortran 2008 compiler (gfortran >= 10), CMake >= 3.20, OpenMP and an
 FFTW3 installation with headers.  FINUFFT is vendored in `external/finufft`, so
-only FFTW3 has to exist locally.
+only FFTW3 has to exist locally.  Run the commands from the checkout root:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+The freshly built binary is `build/sqcalc`; `cmake --install build --prefix
+PREFIX` copies it to `PREFIX/bin/sqcalc` if it should end up on `PATH`.
 
 Relevant CMake options:
 
@@ -54,7 +67,7 @@ sqcalc -i DUMP [options] OUTPUT
 ```
 
 `OUTPUT` is the shell averaged $S(q)$ table, `-` writes it to stdout.  `-i` is
-the only required option; `build/sqcalc -h` prints the built-in summary.
+the only required option; `sqcalc -h` prints the built-in summary.
 
 | option | meaning |
 | --- | --- |
@@ -123,5 +136,11 @@ documents the module layout, coding style and test conventions to follow when
 changing the code.
 
 This skill is versioned with the code in `skills/sq-calc/`, so a fresh clone
-picks it up from there; an installation is just a link such as
-`ln -s <checkout>/skills/sq-calc ~/.agents/skills/sq-calc`.
+picks it up from there.  To install it for another user or machine, copy the
+folder into that machine's skills directory (`~/.agents/skills` or
+`$CODEX_HOME/skills`), or let the skill installer fetch it:
+
+```sh
+install-skill-from-github.py --url \
+  https://github.com/thatstar/sqcalc/tree/master/skills/sq-calc
+```
