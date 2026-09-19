@@ -66,3 +66,14 @@ if(Python3_Interpreter_FOUND AND EXISTS "${_sqc_skill_check}")
     COMMAND ${Python3_EXECUTABLE} "${_sqc_skill_check}" "${CMAKE_SOURCE_DIR}"
   )
 endif()
+
+# The README and the skill references are rendered with MathJax, which is not a
+# LaTeX engine; this catches the constructs it does not support (development
+# tool, not part of the skill).
+set(_sqc_math_check "${CMAKE_SOURCE_DIR}/tools/check_readme_math.py")
+if(Python3_Interpreter_FOUND AND EXISTS "${_sqc_math_check}")
+  add_test(
+    NAME readme_math
+    COMMAND ${Python3_EXECUTABLE} "${_sqc_math_check}"
+  )
+endif()

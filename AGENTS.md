@@ -55,6 +55,14 @@ cross-checking against the numpy references in `test/ref_sq.py` and
 `test/debye_ref.py`. Test data is generated at run time by `test/gen_dump.py`;
 do not commit `.dump` files.
 
+The formulas in `README.md` and the skill references are typeset by MathJax on
+GitHub, which is not LaTeX: use `\text{}`/`\mathrm{}` rather than `\rm`/`\bf`,
+delimit with `$...$`/`$$...$$` (not `\[ ... \]`), give each display block a
+single equation, and never leave LaTeX inside a code span, where it is shown as
+source. `tools/check_readme_math.py` (run by `ctest` as `readme_math`) checks
+all of this after an edit. When documenting a new method, give its options their
+own table rather than appending them to another method's table.
+
 ## Commit & Pull Request Guidelines
 
 Commit messages are short, imperative and capitalized, often with a module

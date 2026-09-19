@@ -102,6 +102,11 @@ With `--method debye` these options select the pair histogram:
 | `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
 | `--rdf FILE` | total and all partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic) |
+
+With `--dyn` these options select the $q$ line and the correlation window:
+
+| dynamic option | meaning |
+| --- | --- |
 | `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
 | `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
 | `--maxframes L` | correlation window in frames (largest lag kept), required by `--dyn` |
@@ -199,15 +204,23 @@ it).  `--grid` is not available with this method, and it runs on the CPU.
 
 `--dyn` follows the recipe used by the dynasor and MDANSE packages: pick a
 line in reciprocal space, evaluate the density amplitudes there, correlate
-them in time and Fourier transform the correlation.  With
-`q_i = s_i \hat{u}`, `s_i = S_0 + i (S_1-S_0)/N_{\rm int}` (the line always
-passes through $\Gamma$, the origin of reciprocal space),
+them in time and Fourier transform the correlation.  With $q_i = s_i\,\hat{u}$
+and
+
+$$s_i = S_0 + i\,\frac{S_1 - S_0}{N_{\mathrm{int}}}$$
+
+(the line always passes through $\Gamma$, the origin of reciprocal space),
 
 $$
-F(q,t) = \frac{1}{W(q)} \sum_{ab} w_a(q) w_b(q)
-         \frac{\langle \rho_a(q,t'+\tau)\,\rho_b^*(q,t')\rangle}{N_{\rm origins}(\tau)},
-\qquad
-S(q,\omega) = \frac{1}{2\pi}\int_{-\infty}^{\infty} e^{i\omega t} F(q,t)\,dt
+F(q,t) = \frac{1}{W(q)} \sum_{ab} w_a(q)\, w_b(q)\,
+         \frac{\langle \rho_a(q,t'+\tau)\,\rho_b^*(q,t')\rangle}
+              {N_{\text{origins}}(\tau)}
+$$
+
+and
+
+$$
+S(q,\omega) = \frac{1}{2\pi}\int_{-\infty}^{\infty} e^{i\omega t} F(q,t)\,dt,
 $$
 
 with the same $\rho$, $w$ and $W(q)$ as the static calculation, so the

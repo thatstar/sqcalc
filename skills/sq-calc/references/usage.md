@@ -52,7 +52,9 @@ $b$ (`neutron`) or the IT92 form factor $f(q)$ (`xray`).  The weights come from
 a table of 104 elements, so `-m` is required for anything but `unit`; without it
 every atom has weight 1.0.
 
-`S(q) = \langle |\rho(q)|^2 \rangle / W(q)` with `--norm` selecting $W(q)$:
+$$S(q) = \frac{\langle |\rho(q)|^2 \rangle}{W(q)}$$
+
+with `--norm` selecting $W(q)$:
 
 | `--norm` | $W(q)$ | use |
 | --- | --- | --- |
@@ -160,7 +162,7 @@ $$C_{ab}(q,\tau) = \langle \rho_a(q,t+\tau)\rho_b^*(q,t)\rangle,$$
 accumulating a sum *and* a count per lag, so the memory does not grow with the
 trajectory length and a trajectory whose length is not a multiple of the window
 needs no padding.  `--maxframes L` is the window: the largest lag kept, and
-hence the resolution $\Delta\omega = \pi/(L\,\Delta t_{\rm frame})$.  `--lag N`
+hence the resolution $\Delta\omega = \pi/(L\,\Delta t_{\text{frame}})$.  `--lag N`
 is the distance in frames between consecutive time origins (default 1, the most
 overlapping averages; larger values are cheaper and more nearly independent).
 
@@ -264,7 +266,7 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
   reading, which requires the atom order (`id`) to be stable between frames.
 * `--dyn` needs a dump written at a constant timestep interval, and enough of
   them: the frame interval sets the highest frequency the spectrum can see
-  ($\omega_{\max} = \pi/\Delta t_{\rm frame}$), so a trajectory dumped every
+  ($\omega_{\max} = \pi/\Delta t_{\text{frame}}$), so a trajectory dumped every
   100 MD steps resolves far less than one dumped every 10.  sqcalc prints the
   derived frame interval and warns when the frame-to-frame displacements
   suggest the dynamics are undersampled.
