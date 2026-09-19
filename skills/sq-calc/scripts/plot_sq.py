@@ -16,9 +16,13 @@ Usage:
     plot_sq.py S_q.dat                        # S(q) and partials -> S_q.png
     plot_sq.py -o compare.png a.dat b.dat     # overlay two totals
     plot_sq.py --show --partials rdf.dat      # interactive g(r) window
+    plot_sq.py --refline 0 S_q.dat            # mark zero instead of the 1 line
 
 Matplotlib is the only dependency.  The ``--output`` suffix picks the format
 (``.png``, ``.pdf``, ``.svg``, ...); ``.pdf``/``.svg`` are the vector choices.
+A dashed reference line is drawn at y = 1 by default, the value S(q) and g(r)
+tend to at large q / r (and the Faber-Ziman partials tend to); ``--refline``
+takes another value, or ``none`` to leave the figure clean.
 """
 
 from __future__ import annotations
@@ -75,6 +79,17 @@ def column(labels: list[str] | None, index: int, default: str) -> str:
     return default
 
 
+def parse_refline(text: str) -> float | None:
+    """Reference line value, or None when the line is switched off."""
+    if text.strip().lower() in ("", "none", "off", "no"):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expects a number or 'none', not {text!r}")
+
+
 def plot_curves(ax, tables, partials: bool) -> None:
     """Draw the S(q) or g(r) total of each table, plus the partials."""
     for path, labels, rows in tables:
@@ -117,10 +132,16 @@ def main() -> int:
     parser.add_argument("--no-partials", action="store_true",
                         help="draw only the totals")
     parser.add_argument("--title", metavar="TITLE", help="figure title")
+    parser.add_argument("--refline", metavar="Y", type=parse_refline,
+                        default=1.0,
+                        help="horizontal reference line, drawn at the 1 that "
+                             "S(q), g(r) and the Faber-Ziman partials tend to "
+                             "(default: 1.0; use 0 or 'none')")
     args = parser.parse_args()
 
     if args.partials and args.no_partials:
         parser.error("--partials and --no-partials are mutually exclusive")
+    refline = args.refline
 
     # Read and validate the tables before pulling in matplotlib, so a typo or a
     # mixed set of tables fails without the import cost.
@@ -161,7 +182,13 @@ def main() -> int:
         plot_curves(ax, tables, partials)
         ax.set_xlabel(column(tables[0][1], 0, "q [1/A]"))
         ax.set_ylabel(column(tables[0][1], 1, "S(q)"))
-    ax.axhline(0.0, color="0.7", linewidth=0.6, zorder=0)
+    if refline is not None:
+        ax.axhline(refline, color="0.65", linewidth=0.8, linestyle="--",
+                   zorder=0)
+        ax.annotate(f"{refline:g}", xy=(1.0, refline),
+                    xycoords=("axes fraction", "data"), xytext=(-3, 3),
+                    textcoords="offset points", ha="right", va="bottom",
+                    color="0.45", fontsize="small")
     ax.legend()
     ax.set_title(args.title or (tables[0][0].stem if len(tables) == 1
                                 else "sqcalc"))

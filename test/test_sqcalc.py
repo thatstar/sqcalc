@@ -531,6 +531,31 @@ def main():
               % ("Debye S(q) is independent of --nq", worst))
         print("  ok   %-42s %s" % ("choose_q debye advice", " ".join(options)))
 
+    # --- 9d. plot script ---------------------------------------------------
+    # plot_sq.py marks the asymptote (S(q), g(r) -> 1) by default.  It needs
+    # matplotlib, so the check skips itself when that is not installed.
+    plotter = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts",
+                           "plot_sq.py")
+    try:
+        import matplotlib  # noqa: F401
+        have_matplotlib = True
+    except ImportError:
+        have_matplotlib = False
+    if not os.path.isfile(plotter) or not have_matplotlib:
+        print("skip plot script (needs skills/sq-calc/scripts/plot_sq.py and "
+              "matplotlib)")
+    else:
+        print("plot script")
+        for index, extra in enumerate(([], ["--refline", "0"],
+                                       ["--refline", "none"])):
+            figure = path("plot_refline_%d.png" % index)
+            run([sys.executable, plotter, path("gas_nufft.dat"), *extra,
+                 "-o", figure])
+            if not os.path.isfile(figure) or os.path.getsize(figure) == 0:
+                raise SystemExit("FAIL plot script wrote no figure for %s"
+                                 % (" ".join(extra) or "the default refline"))
+        print("  ok   %-42s %s" % ("plot_sq.py renders", "refline 1.0 / 0 / none"))
+
     # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
     print("faber-ziman cross-check and partial g(r)")
     for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):

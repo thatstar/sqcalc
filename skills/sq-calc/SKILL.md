@@ -47,7 +47,9 @@ python3 scripts/plot_sq.py -o compare.png a.dat b.dat  # overlay two totals
 ```
 
 It needs matplotlib and nothing else; `--output` picks the format from the
-suffix, so `.pdf` or `.svg` gives vector output.
+suffix, so `.pdf` or `.svg` gives vector output.  A dashed line marks the 1 that
+S(q), g(r) and the Faber-Ziman partials tend to; `--refline 0` or
+`--refline none` changes or removes it.
 
 `scripts/choose_q.py DUMP` picks the q sampling from the box, which the
 reciprocal methods need because their q grid is the lattice of that box:
