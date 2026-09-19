@@ -42,3 +42,13 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(sqcalc_gpu PROPERTIES LABELS "integration;gpu")
   endif()
 endif()
+
+# The distributed skill documents the command line flags and the CMake options;
+# keep those documents in step with the parser and this build.
+set(_sqc_skill_check "${CMAKE_SOURCE_DIR}/skills/sq-calc/scripts/check_doc_sync.py")
+if(Python3_Interpreter_FOUND AND EXISTS "${_sqc_skill_check}")
+  add_test(
+    NAME skills_doc_sync
+    COMMAND ${Python3_EXECUTABLE} "${_sqc_skill_check}" "${CMAKE_SOURCE_DIR}"
+  )
+endif()

@@ -13,6 +13,10 @@ LAMMPS dump trajectories.
   `sqc_<topic>.f90` pattern and are added to `sqcalc_lib` in `CMakeLists.txt`.
 - `test/` — Fortran unit tests and `test_sqcalc.py`, the end-to-end suite.
 - `external/finufft/` — vendored FINUFFT (git subtree, do not edit).
+- `skills/sq-calc/` — the agent skill shipped with the code: its
+  `references/usage.md` and `references/building.md` document the CLI and the
+  build, and `scripts/check_doc_sync.py` (run by the `skills_doc_sync` test)
+  keeps them in step with `src/sqc_options.f90` and `CMakeLists.txt`.
 - `.devdocs/` — local design notes (gitignored).
 
 ## Build, Test, and Development Commands
