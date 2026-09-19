@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqcalc"
+  short_description: "Build, run, and test the sqcalc S(q) code"
+  default_prompt: "Use $sq-calc to build sqcalc and run it on my LAMMPS trajectory."
