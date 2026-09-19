@@ -22,10 +22,15 @@ grid sqcalc builds, and reports
 * the grid size for --qmax, against the 4e8 mode limit, and
 * the resulting option string, with --print-options for scripting.
 
+The Debye method is different: it evaluates S(q) directly from the pair
+histogram, so its q grid is free and a much finer dq costs almost nothing
+(--method debye reports that case; dr, not the box, sets the accuracy).
+
 Usage:
     choose_q.py traj.dump                    # report for qmax = 20 (default)
     choose_q.py traj.dump --qmax 15
     choose_q.py traj.dump --qmax 12 --print-options
+    choose_q.py traj.dump --method debye --qmax 20 --dr 0.01
 
 Only numpy is needed.  Pair this with a frame count that gives enough
 independent configurations: the error of a shell average falls as
@@ -66,6 +71,15 @@ def read_cell(path: Path) -> np.ndarray:
                              [xy, yhi - ylo, 0.0],
                              [xz, yz, zhi - zlo]])
     raise SystemExit(f"{path}: no 'ITEM: BOX BOUNDS' line found")
+
+
+def read_boundary(path: Path) -> list[str]:
+    """Periodicity flags of the first frame ('pp pp pp' and friends)."""
+    with path.open() as handle:
+        for line in handle:
+            if line.startswith("ITEM: BOX BOUNDS"):
+                return line.split()[3:]
+    return []
 
 
 def modes_per_axis(qmax: float, cell: np.ndarray) -> np.ndarray:
@@ -125,27 +139,8 @@ def finest_nq(qlen: np.ndarray, qmin: float, qmax: float, upper: float,
     return nq
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Choose --qmin/--qmax/--nq for a LAMMPS dump from its box."
-    )
-    parser.add_argument("dump", metavar="DUMP", help="LAMMPS dump file")
-    parser.add_argument("--qmax", type=float, default=20.0,
-                        help="largest |q| wanted [1/A] (default: 20, sqcalc's "
-                             "own default)")
-    parser.add_argument("--qmin", type=float, default=None,
-                        help="smallest |q|; defaults to the first one the box "
-                             "can represent")
-    parser.add_argument("--print-options", action="store_true",
-                        help="print only the option string")
-    args = parser.parse_args()
-
-    path = Path(args.dump)
-    if not path.is_file():
-        print(f"error: {path} not found", file=sys.stderr)
-        return 2
-
-    cell = read_cell(path)
+def report_reciprocal(cell: np.ndarray, args) -> int:
+    """Sampling for nufft/direct, where q must sit on the lattice of the box."""
     modes = modes_per_axis(args.qmax, cell)
     requested = int(np.prod(modes))
     if requested > MAX_GRID:
@@ -235,6 +230,88 @@ def main() -> int:
     print("  * a small box cannot resolve small q at all: use a larger box,")
     print("    or --method debye, whose q grid is not tied to the box.")
     return 0
+
+
+def report_debye(cell: np.ndarray, args) -> int:
+    """Sampling for the Debye method, where q is not tied to the box."""
+    lengths = np.linalg.norm(cell, axis=1)
+    qmin = 0.0 if args.qmin is None else args.qmin
+    dq = args.dq if args.dq else 0.01
+    nq = max(1, int(round((args.qmax - qmin)/dq)))
+    dq = (args.qmax - qmin)/nq
+    options = f"--qmin {qmin:g} --qmax {args.qmax:g} --nq {nq}"
+
+    boundary = read_boundary(Path(args.dump))
+    periodic = len(boundary) == 3 and all(b[:1] == "p" for b in boundary)
+    rmax = 0.5*float(np.min(lengths)) if periodic else None
+    reliable = 0.5*np.pi/args.dr
+
+    if args.print_options:
+        print(options)
+        return 0
+
+    print("method             : debye (real-space pair histogram)")
+    print(f"box                : {lengths[0]:.4f} x {lengths[1]:.4f} x "
+          f"{lengths[2]:.4f}")
+    print("q grid             : free, evaluated from the histogram - every q "
+          "is available, so there are no empty shells and dq can be small")
+    print()
+    print(f"recommended        : {options}")
+    print(f"  shell width dq   : {dq:.4f} 1/A")
+    if rmax is not None:
+        print(f"  radial bins      : rmax {rmax:.4f} (half the smallest side) / "
+              f"dr {args.dr:g} = {int(rmax/args.dr)} bins")
+    print(f"  accuracy         : dr {args.dr:g} keeps the histogram reliable "
+          f"below q = pi/(2 dr) = {reliable:.1f} 1/A")
+    if args.qmax > reliable:
+        print(f"  warning          : qmax {args.qmax:g} exceeds that; for this "
+              f"qmax use --dr <= {0.5*np.pi/args.qmax:.4g}")
+    print("  cost             : one sum over the bins per q value, so a fine dq")
+    print("                     is cheap next to the pair list itself")
+    print()
+    print("Notes")
+    print("  * S(q) is a smooth function of q here: the grid only samples it,")
+    print("    so refining --nq never leaves empty shells or adds noise - the")
+    print("    same curve is evaluated at more points.")
+    print("  * what does limit the method is the real-space cutoff: dr sets")
+    print("    the q range, and rmax (and the cut-off correction) the low q")
+    print("    end.  The radial bin and the q range go together.")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Choose --qmin/--qmax/--nq for a LAMMPS dump from its box."
+    )
+    parser.add_argument("dump", metavar="DUMP", help="LAMMPS dump file")
+    parser.add_argument("--method", choices=("nufft", "direct", "debye"),
+                        default="nufft",
+                        help="method the sampling is for (default: nufft); "
+                             "debye has a free q grid")
+    parser.add_argument("--qmax", type=float, default=20.0,
+                        help="largest |q| wanted [1/A] (default: 20, sqcalc's "
+                             "own default)")
+    parser.add_argument("--qmin", type=float, default=None,
+                        help="smallest |q|; defaults to the first one the box "
+                             "can represent (0 for debye)")
+    parser.add_argument("--dr", type=float, default=0.01,
+                        help="Debye radial bin width [A] (default: 0.01)")
+    parser.add_argument("--dq", type=float, default=None,
+                        help="target shell width for --method debye "
+                             "(default: 0.01 1/A)")
+    parser.add_argument("--print-options", action="store_true",
+                        help="print only the option string")
+    args = parser.parse_args()
+
+    path = Path(args.dump)
+    if not path.is_file():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 2
+
+    cell = read_cell(path)
+    if args.method == "debye":
+        return report_debye(cell, args)
+    return report_reciprocal(cell, args)
 
 
 if __name__ == "__main__":

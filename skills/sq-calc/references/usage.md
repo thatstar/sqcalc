@@ -96,6 +96,19 @@ and prints the option string to use; the reasoning is
 * A small box cannot resolve small $q$ at all: use a larger box, or the Debye
   method, whose $q$ grid is not tied to the box.
 
+The Debye method is the exception to all of the above: it evaluates $S(q)$
+directly from the pair histogram, not from a transform, so every $q$ is
+available.  There are no empty shells and no lattice-imposed shell width - a
+small $\Delta q$ just samples the same smooth curve at more points, at the cost
+of one pass over the histogram bins per $q$ (negligible next to the pair list).
+The limits are in real space instead: `--dr` sets the $q$ range, since the
+histogram is only reliable up to $q \sim \pi/(2\,dr)$ (sqcalc prints a note
+when `--qmax` exceeds it), and `--rmax` together with the cut-off correction
+fixes the low $q$ end.  So `--nq` can be pushed as far as the table length is
+convenient: `scripts/choose_q.py DUMP --method debye` suggests
+`--qmin 0 --qmax 20 --nq 2000` ($\Delta q = 0.01$) and checks `--dr` against
+the requested `--qmax`.
+
 ### Partials
 
 Each type pair gets a column

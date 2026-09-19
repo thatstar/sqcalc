@@ -505,6 +505,32 @@ def main():
             print("  ok   %-42s %s" % ("choose_q keeps every shell filled (%s)"
                                        % label, " ".join(options)))
 
+        # The Debye method evaluates S(q) straight from the pair histogram, so
+        # its q grid is free: a finer grid samples the same curve, and any qmin
+        # is allowed (no lattice to fill).
+        options = run([sys.executable, helper, dump, "--method", "debye",
+                       "--qmax", "6", "--print-options"]).stdout.split()
+        if options[options.index("--qmin") + 1] != "0":
+            raise SystemExit("FAIL choose_q debye qmin: %s" % " ".join(options))
+        if int(options[options.index("--nq") + 1]) != 600:
+            raise SystemExit("FAIL choose_q debye nq: %s" % " ".join(options))
+        debye_opts = ["-w", "unit", "--method", "debye", "--rmax", "6",
+                      "--dr", "0.01", "--qmax", "6"]
+        run([exe, "-i", dump, *debye_opts, "--nq", "40", path("deb_coarse.dat")])
+        run([exe, "-i", dump, *debye_opts, "--nq", "200", path("deb_fine.dat")])
+        coarse = read_matrix(path("deb_coarse.dat"))
+        fine = read_matrix(path("deb_fine.dat"))
+        idx = 5*np.arange(1, 41) - 3          # coincident shell centres
+        if not np.allclose(coarse[:, 0], fine[idx, 0], rtol=0.0, atol=1.0e-12):
+            raise SystemExit("FAIL debye q grid: shell centres do not coincide")
+        worst = float(np.max(np.abs(coarse[:, 1:] - fine[idx, 1:])))
+        if worst > 1.0e-8:
+            raise SystemExit("FAIL debye q grid: nq 40 vs 200 differ by %.3e"
+                             % worst)
+        print("  ok   %-42s max deviation %.1e"
+              % ("Debye S(q) is independent of --nq", worst))
+        print("  ok   %-42s %s" % ("choose_q debye advice", " ".join(options)))
+
     # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
     print("faber-ziman cross-check and partial g(r)")
     for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):

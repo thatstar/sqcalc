@@ -60,7 +60,9 @@ sqcalc -i traj.dump $(python3 scripts/choose_q.py traj.dump --qmax 15 --print-op
 
 It needs numpy, reads only the first frame, and prints `--qmin/--qmax/--nq`
 such that no shell is empty, with the mode counts that show where the
-statistics are thin.
+statistics are thin.  Pass `--method debye` for the real-space method, whose q
+grid is not tied to the box: there a fine dq costs nothing and adds no noise,
+and `--dr` instead of the box sets the usable q range.
 
 ## Reminders
 
@@ -74,7 +76,8 @@ statistics are thin.
   ($2\pi/L$ for a cubic box) and $\Delta q = (q_{\max}-q_{\min})/n_q$ must not
   undercut the spacing of the lattice, or shells come out empty and sqcalc
   writes them as 0.  `scripts/choose_q.py` prints a safe `--qmin`, `--qmax`
-  and `--nq`.
+  and `--nq`; for `--method debye` it reports the opposite advice, since that
+  q grid is free and `--dr` limits the range instead.
 * Report partials with `-fz` (Faber-Ziman) in preference to the default OVITO
   columns: they tend to 1 for every pair, so they do not hide the structure
   behind the concentrations and compare directly between systems.
