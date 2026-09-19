@@ -15,17 +15,15 @@ and a real space Debye pair histogram, which can also write $g(r)$.
 
 ## Locating the program
 
-Running sqcalc needs nothing but the `sqcalc` executable: a single binary with
-no data files, plugins or environment variables.  Call it as `sqcalc` and let
-the shell find it; when in doubt, `command -v sqcalc` proves it is on `PATH`.
-A build tree is not required at all, so do not go looking for a source checkout
-unless the binary is missing, plainly out of date, or the task is to change the
-code.
+`sqcalc` is one self-contained binary with no data files, plugins or environment
+variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
+sqcalc` is the check that it resolves.  Where that binary lives is not something
+this skill has to know, and no source checkout is needed to use it.
 
-This skill is versioned inside the sqcalc repository at `skills/sq-calc/`, so if
-a build does turn out to be necessary, the checkout root is the parent of this
-skill's own directory (upstream <https://github.com/thatstar/sqcalc>) - resolve
-it from there instead of assuming a remembered location.
+For reference, the skill is versioned inside the sqcalc repository at
+`skills/sq-calc/` (upstream <https://github.com/thatstar/sqcalc>), so a build
+happens in the checkout it came from - the repository root is the parent of this
+file's directory.
 
 ## Building
 
@@ -39,8 +37,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The freshly built binary is `build/sqcalc`; `cmake --install build --prefix
-PREFIX` copies it to `PREFIX/bin/sqcalc` if it should end up on `PATH`.
+The build produces `build/sqcalc`.
 
 Relevant CMake options:
 
