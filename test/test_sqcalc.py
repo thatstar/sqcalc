@@ -480,6 +480,31 @@ def main():
         raise SystemExit("FAIL unmapped partial g(r) columns: %s"
                          % " ".join(rdf_header))
 
+    # --- 9c. q sampling helper --------------------------------------------
+    # The skill ships choose_q.py, which reads the box and returns a sampling
+    # with no empty shell; a shell the box cannot fill is written as 0.
+    helper = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts",
+                          "choose_q.py")
+    if not os.path.isfile(helper):
+        print("skip q sampling helper (skills/sq-calc/scripts/choose_q.py)")
+    else:
+        print("q sampling helper")
+        for label, source in (("cubic", dump), ("triclinic", dump_tri)):
+            options = run([sys.executable, helper, source, "--qmax", "6",
+                           "--print-options"]).stdout.split()
+            nq = int(options[options.index("--nq") + 1])
+            run([exe, "-i", source, *options, path("chosen_q.dat")])
+            chosen = np.loadtxt(path("chosen_q.dat"))
+            if chosen.shape[0] != nq:
+                raise SystemExit("FAIL choose_q (%s): %d rows for nq = %d"
+                                 % (label, chosen.shape[0], nq))
+            empty = int((chosen[:, 1] == 0.0).sum())
+            if empty:
+                raise SystemExit("FAIL choose_q (%s): %d of %d shells empty"
+                                 % (label, empty, nq))
+            print("  ok   %-42s %s" % ("choose_q keeps every shell filled (%s)"
+                                       % label, " ".join(options)))
+
     # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
     print("faber-ziman cross-check and partial g(r)")
     for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):

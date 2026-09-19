@@ -69,6 +69,33 @@ strengths are converted down, the grid is widened back for the double precision
 combine), which is worthwhile on consumer cards with a low FP64 rate; it differs
 from float64 by roughly 1e-6 in $S(q)$.
 
+### Choosing the q sampling
+
+The reciprocal methods (`nufft`, `direct`) can only evaluate the reciprocal
+vectors of the box, $|q| = |h b_1 + k b_2 + l b_3|$, so the sampling has to
+follow the box.  `scripts/choose_q.py DUMP` reads the box from the first frame
+and prints the option string to use; the reasoning is
+
+* `--qmin` should be the smallest accessible $|q|$ - `2 pi / L` for a cubic
+  box.  With the default `--qmin 0` every shell below it is empty, and those
+  rows are not measurements.
+* `--nq` sets the shell width, `dq = (qmax - qmin) / nq`.  The $|q|$ values of
+  a lattice are not evenly spaced, and a shell that falls between two
+  neighbours stays empty, in which case sqcalc writes a flat 0.  For the
+  default `--nq 500` on a 1000-atom box at $rho = 1.2$ this hits a third of
+  the shells.  A width of about $0.3$-$0.4 \times 2 pi / L$ is the practical
+  limit before shells start to empty out, and the script reports the widest
+  width that still populates every shell.
+* A shell that holds only a few modes is noisy: the spread of a shell value
+  falls roughly as $1/sqrt("modes" \times "frames")$, so the low-$q$ end is the
+  first place to look when a curve looks ragged (the script prints the mode
+  counts).
+* `--qmax` costs $(q_{\max} L)^3$ lattice points; grids above 4e8 are refused,
+  which caps `qmax` for large boxes.  The script reports the grid it would
+  build.
+* A small box cannot resolve small $q$ at all: use a larger box, or the Debye
+  method, whose $q$ grid is not tied to the box.
+
 ### Partials
 
 Each type pair gets a column
@@ -81,7 +108,11 @@ Partials work with both the reciprocal and the Debye method and are written by
 default, so a model system without elements (`-w unit`, no `-m`) still gets
 them: the pair is labelled with the LAMMPS type ids, `S(1-1) S(1-2) S(2-2)`,
 and `-m` only replaces those labels with element symbols.  The derivations are
-in the repository `README.md`.
+in the repository `README.md`.  **Prefer `-fz` when reporting partials**: the
+Faber-Ziman form tends to 1 for every pair, so the curves share a common
+asymptote and can be compared directly with the partials of other systems,
+while the default (OVITO) partials tend to the concentrations $x_a$ and hide
+the structure behind the composition.
 
 ## Output
 
@@ -152,5 +183,9 @@ sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
 * With `-w neutron`/`xray` a type missing from the mapping, or an element
   without tabulated data, is rejected with a clear message; `-w unit` needs no
   mapping and labels the partials by type id instead.
+* The shell table reports 0 for shells the box cannot sample.  Pick `--qmin`
+  and `--nq` with `scripts/choose_q.py` before trusting the low-$q$ end, and
+  read the Faber-Ziman partials (`-fz`) when comparing partials across
+  concentrations.
 * Grids above 4e8 points are refused (about 6 GB); `--grid` is written single
   threaded and does not affect the shell table.

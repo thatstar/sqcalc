@@ -49,6 +49,19 @@ python3 scripts/plot_sq.py -o compare.png a.dat b.dat  # overlay two totals
 It needs matplotlib and nothing else; `--output` picks the format from the
 suffix, so `.pdf` or `.svg` gives vector output.
 
+`scripts/choose_q.py DUMP` picks the q sampling from the box, which the
+reciprocal methods need because their q grid is the lattice of that box:
+
+```sh
+python3 scripts/choose_q.py traj.dump --qmax 15            # report
+python3 scripts/choose_q.py traj.dump --qmax 15 --print-options
+sqcalc -i traj.dump $(python3 scripts/choose_q.py traj.dump --qmax 15 --print-options) S_q.dat
+```
+
+It needs numpy, reads only the first frame, and prints `--qmin/--qmax/--nq`
+such that no shell is empty, with the mode counts that show where the
+statistics are thin.
+
 ## Reminders
 
 * `-m` (LAMMPS type id to element) is required for the `neutron`/`xray` weights;
@@ -57,6 +70,14 @@ suffix, so `.pdf` or `.svg` gives vector output.
 * The reciprocal methods sample $q$ on the lattice of the dump box, so the box
   must be constant and the grid costs $(q_{\max} L)^3$; the Debye method needs
   no periodic box and wins for large, sparse systems.
+* Choose that sampling from the box: `--qmin` is the smallest accessible $|q|$
+  ($2\pi/L$ for a cubic box) and $\Delta q = (q_{\max}-q_{\min})/n_q$ must not
+  undercut the spacing of the lattice, or shells come out empty and sqcalc
+  writes them as 0.  `scripts/choose_q.py` prints a safe `--qmin`, `--qmax`
+  and `--nq`.
+* Report partials with `-fz` (Faber-Ziman) in preference to the default OVITO
+  columns: they tend to 1 for every pair, so they do not hide the structure
+  behind the concentrations and compare directly between systems.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.

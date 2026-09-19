@@ -203,15 +203,21 @@ which tends to 1 for every pair.  Partials are available for both the
 reciprocal and the Debye method; `--no-partials` turns them off.  They only
 need the LAMMPS type ids, so a model system without elements gets them too,
 labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with element
-symbols and is required for the weighted schemes.
+symbols and is required for the weighted schemes.  Report them with `-fz`:
+every Faber-Ziman pair tends to 1, so the curves can be read and compared
+across concentrations, which the OVITO pairs (tending to $x_a$) do not allow.
 
 A few limits are worth keeping in mind: the simulation box must not change
 along the trajectory (the reciprocal grid is built once from the first frame),
 both methods accept a non-periodic box (the reciprocal one still samples $q$ on
 the lattice of that box, so a cluster needs enough vacuum padding, whereas
-Debye needs none), and atoms of a type missing from `-m` under `-w
-neutron`/`xray`, or with an element that has no tabulated data, are rejected
-with a clear message.
+Debye needs none).  That lattice also fixes which $q$ are measurable: set
+`--qmin` to the smallest reciprocal vector and keep the shell width
+`(qmax - qmin)/nq` comparable to the lattice spacing, or the table comes back
+with zero-filled shells the box can never fill; the skill's
+`scripts/choose_q.py` prints a safe set of options for a given dump.  Atoms of a
+type missing from `-m` under `-w neutron`/`xray`, or with an element that has
+no tabulated data, are rejected with a clear message.
 
 ## License
 
