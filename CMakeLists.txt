@@ -11,7 +11,7 @@ option(SQC_BUILD_TESTS "Build the sqcalc tests" ON)
 option(SQC_USE_SYSTEM_FINUFFT "Use an installed FINUFFT instead of external/finufft" OFF)
 option(SQC_ENABLE_CUDA "Build the cuFFT based GPU backend (cufinufft)" OFF)
 option(SQC_ENABLE_HDF5 "Write grid data as HDF5 instead of text" ON)
-option(SQC_ENABLE_RUNTIME_CHECKS "Keep the Fortran runtime checks in non Debug builds" ON)
+option(SQC_ENABLE_RUNTIME_CHECKS "Add the Fortran runtime checks to non Debug builds (development)" OFF)
 set(SQC_FINUFFT_ROOT "" CACHE PATH "Prefix of an installed FINUFFT (SQC_USE_SYSTEM_FINUFFT=ON)")
 set(SQC_CUDA_ARCHITECTURES "" CACHE STRING "CUDA compute capability to build for (default: detected)")
 
@@ -169,10 +169,10 @@ target_compile_options(
   PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wextra;-Wno-unused-dummy-argument;-cpp>
           $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Debug>>:-fcheck=all;-fbacktrace;-ffpe-trap=invalid,zero,overflow>
 )
-# Keep the array bounds and substring checks in the Release build too: they have
-# caught out of bounds bugs that the optimised code silently tolerates, and the
-# cost is only a few percent.  Configure with -DSQC_ENABLE_RUNTIME_CHECKS=OFF
-# for benchmarking, Debug already carries the full set above.
+# The array bounds and substring checks catch out of bounds errors that the
+# optimised code silently tolerates, but they are a development aid: they cost a
+# few percent and abort the run, so they are opt in.  Debug always carries the
+# full set above.
 if(SQC_ENABLE_RUNTIME_CHECKS)
   target_compile_options(
     sqcalc_lib PRIVATE $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<NOT:$<CONFIG:Debug>>>:-fcheck=bounds;-fbacktrace>

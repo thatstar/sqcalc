@@ -31,7 +31,7 @@ The build produces `build/sqcalc`.
 | `-DSQC_FINUFFT_ROOT=PREFIX` | prefix of that installed FINUFFT |
 | `-DCPM_SOURCE_CACHE=DIR` | where FINUFFT's build helpers (`CPM.cmake`, `findFFTW`, `xsimd`, CCCL, possibly FFTW3) are cached; defaults to `.cpm-cache/` in the source tree |
 | `-DSQC_BUILD_TESTS=OFF` | skip the test targets |
-| `-DSQC_ENABLE_RUNTIME_CHECKS=OFF` | drop the `-fcheck=bounds -fbacktrace` checks from non Debug builds (on by default: they catch out of bounds errors at a few percent of run time) |
+| `-DSQC_ENABLE_RUNTIME_CHECKS=ON` | add `-fcheck=bounds -fbacktrace` to non Debug builds; off by default because the checks are a development aid (they catch out of bounds accesses but cost a few percent and abort the run) |
 | `-DCMAKE_BUILD_TYPE=Debug` | adds `-fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow` |
 
 ## Network and caching
