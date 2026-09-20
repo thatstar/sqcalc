@@ -7,7 +7,7 @@
 r"""Plot the dynamic tables written by ``sqcalc --dyn``.
 
 Reads the ``# qx qy qz omega S(q,w) ...`` spectra table (or the ``tau F(q,t)``
-table written by ``--fsq``, or the ``tau S4(q,t)`` table written by ``--s4``)
+table written by ``--fqt``, or the ``tau S4(q,t)`` table written by ``--s4``)
 and draws the map of the quantity over $(|q|, \omega)$ next to a few selected
 spectra, or single curves with ``--mode spectra``.
 

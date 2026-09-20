@@ -37,14 +37,14 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--maxframes L` | correlation window in frames (the largest lag kept), required by `--dyn` |
 | `--lag N` | frames between two consecutive time origins (default 1) |
 | `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
-| `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
-| `--sqw-format NAME` | `text` (default) or `hdf5`, applies to `--sqw` and `--fsq` |
+| `--fqt FILE` | the coherent intermediate scattering function $F(q,t)$ |
+| `--fqt-self FILE` | the self intermediate scattering function $F_s(q,t)$ |
+| `--dyn-format NAME` | `text` (default) or `hdf5` for all dynamic outputs |
 | `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
 | `--chi4 FILE` | the average overlap $Q(t)$ and dynamic susceptibility $\chi_4(t)$ |
 | `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
-| `--s4-format NAME` | `text` (default) or `hdf5`, applies to `--s4` and `--chi4` |
-| `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0; GB = $10^9$ bytes) |
-| `--s4-stride N` | use every N-th dump frame for `--s4`/`--chi4` (default 1) |
+| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s (default 2.0; GB = $10^9$ bytes) |
+| `--stride N` | use every N-th dump frame for S4/chi4/F_s (default 1) |
 | `-q, --quiet` | suppress the progress output on stderr |
 | `-h, --help` | option summary |
 | `-v, --version` | program version |
@@ -262,11 +262,11 @@ cheaper.  The full $S_4$ calculation is dominated by the per-atom displacement
 check and the phase sum over the atoms inside the cutoff; a large `--lag`
 (more widely spaced time origins) and a short, low-$q$ line are the practical
 ways to control the cost.  The position buffer grows with the effective S4
-window (`--maxframes` divided by `--s4-stride`, rounded down);
-`--s4-buffer-limit GB` sets its limit (default 2.0, GB = $10^9$ bytes) and an
+window (`--maxframes` divided by `--stride`, rounded down);
+`--buffer-limit GB` sets its limit (default 2.0, GB = $10^9$ bytes) and an
 oversized request is rejected before any large allocation.
 
-`--s4-stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+`--stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
 contributes, the lag axis is $0, N, 2N, \ldots$ dump frames, and the position
 buffer stores only those frames.  This reduces the buffer and the S4/chi4
 work by roughly a factor $N$, at the cost of a coarser time axis.  The
@@ -279,14 +279,61 @@ that happens.  `--lag` is still counted in dump frames, so with stride $N$,
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
-static `OUTPUT` table is still written.  A run with only `--sqw`/`--fsq` does
-not allocate the S4 position buffer.
+static `OUTPUT` table is still written.  A run with only `--sqw`/`--fqt` does
+not allocate the S4 position buffer.  `--fqt-self` allocates that shared
+position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
 sqcalc -i traj.dump -w unit --dyn 20,0.5,4,1,1,0 --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
 ```
+
+### Self intermediate scattering function (`--fqt-self`)
+
+`--fqt` is the coherent intermediate scattering function; `--fqt-self` writes
+the self/incoherent counterpart
+
+$$
+F_s(q,\tau)=\frac{1}{N}\left\langle \sum_i
+  e^{i q\cdot[r_i(t+\tau) - r_i(t)]}\right\rangle,
+$$
+
+with unit weights.  The per-species columns are
+
+$$
+F_s^{a}(q,\tau)=\frac{1}{N}\left\langle \sum_{i\in a}
+  e^{i q\cdot[r_i(t+\tau) - r_i(t)]}\right\rangle,
+$$
+
+and the total is their sum,
+
+$$
+F_s(q,\tau)=\sum_a F_s^{a}(q,\tau).
+$$
+
+At $\tau = 0$ the total is 1 and each species column is $N_a/N = x_a$; the
+columns are labelled by element symbol when `-m` is given, otherwise by the
+LAMMPS type id (`F_s(Si)`, `F_s(O)` or `F_s(1)`, `F_s(2)`).
+
+`--fqt-self` always includes every atom and **never** applies `--s4-cutoff`,
+even when `--s4` is also requested.  It reuses the shared position buffer and
+the `--stride`/`--lag` schedule: only every N-th dump frame contributes, lag
+$j$ is $jN$ dump frames, and the effective window is the largest multiple of
+$N$ that does not exceed `--maxframes`.  The position buffer limit
+`--buffer-limit GB` applies to the same buffer.  `-w`/`--norm` do not affect
+$F_s$.
+
+The text columns are
+
+```
+# qx qy qz tau F_s(q,t) F_s(Si) F_s(O)
+```
+
+and HDF5 writes `/fqt_self/q`, `/fqt_self/tau`, `/fqt_self/F_s`,
+`/fqt_self/count`, `/fqt_self/pairs` and
+`/fqt_self/F_s_partial/<species>`, with `stride` and `effective_maxframes`
+attributes.  The coherent `--fqt` output uses the `/fqt` group.
 
 ## Output
 
@@ -318,12 +365,12 @@ the order of `-m`, with the partials normalized to $g_{ab} \to 1$ at large $r$
 weighted total uses the $q \to 0$ amplitudes.
 
 `--sqw FILE` (dynamic method) holds one row per $(q,\omega)$ sample,
-`# qx qy qz omega S(q,w) S(a-a) ...`, and `--fsq FILE` the intermediate
+`# qx qy qz omega S(q,w) S(a-a) ...`, and `--fqt FILE` the intermediate
 scattering function with `tau` in place of `omega` and the same columns.  Both
-accept a `.h5`/`.hdf5` name (or `--sqw-format hdf5`) for HDF5, where the
+accept a `.h5`/`.hdf5` name (or `--dyn-format hdf5`) for HDF5, where the
 datasets are `/sqw/q` (one row per q: `qx qy qz |q|`), `/sqw/omega`,
 `/sqw/S`, `/sqw/count` (the time origins actually accumulated per lag),
-`/sqw/pairs` and `/sqw/S_partial/<pair>`, with the same layout under `/fsq`.
+`/sqw/pairs` and `/sqw/S_partial/<pair>`, with the same layout under `/fqt`.
 The partial spectra are always in the plain (OVITO) convention of the static
 partial columns: transforming to the Faber-Ziman form would need the self part,
 which the method does not separate, so `-fz` applies to the static table only.
@@ -331,7 +378,7 @@ which the method does not separate, so `-fz` applies to the static table only.
 `--s4 FILE` (dynamic method) holds one row per $(q,\tau)$ sample,
 `# qx qy qz tau S4(q,t)`, with no partial columns.  `--chi4 FILE` is the
 scalar time series `# tau Q(t) chi4(t)`.  Both accept a `.h5`/`.hdf5` name (or
-`--s4-format hdf5`) for HDF5, where the datasets are `/s4/q`, `/s4/tau`,
+`--dyn-format hdf5`) for HDF5, where the datasets are `/s4/q`, `/s4/tau`,
 `/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`, `/chi4/chi4`,
 `/chi4/count`, with the overlap cutoff in the `overlap` attribute.  The count
 is the number of time origins at each lag; a lag with a single origin has no

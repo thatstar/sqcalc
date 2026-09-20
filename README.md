@@ -114,14 +114,14 @@ With `--dyn` these options select the $q$ line and the correlation window:
 | `--maxframes L` | correlation window in frames (largest lag kept), required by `--dyn` |
 | `--lag N` | frames between consecutive time origins (default 1) |
 | `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
-| `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
-| `--sqw-format NAME` | `text` (default) or `hdf5` for the two files above |
+| `--fqt FILE` | the coherent intermediate scattering function $F(q,t)$ |
+| `--fqt-self FILE` | the self intermediate scattering function $F_s(q,t)$ |
+| `--dyn-format NAME` | `text` (default) or `hdf5` for all dynamic outputs |
 | `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
 | `--chi4 FILE` | the average overlap $Q(t)$ and the susceptibility $\chi_4(t)$ |
 | `--s4-cutoff A` | overlap cutoff $a$, required by `--s4` and `--chi4` |
-| `--s4-format NAME` | `text` (default) or `hdf5` for `--s4` and `--chi4` |
-| `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0 GB) |
-| `--s4-stride N` | use every N-th dump frame for `--s4`/`--chi4` (default 1) |
+| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s (default 2.0 GB) |
+| `--stride N` | use every N-th dump frame for S4/chi4/F_s (default 1) |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -334,7 +334,7 @@ and the chi4 table is a single time series,
 # tau Q(t) chi4(t)
 ```
 
-Both accept a `.h5`/`.hdf5` name or `--s4-format hdf5`.  The HDF5 layout is
+Both accept a `.h5`/`.hdf5` name or `--dyn-format hdf5`.  The HDF5 layout is
 `/s4/q`, `/s4/tau`, `/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`,
 `/chi4/chi4`, `/chi4/count`, with the overlap cutoff in the `overlap`
 attribute.  The count is the number of time origins at each lag; a lag with a
@@ -344,12 +344,12 @@ The calculation is more expensive than $F(q,t)$ because every atom and every
 lag has to be compared with its origin position, and every atom inside the
 cutoff contributes to every $q$ mode.  A large `--lag` thins the time origins,
 and a short, low-$q$ line is usually enough for the Ornstein-Zernike fit.  The
-position ring buffer grows with the effective window; `--s4-buffer-limit GB`
+position ring buffer grows with the effective window; `--buffer-limit GB`
 sets its limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size
 is printed in the run summary, and an oversized request is rejected before any
 large allocation.
 
-`--s4-stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+`--stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
 contributes, the lag axis becomes $0, N, 2N, \ldots$ in dump frames, and the
 position buffer stores only those frames.  This reduces both the buffer and
 the S4/chi4 work by roughly a factor $N$, at the cost of a coarser time axis.
@@ -361,11 +361,24 @@ effective window and a note when it is shorter than the requested one.
 frame index is a multiple of `--lag`, so with stride $N$, `--lag m` gives an
 origin every $m$ dump frames, not every $m$ S4 samples.
 
+`--fqt-self` writes the self intermediate scattering function
+
+$$
+F_s(q,\tau) = \frac{1}{N}\left\langle \sum_i
+  e^{i q\cdot[r_i(t+\tau)-r_i(t)]}\right\rangle,
+$$
+
+with unit weights.  The total is 1 at $\tau = 0$, and the per-species columns
+$F_s(a)$ sum to it.  Like S4, it reuses the shared position buffer and the
+`--stride`/`--lag` schedule, but it always includes every atom and never
+applies `--s4-cutoff`, even when `--s4` is also requested.
+
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 static `OUTPUT` table is still written.  Conversely, a run with only
-`--sqw`/`--fsq` does not allocate the S4 position buffer.
+`--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`
+allocates that shared buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units

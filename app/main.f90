@@ -109,12 +109,20 @@ program sqcalc
          method%lag_stride = opts%lag_stride
          method%sqw_format = dyn_format_text
          if (opts%sqw_format == grid_format_hdf5) method%sqw_format = dyn_format_hdf5
+         method%fqt_format = dyn_format_text
+         if (opts%fqt_format == grid_format_hdf5) method%fqt_format = dyn_format_hdf5
+         method%fqt_self_format = dyn_format_text
+         if (opts%fqt_self_format == grid_format_hdf5) method%fqt_self_format = dyn_format_hdf5
          if (allocated(opts%sqw_output)) method%sqw_path = opts%sqw_output
-         if (allocated(opts%fsq_output)) method%fsq_path = opts%fsq_output
-         method%coherent_enabled = allocated(opts%sqw_output) .or. allocated(opts%fsq_output)
+         if (allocated(opts%fqt_output)) method%fqt_path = opts%fqt_output
+         if (allocated(opts%fqt_self_output)) then
+            method%fqt_self_path = opts%fqt_self_output
+            method%fqt_self_enabled = .true.
+         end if
+         method%coherent_enabled = allocated(opts%sqw_output) .or. allocated(opts%fqt_output)
          method%s4_cutoff = opts%s4_cutoff
-         method%s4_buffer_gb = opts%s4_buffer_gb
-         method%s4_stride = opts%s4_stride
+         method%buffer_limit_gb = opts%buffer_limit_gb
+         method%stride = opts%stride
          method%s4_format = dyn_format_text
          if (opts%s4_format == grid_format_hdf5) method%s4_format = dyn_format_hdf5
          method%chi4_format = dyn_format_text
@@ -297,12 +305,20 @@ program sqcalc
                stop 22
             end if
          end if
-         if (allocated(method%fsq_path)) then
-            call method%write_fsq(method%fsq_path, method%sqw_format, opts%scheme, opts%input, &
+         if (allocated(method%fqt_path)) then
+            call method%write_fqt(method%fqt_path, method%fqt_format, opts%scheme, opts%input, &
                                   ierr, message)
             if (ierr /= 0) then
                write (error_unit, '(a)') 'sqcalc: '//trim(message)
                stop 23
+            end if
+         end if
+         if (allocated(method%fqt_self_path)) then
+            call method%write_fqt_self(method%fqt_self_path, method%fqt_self_format, &
+                                       opts%scheme, opts%input, ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 28
             end if
          end if
          if (allocated(method%s4_path)) then
@@ -439,19 +455,25 @@ contains
             m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
          write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
             ' frames, origin lag ', m%lag_stride
-         if (m%s4_enabled .or. m%chi4_enabled) then
-            write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
-               ' (S4/chi4 use unit weights)'
-            write (error_unit, '(a,i0,a,i0,a,i0,a)') '  S4 stride  : ', m%s4_stride, &
-               ' dump frames, effective maxframes ', m%s4_maxframes, ' (requested ', &
-               m%maxframes, ')'
-            if (m%s4_maxframes /= m%maxframes) then
-               write (error_unit, '(a)') '  note       : the S4/chi4 window was reduced to a '// &
-                  'multiple of --s4-stride; the coherent F(q,t)/S(q,w) window is unchanged'
+         if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled) then
+            if (m%s4_enabled .or. m%chi4_enabled) then
+               write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
+                  ' (S4/chi4 use unit weights)'
             end if
-            write (error_unit, '(a,f0.4,a,f0.4,a)') '  S4 buffer  : ', &
-               24.0_rk*real(m%natoms, rk)*real(m%s4_nsteps + 1, rk)/1.0e9_rk, &
-               ' GB (limit ', m%s4_buffer_gb, ' GB)'
+            write (error_unit, '(a,i0,a,i0,a,i0,a)') '  stride     : ', m%stride, &
+               ' dump frames, effective maxframes ', m%effective_maxframes, ' (requested ', &
+               m%maxframes, ')'
+            if (m%effective_maxframes /= m%maxframes) then
+               write (error_unit, '(a)') '  note       : the S4/chi4/F_s window was reduced to a '// &
+                  'multiple of --stride; the coherent F(q,t)/S(q,w) window is unchanged'
+            end if
+            write (error_unit, '(a,f0.4,a,f0.4,a)') '  buffer     : ', &
+               24.0_rk*real(m%natoms, rk)*real(m%nsteps + 1, rk)/1.0e9_rk, &
+               ' GB (limit ', m%buffer_limit_gb, ' GB)'
+         end if
+         if (m%fqt_self_enabled) then
+            write (error_unit, '(a)') '  F_s        : self intermediate scattering function '// &
+               '(unit weights)'
          end if
       class default
          write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes

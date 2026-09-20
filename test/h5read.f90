@@ -31,7 +31,7 @@ program h5read
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fsq|s4|chi4)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -114,7 +114,7 @@ program h5read
          write (output_unit, '(a)') ''
       end do
       call h5gclose_f(group_id, hdferr)
-   case ('sqw', 'fsq')
+   case ('sqw', 'fqt')
       ! dynamic structure factor (or F(q,t)): one row per (q, axis) sample,
       ! the same long table the text writer produces
       call h5gopen_f(file_id, trim(which), group_id, hdferr)
@@ -189,6 +189,38 @@ program h5read
       write (output_unit, '(a)') '# tau Q(t) chi4(t)'
       do i = 1, naxis
          write (output_unit, '(f16.8,2x,es20.12,2x,es20.12)') axis(i), q(i), s(i)
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('fqt_self')
+      ! self intermediate scattering function and its per-species parts
+      call h5gopen_f(file_id, 'fqt_self', group_id, hdferr)
+      call read_real_2d(group_id, 'q', q2, nq, ncol)
+      call read_real_1d(group_id, 'tau', axis, naxis)
+      call read_real_2d(group_id, 'F_s', spec, nq, naxis_check)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      allocate (part3(nq, naxis, max(npairs, 1)))
+      part3 = 0.0_real64
+      do i = 1, npairs
+         call h5gopen_f(group_id, 'F_s_partial', subgroup_id, hdferr)
+         call read_real_2d(subgroup_id, trim(dnames(i)), spec2, nq_check, naxis_check)
+         part3(:, :, i) = spec2
+         call h5gclose_f(subgroup_id, hdferr)
+         deallocate (spec2)
+      end do
+      write (output_unit, '(a)', advance='no') '# qx qy qz tau F_s(q,t)'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' '//trim(dnames(i))
+      end do
+      write (output_unit, '(a)') ''
+      do j = 1, nq
+         do i = 1, naxis
+            write (output_unit, '(3(f14.8,2x),f16.8,2x,es20.12)', advance='no') &
+               q2(j, 1), q2(j, 2), q2(j, 3), axis(i), spec(j, i)
+            do kk = 1, npairs
+               write (output_unit, '(2x,es20.12)', advance='no') part3(j, i, kk)
+            end do
+            write (output_unit, '(a)') ''
+         end do
       end do
       call h5gclose_f(group_id, hdferr)
    case default

@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--weight", default="unit")
     parser.add_argument("--norm", default="mean")
     parser.add_argument("--mapping", default="")
-    parser.add_argument("--output-fsq", required=True)
+    parser.add_argument("--output-fqt", required=True)
     parser.add_argument("--output-sqw", required=True)
     args = parser.parse_args()
 
@@ -223,7 +223,7 @@ def main():
                         handle.write("  %20.12e" % pvalues[k, l, i])
                     handle.write("\n")
 
-    write(args.output_fsq, tau, "tau", ftau, part_f, "F(q,t)")
+    write(args.output_fqt, tau, "tau", ftau, part_f, "F(q,t)")
     write(args.output_sqw, omega, "omega", sqw, part_s, "S(q,w)")
 
 

@@ -84,20 +84,24 @@ module sqc_options
       logical :: lag_given = .false.
       !> Optional dynamic outputs.
       character(len=:), allocatable :: sqw_output
-      character(len=:), allocatable :: fsq_output
+      character(len=:), allocatable :: fqt_output
+      character(len=:), allocatable :: fqt_self_output
+      !> Unified format override; otherwise each file infers from its suffix.
+      integer :: dyn_format = grid_format_text
+      logical :: dyn_format_given = .false.
       integer :: sqw_format = grid_format_text
-      logical :: sqw_format_given = .false.
+      integer :: fqt_format = grid_format_text
+      integer :: fqt_self_format = grid_format_text
       !> Four-point structure factor and average overlap / chi4 outputs.
       character(len=:), allocatable :: s4_output, chi4_output
       real(rk) :: s4_cutoff = 0.0_rk
       logical :: s4_cutoff_given = .false.
-      real(rk) :: s4_buffer_gb = 2.0_rk
-      logical :: s4_buffer_given = .false.
-      integer :: s4_stride = 1
-      logical :: s4_stride_given = .false.
+      real(rk) :: buffer_limit_gb = 2.0_rk
+      logical :: buffer_limit_given = .false.
+      integer :: stride = 1
+      logical :: stride_given = .false.
       integer :: s4_format = grid_format_text
       integer :: chi4_format = grid_format_text
-      logical :: s4_format_given = .false.
       type(weight_scheme_t) :: scheme
    end type options_t
 
@@ -168,9 +172,8 @@ contains
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
                   '--device', '--gpu-id', '--precision', '--grid-format', &
                   '--rmax', '--dr', '--skin', '--rdf', &
-                  '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fsq', '--sqw-format', &
-                  '--s4', '--chi4', '--s4-cutoff', '--s4-format', '--s4-buffer-limit', &
-                  '--s4-stride')
+                  '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
+                  '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -315,20 +318,22 @@ contains
                   self%lag_given = .true.
                case ('--sqw')
                   self%sqw_output = trim(value)
-               case ('--fsq')
-                  self%fsq_output = trim(value)
-               case ('--sqw-format')
+               case ('--fqt')
+                  self%fqt_output = trim(value)
+               case ('--fqt-self')
+                  self%fqt_self_output = trim(value)
+               case ('--dyn-format')
                   select case (trim(value))
                   case ('text', 'txt', 'ascii')
-                     self%sqw_format = grid_format_text
+                     self%dyn_format = grid_format_text
                   case ('hdf5', 'h5', 'hdf')
-                     self%sqw_format = grid_format_hdf5
+                     self%dyn_format = grid_format_hdf5
                   case default
                      ierr = 1
-                     message = 'unknown sqw format "'//trim(value)//'" (use text or hdf5)'
+                     message = 'unknown dynamic format "'//trim(value)//'" (use text or hdf5)'
                      return
                   end select
-                  self%sqw_format_given = .true.
+                  self%dyn_format_given = .true.
                case ('--s4')
                   self%s4_output = trim(value)
                case ('--chi4')
@@ -341,36 +346,22 @@ contains
                      return
                   end if
                   self%s4_cutoff_given = .true.
-               case ('--s4-buffer-limit')
-                  read (value, *, iostat=ierr) self%s4_buffer_gb
-                  if (ierr /= 0 .or. self%s4_buffer_gb <= 0.0_rk) then
+               case ('--buffer-limit')
+                  read (value, *, iostat=ierr) self%buffer_limit_gb
+                  if (ierr /= 0 .or. self%buffer_limit_gb <= 0.0_rk) then
                      ierr = 1
-                     message = '--s4-buffer-limit must be a positive number of GB'
+                     message = '--buffer-limit must be a positive number of GB'
                      return
                   end if
-                  self%s4_buffer_given = .true.
-               case ('--s4-stride')
-                  read (value, *, iostat=ierr) self%s4_stride
-                  if (ierr /= 0 .or. self%s4_stride < 1) then
+                  self%buffer_limit_given = .true.
+               case ('--stride')
+                  read (value, *, iostat=ierr) self%stride
+                  if (ierr /= 0 .or. self%stride < 1) then
                      ierr = 1
-                     message = '--s4-stride must be a positive integer'
+                     message = '--stride must be a positive integer'
                      return
                   end if
-                  self%s4_stride_given = .true.
-               case ('--s4-format')
-                  select case (trim(value))
-                  case ('text', 'txt', 'ascii')
-                     self%s4_format = grid_format_text
-                     self%chi4_format = grid_format_text
-                  case ('hdf5', 'h5', 'hdf')
-                     self%s4_format = grid_format_hdf5
-                     self%chi4_format = grid_format_hdf5
-                  case default
-                     ierr = 1
-                     message = 'unknown s4 format "'//trim(value)//'" (use text or hdf5)'
-                     return
-                  end select
-                  self%s4_format_given = .true.
+                  self%stride_given = .true.
                case ('--device')
                   select case (trim(value))
                   case ('cpu')
@@ -495,35 +486,42 @@ contains
             message = 'the dynamic method runs on the CPU; use --device cpu'
             return
          end if
-         if (allocated(self%s4_output) .or. allocated(self%chi4_output)) then
-            if (.not. self%s4_cutoff_given) then
+         if (allocated(self%s4_output) .or. allocated(self%chi4_output) .or. &
+             allocated(self%fqt_self_output)) then
+            if ((allocated(self%s4_output) .or. allocated(self%chi4_output)) .and. &
+                .not. self%s4_cutoff_given) then
                ierr = 1
                message = '--s4 and --chi4 need --s4-cutoff A'
                return
             end if
-            if (self%s4_stride > self%maxframes) then
+            if (self%s4_cutoff_given .and. .not. (allocated(self%s4_output) .or. &
+                allocated(self%chi4_output))) then
                ierr = 1
-               message = '--s4-stride cannot exceed --maxframes'
+               message = '--s4-cutoff belongs to --s4 or --chi4'
                return
             end if
-         else if (self%s4_cutoff_given .or. self%s4_format_given .or. self%s4_buffer_given .or. &
-                  self%s4_stride_given) then
+            if (self%stride > self%maxframes) then
+               ierr = 1
+               message = '--stride cannot exceed --maxframes'
+               return
+            end if
+         else if (self%s4_cutoff_given .or. self%buffer_limit_given .or. self%stride_given) then
             ierr = 1
-            message = '--s4-cutoff, --s4-format, --s4-buffer-limit and --s4-stride '// &
-               'belong to --s4 or --chi4'
+            message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4 or --fqt-self'
             return
          end if
-      else if (allocated(self%sqw_output) .or. allocated(self%fsq_output) .or. &
-               allocated(self%s4_output) .or. allocated(self%chi4_output)) then
+      else if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
+               allocated(self%fqt_self_output) .or. allocated(self%s4_output) .or. &
+               allocated(self%chi4_output)) then
          ierr = 1
-         message = '--sqw, --fsq, --s4 and --chi4 belong to --dyn'
+         message = '--sqw, --fqt, --fqt-self, --s4 and --chi4 belong to --dyn'
          return
       else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
-               self%sqw_format_given .or. self%s4_cutoff_given .or. self%s4_format_given .or. &
-               self%s4_buffer_given .or. self%s4_stride_given) then
+               self%dyn_format_given .or. self%s4_cutoff_given .or. &
+               self%buffer_limit_given .or. self%stride_given) then
          ierr = 1
-         message = '--dt, --maxframes, --lag, --sqw-format, --s4-cutoff, '// &
-            '--s4-format, --s4-buffer-limit and --s4-stride belong to --dyn'
+         message = '--dt, --maxframes, --lag, --dyn-format, --s4-cutoff, --buffer-limit '// &
+            'and --stride belong to --dyn'
          return
       end if
       if (self%method == method_debye) then
@@ -552,19 +550,32 @@ contains
             self%grid_format = grid_format_hdf5
          end if
       end if
-      if (allocated(self%sqw_output) .and. .not. self%sqw_format_given) then
-         if (ends_with(self%sqw_output, '.h5') .or. ends_with(self%sqw_output, '.hdf5')) then
-            self%sqw_format = grid_format_hdf5
+      if (self%dyn_format_given) then
+         self%sqw_format = self%dyn_format
+         self%fqt_format = self%dyn_format
+         self%fqt_self_format = self%dyn_format
+         self%s4_format = self%dyn_format
+         self%chi4_format = self%dyn_format
+      else
+         if (allocated(self%sqw_output)) then
+            if (ends_with(self%sqw_output, '.h5') .or. ends_with(self%sqw_output, '.hdf5')) &
+               self%sqw_format = grid_format_hdf5
          end if
-      end if
-      if (allocated(self%s4_output) .and. .not. self%s4_format_given) then
-         if (ends_with(self%s4_output, '.h5') .or. ends_with(self%s4_output, '.hdf5')) then
-            self%s4_format = grid_format_hdf5
+         if (allocated(self%fqt_output)) then
+            if (ends_with(self%fqt_output, '.h5') .or. ends_with(self%fqt_output, '.hdf5')) &
+               self%fqt_format = grid_format_hdf5
          end if
-      end if
-      if (allocated(self%chi4_output) .and. .not. self%s4_format_given) then
-         if (ends_with(self%chi4_output, '.h5') .or. ends_with(self%chi4_output, '.hdf5')) then
-            self%chi4_format = grid_format_hdf5
+         if (allocated(self%fqt_self_output)) then
+            if (ends_with(self%fqt_self_output, '.h5') .or. &
+                ends_with(self%fqt_self_output, '.hdf5')) self%fqt_self_format = grid_format_hdf5
+         end if
+         if (allocated(self%s4_output)) then
+            if (ends_with(self%s4_output, '.h5') .or. ends_with(self%s4_output, '.hdf5')) &
+               self%s4_format = grid_format_hdf5
+         end if
+         if (allocated(self%chi4_output)) then
+            if (ends_with(self%chi4_output, '.h5') .or. ends_with(self%chi4_output, '.hdf5')) &
+               self%chi4_format = grid_format_hdf5
          end if
       end if
    end subroutine parse_options
@@ -683,14 +694,14 @@ contains
       write (unit, '(a)') '      --maxframes N   correlation window in frames (with --dyn)'
       write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'
       write (unit, '(a)') '      --sqw FILE      S(q,w) spectra, one row per (q,w) (.h5 = HDF5)'
-      write (unit, '(a)') '      --fsq FILE      F(q,t) intermediate scattering function'
-      write (unit, '(a)') '      --sqw-format NAME  text (default) or hdf5'
+      write (unit, '(a)') '      --fqt FILE      coherent F(q,t) intermediate scattering function'
+      write (unit, '(a)') '      --fqt-self FILE self F_s(q,t) intermediate scattering function'
+      write (unit, '(a)') '      --dyn-format NAME  text (default) or hdf5 for all dynamic outputs'
       write (unit, '(a)') '      --s4 FILE       S4(q,t) four-point structure factor (.h5 = HDF5)'
       write (unit, '(a)') '      --chi4 FILE     Q(t) and chi4(t) average overlap / susceptibility'
       write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
-      write (unit, '(a)') '      --s4-format NAME  text (default) or hdf5 for --s4 and --chi4'
-      write (unit, '(a)') '      --s4-buffer-limit GB  position buffer limit for --s4/--chi4 (default 2.0)'
-      write (unit, '(a)') '      --s4-stride N   use every N-th frame for S4/chi4 (default 1)'
+      write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s (default 2.0)'
+      write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s (default 1)'
       write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
       write (unit, '(a)') '      --partials      write the partial structure factor columns (default)'
       write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'

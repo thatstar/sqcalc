@@ -631,14 +631,14 @@ def main():
     dyn_dump = generate("dyn_ball.dump", natoms=1000, length=20, frames=40, seed=11,
                         mode="ballistic", temperature=1.0, columns="id type xu yu zu")
     sqcalc(dyn_dump, "dyn_sq.dat", "-w", "unit", "--norm", "mean", *dyn_q,
-           "--sqw", path("dyn_sqw.dat"), "--fsq", path("dyn_fsq.dat"))
+           "--sqw", path("dyn_sqw.dat"), "--fqt", path("dyn_fqt.dat"))
     run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
          "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", "unit",
-         "--norm", "mean", "--output-fsq", path("dyn_ref_fsq.dat"),
+         "--norm", "mean", "--output-fqt", path("dyn_ref_fqt.dat"),
          "--output-sqw", path("dyn_ref_sqw.dat")])
-    fsq = read_matrix(path("dyn_fsq.dat"))
+    fqt = read_matrix(path("dyn_fqt.dat"))
     sqw = read_matrix(path("dyn_sqw.dat"))
-    compare(fsq, read_matrix(path("dyn_ref_fsq.dat")), "F(q,t) vs numpy reference", rtol=1.0e-9)
+    compare(fqt, read_matrix(path("dyn_ref_fqt.dat")), "F(q,t) vs numpy reference", rtol=1.0e-9)
     compare(sqw, read_matrix(path("dyn_ref_sqw.dat")), "S(q,w) vs numpy reference", rtol=1.0e-9)
 
     # The spectrum integrates to F(q,0), which is the static OUTPUT column; the
@@ -647,7 +647,7 @@ def main():
     _, s_static = read_table(path("dyn_sq.dat"))
     integral = sqw[:, 4].reshape(nq_dyn, naxis_dyn).sum(axis=1) * (np.pi/20.0)
     compare(s_static, integral, "sum rule int S(q,w) dw = static S(q)", rtol=1.0e-9)
-    compare(s_static, fsq[:, 4].reshape(nq_dyn, naxis_dyn)[:, 0], "F(q,0) = static S(q)",
+    compare(s_static, fqt[:, 4].reshape(nq_dyn, naxis_dyn)[:, 0], "F(q,0) = static S(q)",
             rtol=1.0e-9)
 
     # Brownian particles: F(q,t) = exp(-D q^2 t) (the amplitude carries the
@@ -657,8 +657,8 @@ def main():
                          mode="diffusive", diffusivity=0.1, columns="id type xu yu zu")
     run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
          "--dyn", "1,2,3,1,0,0", "--dt", "1", "--maxframes", "8", "--lag", "1",
-         "--fsq", path("dyn_diff_fsq.dat"), path("dyn_diff_sq.dat")])
-    diff_f = read_matrix(path("dyn_diff_fsq.dat"))
+         "--fqt", path("dyn_diff_fqt.dat"), path("dyn_diff_sq.dat")])
+    diff_f = read_matrix(path("dyn_diff_fqt.dat"))
     naxis_d = 9
     f_d = diff_f[:, 4].reshape(2, naxis_d)
     tau_d = diff_f[:, 3].reshape(2, naxis_d)[0]
@@ -711,7 +711,7 @@ def main():
         run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
              "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", weight,
              "--norm", norm, "--mapping", "1:Si,2:O",
-             "--output-fsq", path("dyn_w_%s_ref_fsq.dat" % weight),
+             "--output-fqt", path("dyn_w_%s_ref_fqt.dat" % weight),
              "--output-sqw", path("dyn_w_%s_ref_sqw.dat" % weight)])
         compare(read_matrix(path("dyn_w_%s_sqw.dat" % weight)),
                 read_matrix(path("dyn_w_%s_ref_sqw.dat" % weight)),
@@ -720,12 +720,12 @@ def main():
     # --lag thins the time origins; the reference applies the same rule.
     run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
          "--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--lag", "3",
-         "--fsq", path("dyn_lag_fsq.dat"), path("dyn_lag_sq.dat")])
+         "--fqt", path("dyn_lag_fqt.dat"), path("dyn_lag_sq.dat")])
     run([sys.executable, ref_dyn, "--input", dyn_dump, "--dyn", dyn_spec,
          "--maxframes", "20", "--lag", "3", "--dt", "1", "--weight", "unit",
-         "--norm", "mean", "--output-fsq", path("dyn_lag_ref_fsq.dat"),
+         "--norm", "mean", "--output-fqt", path("dyn_lag_ref_fqt.dat"),
          "--output-sqw", path("dyn_lag_ref_sqw.dat")])
-    compare(read_matrix(path("dyn_lag_fsq.dat")), read_matrix(path("dyn_lag_ref_fsq.dat")),
+    compare(read_matrix(path("dyn_lag_fqt.dat")), read_matrix(path("dyn_lag_ref_fqt.dat")),
             "lag stride 3 vs reference", rtol=1.0e-9)
 
     # --- four point structure factor S4(q,t), Q(t) and chi4(t) ------------
@@ -770,12 +770,12 @@ def main():
          "--chi4", path("chi4_only.dat"), path("chi4_only_sq.dat")])
     compare(read_matrix(path("chi4_only.dat")), chi4, "chi4 without --s4", rtol=1.0e-9)
 
-    # --s4-format overrides the suffix for both four-point outputs.
+    # --dyn-format overrides the suffix for the dynamic outputs.
     run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-         "--s4-format", "text", "--s4", path("s4_forced.h5"),
+         "--dyn-format", "text", "--s4", path("s4_forced.h5"),
          "--chi4", path("chi4_forced.h5"), path("s4_forced_sq.dat")])
-    compare(read_matrix(path("s4_forced.h5")), s4, "S4 --s4-format text override", rtol=1.0e-9)
-    compare(read_matrix(path("chi4_forced.h5")), chi4, "chi4 --s4-format text override",
+    compare(read_matrix(path("s4_forced.h5")), s4, "S4 --dyn-format text override", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_forced.h5")), chi4, "chi4 --dyn-format text override",
             rtol=1.0e-9)
 
     # A run with only --s4/--chi4 must not need the coherent ring buffers;
@@ -790,32 +790,32 @@ def main():
             read_table(path("s4_coherent_sq.dat"))[1].reshape(-1, 1),
             "S4-only static S(q) == full", rtol=1.0e-9)
 
-    # --s4-buffer-limit is in GB and can be lowered for this small buffer.
+    # --buffer-limit is in GB and can be lowered for this small buffer.
     run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-         "--s4-buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
+         "--buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
          path("s4_limit_sq.dat")])
     compare(read_matrix(path("s4_limit.dat"))[:, 4].reshape(-1, 1),
-            s4[:, 4].reshape(-1, 1), "S4 with --s4-buffer-limit 0.001", rtol=1.0e-9)
+            s4[:, 4].reshape(-1, 1), "S4 with --buffer-limit 0.001", rtol=1.0e-9)
 
-    # --s4-stride subsamples the S4/chi4 trajectory.  maxframes is rounded
+    # --stride subsamples the S4/chi4 trajectory.  maxframes is rounded
     # down to a multiple of the stride; the coherent window is unchanged.
     for stride in (2, 3):
         run([exe, "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
-             "--s4-cutoff", s4_cutoff, "--s4-stride", str(stride),
-             "--s4", path("s4_stride.dat"), "--chi4", path("chi4_stride.dat"),
-             path("s4_stride_sq.dat")])
+             "--s4-cutoff", s4_cutoff, "--stride", str(stride),
+             "--s4", path("stride.dat"), "--chi4", path("chi4_stride.dat"),
+             path("stride_sq.dat")])
         run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
              "--maxframes", "8", "--lag", "1", "--stride", str(stride), "--dt", "1",
-             "--cutoff", s4_cutoff, "--output-s4", path("s4_stride_ref.dat"),
+             "--cutoff", s4_cutoff, "--output-s4", path("stride_ref.dat"),
              "--output-chi4", path("chi4_stride_ref.dat")])
-        compare(read_matrix(path("s4_stride.dat")), read_matrix(path("s4_stride_ref.dat")),
+        compare(read_matrix(path("stride.dat")), read_matrix(path("stride_ref.dat")),
                 "S4 stride %d vs reference" % stride, rtol=1.0e-9)
         compare(read_matrix(path("chi4_stride.dat")), read_matrix(path("chi4_stride_ref.dat")),
                 "chi4 stride %d vs reference" % stride, rtol=1.0e-9)
 
     s4_round = ["--dyn", s4_spec, "--dt", "1", "--maxframes", "9"]
     run([exe, "-i", diff_dump, "-w", "unit", *s4_round, "--lag", "1",
-         "--s4-cutoff", s4_cutoff, "--s4-stride", "2", "--s4", path("s4_round.dat"),
+         "--s4-cutoff", s4_cutoff, "--stride", "2", "--s4", path("s4_round.dat"),
          "--chi4", path("chi4_round.dat"), path("s4_round_sq.dat")])
     run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
          "--maxframes", "9", "--lag", "1", "--stride", "2", "--dt", "1",
@@ -828,6 +828,53 @@ def main():
     if read_matrix(path("s4_round.dat"))[:, 3].max() != 8.0:
         raise SystemExit("FAIL maxframes 9 with stride 2 should use an effective window of 8")
     print("  ok   %-42s effective window 8" % "S4 stride rounding")
+
+    # --- self intermediate scattering function (--fqt-self) ----------------
+    print("self intermediate scattering function (--fqt-self)")
+    ref_self = os.path.join(HERE, "ref_fsqt.py")
+    fs_base = ["--dyn", s4_spec, "--dt", "1", "--maxframes", "8"]
+    run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+         "--fqt-self", path("fs.dat"), path("fs_sq.dat")])
+    run([sys.executable, ref_self, "--input", diff_dump, "--dyn", s4_spec,
+         "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
+         "--output", path("fs_ref.dat")])
+    fs = read_matrix(path("fs.dat"))
+    compare(fs, read_matrix(path("fs_ref.dat")), "F_s(q,t) vs numpy reference", rtol=1.0e-9)
+    if abs(fs[0, 4] - 1.0) > 1.0e-12:
+        raise SystemExit("FAIL total F_s(q,0) != 1")
+    if float(np.max(np.abs(fs[:, 4] - fs[:, 5:].sum(axis=1)))) > 1.0e-12:
+        raise SystemExit("FAIL species F_s columns do not sum to the total")
+    print("  ok   %-42s F_s(q,0)=%.6f" % ("F_s normalization", fs[0, 4]))
+
+    # F_s uses every atom and never the overlap cutoff.
+    for cut in ("0.3", "1.5"):
+        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+             "--s4-cutoff", cut, "--s4", path("fs_cut_s4.dat"),
+             "--fqt-self", path("fs_cut.dat"), path("fs_cut_sq.dat")])
+        compare(read_matrix(path("fs_cut.dat")), fs, "F_s cutoff %s invariance" % cut,
+                rtol=1.0e-9)
+
+    # F_s with stride and origin lag against the reference.
+    for stride in (2, 3):
+        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "3",
+             "--stride", str(stride), "--fqt-self", path("fs_stride.dat"),
+             path("fs_stride_sq.dat")])
+        run([sys.executable, ref_self, "--input", diff_dump, "--dyn", s4_spec,
+             "--maxframes", "8", "--lag", "3", "--stride", str(stride), "--dt", "1",
+             "--output", path("fs_stride_ref.dat")])
+        compare(read_matrix(path("fs_stride.dat")), read_matrix(path("fs_stride_ref.dat")),
+                "F_s stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
+
+    # Diffusive ideal gas: F_s(q,t) = exp(-D q^2 t).
+    tau_self = fs[:, 3].reshape(2, 9)[0]
+    worst_self = 0.0
+    for iq, qval in enumerate((2.0, 3.0)):
+        block = fs[iq*9:(iq+1)*9, 4]
+        analytic = np.exp(-0.1 * qval**2 * tau_self)
+        worst_self = max(worst_self, float(np.max(np.abs(block - analytic))))
+    if worst_self > 0.01:
+        raise SystemExit("FAIL self F_s deviates from exp(-D q2 t) by %.3f" % worst_self)
+    print("  ok   %-42s max deviation %.3f" % ("diffusive F_s vs exp(-D q2 t)", worst_self))
 
     # The origin stride is shared with the coherent correlations.
     s4_lag = s4_base + ["--lag", "3"]
@@ -878,10 +925,10 @@ def main():
     slab_q = ["--dyn", "2,1,3,0,0,1", "--dt", "1", "--maxframes", "5"]
     for dump_file, tag in ((slab_xu, "xu"), (slab_x, "x")):
         run([exe, "-i", dump_file, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
-             *slab_q, "--fsq", path("dyn_slab_%s_fsq.dat" % tag),
+             *slab_q, "--fqt", path("dyn_slab_%s_fqt.dat" % tag),
              path("dyn_slab_%s_sq.dat" % tag)])
-    compare(read_matrix(path("dyn_slab_x_fsq.dat")),
-            read_matrix(path("dyn_slab_xu_fsq.dat")),
+    compare(read_matrix(path("dyn_slab_x_fqt.dat")),
+            read_matrix(path("dyn_slab_xu_fqt.dat")),
             "non-periodic axis: x y z (unwrapped) vs xu", rtol=1.0e-9)
 
     plot_dyn = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts", "plot_sqw.py")
@@ -896,13 +943,13 @@ def main():
 
     if args.h5read:
         run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean", *dyn_q,
-             "--sqw", path("dyn_sqw.h5"), "--fsq", path("dyn_fsq.h5"), path("dyn_sq_h5.dat")])
+             "--sqw", path("dyn_sqw.h5"), "--fqt", path("dyn_fqt.h5"), path("dyn_sq_h5.dat")])
         with open(path("dyn_sqw_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("dyn_sqw.h5"), "sqw"]).stdout)
-        with open(path("dyn_fsq_h5.txt"), "w") as handle:
-            handle.write(run([args.h5read, path("dyn_fsq.h5"), "fsq"]).stdout)
+        with open(path("dyn_fqt_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("dyn_fqt.h5"), "fqt"]).stdout)
         compare(read_matrix(path("dyn_sqw_h5.txt")), sqw, "HDF5 S(q,w) vs text", rtol=1.0e-9)
-        compare(read_matrix(path("dyn_fsq_h5.txt")), fsq, "HDF5 F(q,t) vs text", rtol=1.0e-9)
+        compare(read_matrix(path("dyn_fqt_h5.txt")), fqt, "HDF5 F(q,t) vs text", rtol=1.0e-9)
         run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
              "--s4", path("s4.h5"), "--chi4", path("chi4.h5"), path("s4_h5_sq.dat")])
         with open(path("s4_h5.txt"), "w") as handle:
@@ -911,6 +958,11 @@ def main():
             handle.write(run([args.h5read, path("chi4.h5"), "chi4"]).stdout)
         compare(read_matrix(path("s4_h5.txt")), s4, "HDF5 S4(q,t) vs text", rtol=1.0e-9)
         compare(read_matrix(path("chi4_h5.txt")), chi4, "HDF5 chi4 vs text", rtol=1.0e-9)
+        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+             "--fqt-self", path("fs.h5"), path("fs_h5_sq.dat")])
+        with open(path("fs_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("fs.h5"), "fqt_self"]).stdout)
+        compare(read_matrix(path("fs_h5.txt")), fs, "HDF5 F_s(q,t) vs text", rtol=1.0e-9)
 
     # option validation
     bad = [
@@ -927,21 +979,24 @@ def main():
          "--s4-cutoff without --s4/--chi4"),
         (["--s4", "s.dat", "--s4-cutoff", "0.5"], "--s4 without --dyn"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--s4-cutoff", "0.5",
-          "--s4-format", "bogus", "--s4", "s.dat"], "--s4-format bogus"),
+          "--dyn-format", "bogus", "--s4", "s.dat"], "--dyn-format bogus"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "100000000", "--s4-cutoff", "0.5",
           "--s4", "s.dat"], "S4 position buffer too large"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
-          "--s4-buffer-limit", "0.0001", "--s4", "s.dat"], "S4 buffer limit too small"),
-        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-buffer-limit", "2.0"],
-         "--s4-buffer-limit without --s4/--chi4"),
+          "--buffer-limit", "0.0001", "--s4", "s.dat"], "S4 buffer limit too small"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--buffer-limit", "2.0"],
+         "--buffer-limit without S4/chi4/F_s"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
-          "--s4-buffer-limit", "0", "--s4", "s.dat"], "--s4-buffer-limit zero"),
+          "--buffer-limit", "0", "--s4", "s.dat"], "--buffer-limit zero"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
-          "--s4-stride", "9", "--s4", "s.dat"], "--s4-stride exceeds --maxframes"),
+          "--stride", "9", "--s4", "s.dat"], "--stride exceeds --maxframes"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
-          "--s4-stride", "0", "--s4", "s.dat"], "--s4-stride zero"),
-        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-stride", "2"],
-         "--s4-stride without --s4/--chi4"),
+          "--stride", "0", "--s4", "s.dat"], "--stride zero"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--stride", "2"],
+         "--stride without S4/chi4/F_s"),
+        (["--fqt-self", "f.dat"], "--fqt-self without --dyn"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
+          "--fqt-self", "f.dat"], "--s4-cutoff with --fqt-self but no S4/chi4"),
     ]
     rejected = 0
     for options, label in bad:

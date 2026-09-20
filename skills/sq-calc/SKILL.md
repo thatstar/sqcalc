@@ -15,10 +15,11 @@ and a real space Debye pair histogram, which can also write $g(r)$.
 
 With `--dyn` it instead keeps the time axis and writes the dynamic structure
 factor $S(q,\omega)$ along a line in reciprocal space (`--sqw`), optionally
-with the intermediate scattering function $F(q,t)$ (`--fsq`).  The same run
-can write the total four-point structure factor $S_4(q,t)$ (`--s4`) and the
-average overlap and dynamic susceptibility $Q(t)$, $\chi_4(t)$ (`--chi4`);
-both need the overlap cutoff `--s4-cutoff`.
+with the coherent intermediate scattering function $F(q,t)$ (`--fqt`) and the
+self/incoherent $F_s(q,t)$ (`--fqt-self`).  The same run can write the total
+four-point structure factor $S_4(q,t)$ (`--s4`) and the average overlap and
+dynamic susceptibility $Q(t)$, $\chi_4(t)$ (`--chi4`); both need the overlap
+cutoff `--s4-cutoff`.
 
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
@@ -58,7 +59,7 @@ suffix, so `.pdf` or `.svg` gives vector output.  A dashed line marks the 1 that
 S(q), g(r) and the Faber-Ziman partials tend to; `--refline 0` or
 `--refline none` changes or removes it.
 
-`scripts/plot_sqw.py` plots a `--sqw`/`--fsq`/`--s4` table instead: the map of
+`scripts/plot_sqw.py` plots a `--sqw`/`--fqt`/`--s4` table instead: the map of
 the quantity over $(|q|,\omega)$ (or $(|q|,\tau)$) next to a few selected
 spectra, or single curves with `--mode spectra --q 1,4`:
 
@@ -104,10 +105,11 @@ and `--dr` instead of the box sets the usable q range.
   meaningful `--s4-cutoff` (a fraction of the particle diameter), and the
   full $S_4$ calculation is the most expensive dynamic output; use a large
   `--lag` and a short low-$q$ line when needed.  The position buffer is
-  limited to 2 GB by default (`--s4-buffer-limit GB` raises it), and
-  `--s4-stride N` subsamples the S4/chi4 trajectory to reduce both the buffer
+  limited to 2 GB by default (`--buffer-limit GB` raises it), and
+  `--stride N` subsamples the S4/chi4 trajectory to reduce both the buffer
   and the work.  A run with only `--s4`/`--chi4` skips the coherent
-  $F(q,t)/S(q,\omega)$ buffers.
+  $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
+  always includes every atom and never applies `--s4-cutoff`.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.
