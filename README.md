@@ -73,55 +73,55 @@ as one extra column per type pair, labelled with the element symbols of `-m`
 (e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`) or, without a mapping, with the
 LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 
-| option | meaning |
-| --- | --- |
-| `-i, --input FILE` | LAMMPS dump trajectory (required) |
-| `-m, --mapping LIST` | LAMMPS type id to element symbol, e.g. `1:Si,2:O` |
-| `-w, --weight SCHEME` | `unit` (default), `neutron` or `xray` |
-| `-t, --threads N` | OpenMP threads (default: all available) |
-| `--qmin`, `--qmax`, `--nq` | $q$ range and number of shells (defaults 0, 20 1/A, 500) |
-| `--grid FILE` | also write $S(q)$ on every reciprocal lattice point |
-| `--grid-format NAME` | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5 |
-| `--method NAME` | `nufft` (default), `direct` ($O(N \cdot N_{\text{modes}})$ reference) or `debye` (real space pair histograms, see below) |
-| `--device NAME` | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`) |
-| `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
-| `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
-| `--norm NAME` | `mean` (default), `self` or `n` |
-| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path) |
-| `--partials` | append the partial structure factor columns (default: on) |
-| `--no-partials` | do not append the partial columns |
-| `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
-| `-q, --quiet` | suppress progress output on stderr |
-| `-h, --help` | show the option summary |
-| `-v, --version` | print the program version |
+| option                           | meaning                                                                                                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `-i, --input FILE`             | LAMMPS dump trajectory (required)                                                                                                |
+| `-m, --mapping LIST`           | LAMMPS type id to element symbol, e.g.`1:Si,2:O`                                                                               |
+| `-w, --weight SCHEME`          | `unit` (default), `neutron` or `xray`                                                                                      |
+| `-t, --threads N`              | OpenMP threads (default: all available)                                                                                          |
+| `--qmin`, `--qmax`, `--nq` | $q$ range and number of shells (defaults 0, 20 1/A, 500)                                                                       |
+| `--grid FILE`                  | also write$S(q)$ on every reciprocal lattice point                                                                             |
+| `--grid-format NAME`           | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5                                                            |
+| `--method NAME`                | `nufft` (default), `direct` ($O(N \cdot N_{\text{modes}})$ reference) or `debye` (real space pair histograms, see below) |
+| `--device NAME`                | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`)                                                                    |
+| `--gpu-id N`                   | CUDA device to use when`--device gpu` (default 0)                                                                              |
+| `--precision NAME`             | `double` (default) or `single` (float32, GPU only)                                                                           |
+| `--norm NAME`                  | `mean` (default), `self` or `n`                                                                                            |
+| `--eps VALUE`                  | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path)                                                                    |
+| `--partials`                   | append the partial structure factor columns (default: on)                                                                        |
+| `--no-partials`                | do not append the partial columns                                                                                                |
+| `-fz, --faber-ziman`           | report the partials in the Faber-Ziman normalization                                                                             |
+| `-q, --quiet`                  | suppress progress output on stderr                                                                                               |
+| `-h, --help`                   | show the option summary                                                                                                          |
+| `-v, --version`                | print the program version                                                                                                        |
 
 With `--method debye` these options select the pair histogram:
 
-| Debye option | meaning |
-| --- | --- |
-| `--rmax VALUE` | pair cutoff [A]; default: half of the smallest periodic box side (minimum image convention, so no self images), or all pairs when the box is not periodic |
-| `--dr VALUE` | radial bin width (default 0.01 A, reliable up to $q \sim \pi/(2\,dr)$; ~150 1/A at the default) |
-| `--skin VALUE` | Verlet skin for reusing the pair list (default 1.0 A, `0` rebuilds every frame) |
-| `--rdf FILE` | total and all partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
-| `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic) |
+| Debye option               | meaning                                                                                                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--rmax VALUE`           | pair cutoff [A]; default: half of the smallest periodic box side (minimum image convention, so no self images), or all pairs when the box is not periodic |
+| `--dr VALUE`             | radial bin width (default 0.01 A, reliable up to$q \sim \pi/(2\,dr)$; ~150 1/A at the default)                                                          |
+| `--skin VALUE`           | Verlet skin for reusing the pair list (default 1.0 A,`0` rebuilds every frame)                                                                          |
+| `--rdf FILE`             | total and all partial$g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`)                                                                           |
+| `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic)                                       |
 
 With `--dyn` these options select the $q$ line and the correlation window:
 
-| dynamic option | meaning |
-| --- | --- |
-| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
-| `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
-| `--maxframes L` | correlation window in frames (largest lag kept), required by `--dyn` |
-| `--lag N` | frames between consecutive time origins (default 1) |
-| `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
-| `--fqt FILE` | the coherent intermediate scattering function $F(q,t)$ |
-| `--fqt-self FILE` | the self intermediate scattering function $F_s(q,t)$ |
-| `--dyn-format NAME` | `text` (default) or `hdf5` for all dynamic outputs |
-| `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
-| `--chi4 FILE` | the average overlap $Q(t)$ and the susceptibility $\chi_4(t)$ |
-| `--s4-cutoff A` | overlap cutoff $a$, required by `--s4` and `--chi4` |
-| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s (default 2.0 GB) |
-| `--stride N` | use every N-th dump frame for S4/chi4/F_s (default 1) |
+| dynamic option                | meaning                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor$S(q,\omega)$ along a $q$ line (see below)      |
+| `--dt VALUE`                | time step of the trajectory (the LAMMPS`timestep`), required by `--dyn` |
+| `--maxframes L`             | correlation window in frames (largest lag kept), required by`--dyn`       |
+| `--lag N`                   | frames between consecutive time origins (default 1)                         |
+| `--sqw FILE`                | the$S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`)            |
+| `--fqt FILE`                | the coherent intermediate scattering function$F(q,t)$                     |
+| `--fqt-self FILE`           | the self intermediate scattering function$F_s(q,t)$                       |
+| `--dyn-format NAME`         | `text` (default) or `hdf5` for all dynamic outputs                      |
+| `--s4 FILE`                 | the total four-point structure factor$S_4(q,t)$                           |
+| `--chi4 FILE`               | the average overlap$Q(t)$ and the susceptibility $\chi_4(t)$            |
+| `--s4-cutoff A`             | overlap cutoff$a$, required by `--s4` and `--chi4`                    |
+| `--buffer-limit GB`         | position buffer limit for S4/chi4/F_s (default 2.0 GB)                      |
+| `--stride N`                | use every N-th dump frame for S4/chi4/F_s (default 1)                       |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -180,11 +180,11 @@ $$
 
 where the normalization is
 
-| `--norm` | $W(q)$ |
-| --- | --- |
+| `--norm`         | $W(q)$                                                  |
+| ------------------ | --------------------------------------------------------- |
 | `mean` (default) | $N \langle w \rangle^2$, the Faber-Ziman total $S(q)$ |
-| `self` | $\sum_j w_j^2$, so that $S(q) \to 1$ at large $q$ |
-| `n` | $N$ (the convention used by the debyer program) |
+| `self`           | $\sum_j w_j^2$, so that $S(q) \to 1$ at large $q$   |
+| `n`              | $N$ (the convention used by the debyer program)         |
 
 The weights are looked up from a table of 104 elements covering the periodic
 table.  Without `-m` no element is known, so every atom has weight 1.0; a
@@ -215,7 +215,9 @@ line in reciprocal space, evaluate the density amplitudes there, correlate
 them in time and Fourier transform the correlation.  With $q_i = s_i\,\hat{u}$
 and
 
-$$s_i = S_0 + i\,\frac{S_1 - S_0}{N_{\mathrm{int}}}$$
+$$
+s_i = S_0 + i\,\frac{S_1 - S_0}{N_{\mathrm{int}}}
+$$
 
 (the line always passes through $\Gamma$, the origin of reciprocal space),
 
@@ -419,17 +421,13 @@ symbols and is required for the weighted schemes.  Report them with `-fz`:
 every Faber-Ziman pair tends to 1, so the curves can be read and compared
 across concentrations, which the OVITO pairs (tending to $x_a$) do not allow.
 
-A few limits are worth keeping in mind: the simulation box must not change
-along the trajectory (the reciprocal grid is built once from the first frame),
-both methods accept a non-periodic box (the reciprocal one still samples $q$ on
-the lattice of that box, so a cluster needs enough vacuum padding, whereas
-Debye needs none).  That lattice also fixes which $q$ are measurable: set
-`--qmin` to the smallest reciprocal vector and keep the shell width
-`(qmax - qmin)/nq` comparable to the lattice spacing, or the table comes back
-with zero-filled shells the box can never fill; the skill's
-`scripts/choose_q.py` prints a safe set of options for a given dump.  Atoms of a
-type missing from `-m` under `-w neutron`/`xray`, or with an element that has
-no tabulated data, are rejected with a clear message.
+A few limits are worth keeping in mind:
+
+- the simulation box must not change along the trajectory (the reciprocal grid is built once from the first frame), both of nufft and Debye methods accept a non-periodic box (the reciprocal one still samples $q$ on the lattice of that box, so a cluster needs enough vacuum padding, whereas Debye needs none).
+
+- The lattice fixes which $q$ are measurable: set `--qmin` to the smallest reciprocal vector and keep the shell width `(qmax - qmin)/nq` comparable to the lattice spacing, or the table comes back with zero-filled shells the box can never fill. The skill's `scripts/choose_q.py` prints a safe set of options for a given dump.
+
+- Atoms of a type missing from `-m` under `-w neutron`/`xray`, or with an element that has no tabulated data, are rejected with a clear message.
 
 ## License
 
@@ -443,7 +441,7 @@ version.
 It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
 PURPOSE.  See the GNU General Public License (the `LICENSE` file, or
-<https://www.gnu.org/licenses/>) for more details.
+[https://www.gnu.org/licenses/](https://www.gnu.org/licenses/)) for more details.
 
 ### Third party code and dependencies
 
@@ -453,10 +451,7 @@ components under terms that do not otherwise combine:
 * **FINUFFT** is vendored with `git subtree` in `external/finufft` (release
   v2.5.1, upstream commit `679d9ae5`).  It is Apache-2.0, Copyright (C)
   2017-2026 The Simons Foundation, Inc.; its `LICENSE` and `NOTICE` files are
-  kept as upstream ships them.  No file under `external/finufft` is modified -
-  the top level `CMakeLists.txt` only sets the options that build it.
-  Apache-2.0 can be combined with GPLv3, but not with GPLv2, which is why the
-  license above is version 3.
+  kept as upstream ships them.
 * **FFTW3** (GPLv2 or later) is what FINUFFT transforms with, unless FINUFFT is
   built against DUCC0 instead, so a normally built `sqcalc` binary links a GPL
   library.
@@ -471,4 +466,4 @@ components under terms that do not otherwise combine:
   for Crystallography Vol. C (1992) table 6.1.1.4 and from Neutron News 3
   (1992) 29-37; debyer's GPL notice covers its code and not the data
   ("Copyright 2009 Marcin Wojdyr (only code, not the tabular data)").  More
-  about debyer: <https://github.com/wojdyr/debyer>.
+  about debyer: [https://github.com/wojdyr/debyer](https://github.com/wojdyr/debyer).
