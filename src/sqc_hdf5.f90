@@ -33,7 +33,8 @@ module sqc_hdf5
    implicit none
    private
 
-   public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics
+   public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics, &
+             hdf5_write_chi4
 
    !> HDF5 was compiled into this binary.
    logical, parameter :: hdf5_support = .true.
@@ -211,7 +212,8 @@ contains
    !! the partials, plus the run metadata.  `group` is "sqw" (axis omega,
    !! dataset S) or "fsq" (axis tau, dataset F).
    subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
-                                  nframes, frame_dt, maxframes, lag, weight, norm, ierr, message)
+                                  nframes, frame_dt, maxframes, lag, weight, norm, overlap, &
+                                  ierr, message)
       character(len=*), intent(in) :: path, group, axis_name, weight, norm
       real(rk), intent(in) :: q(:, :)          ! (nq, 4): qx qy qz |q|
       real(rk), intent(in) :: axis(0:)
@@ -221,6 +223,7 @@ contains
       integer(lk), intent(in) :: count(:, 0:)
       integer(lk), intent(in) :: nframes
       real(rk), intent(in) :: frame_dt
+      real(rk), intent(in) :: overlap
       integer, intent(in) :: maxframes, lag
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
@@ -240,9 +243,12 @@ contains
       if (trim(group) == 'sqw') then
          data_name = 'S'
          partial_group = 'S_partial'
-      else
+      else if (trim(group) == 'fsq') then
          data_name = 'F'
          partial_group = 'F_partial'
+      else
+         data_name = 'S4'
+         partial_group = 'S4_partial'
       end if
 
       call h5open_f(hdferr)
@@ -265,6 +271,9 @@ contains
       if (ierr == 0) call write_string_attr(file_id, 'axis', trim(axis_name), ierr, message)
       if (ierr == 0) call write_string_attr(file_id, 'weight', trim(weight), ierr, message)
       if (ierr == 0) call write_string_attr(file_id, 'norm', trim(norm), ierr, message)
+      if (ierr == 0 .and. overlap >= 0.0_rk) then
+         call write_real_attr(file_id, 'overlap', real(overlap, real64), ierr, message)
+      end if
       if (ierr /= 0) then
          call h5fclose_f(file_id, idum)
          call h5close_f(idum)
@@ -327,6 +336,82 @@ contains
       call h5close_f(hdferr)
       deallocate (qflat, axis64, flat, cflat)
    end subroutine hdf5_write_dynamics
+
+   !> Average overlap Q(t) and dynamic susceptibility chi4(t): one value per
+   !! lag, with the time origins counted at every lag.
+   subroutine hdf5_write_chi4(path, axis, overlap, chi4, count, nframes, frame_dt, &
+                              maxframes, lag, cutoff, ierr, message)
+      character(len=*), intent(in) :: path
+      real(rk), intent(in) :: axis(0:), overlap(0:), chi4(0:)
+      integer(lk), intent(in) :: count(0:)
+      integer(lk), intent(in) :: nframes
+      real(rk), intent(in) :: frame_dt, cutoff
+      integer, intent(in) :: maxframes, lag
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id
+      integer(hsize_t) :: dims(1)
+      integer :: hdferr, idum, naxis
+      real(real64), allocatable :: buf(:)
+      integer(int64), allocatable :: cbuf(:)
+
+      ierr = 0
+      message = ''
+      naxis = size(axis)
+      call h5open_f(hdferr)
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+      call write_int_attr(file_id, 'nframes', int(nframes, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'frame_dt', real(frame_dt, real64), &
+                                          ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'maxframes', int(maxframes, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'lag', int(lag, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'naxis', int(naxis, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'overlap', real(cutoff, real64), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'quantity', 'chi4', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'axis', 'tau', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'weight', 'unit', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'norm', 'unit', ierr, message)
+      if (ierr /= 0) then
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+
+      call h5gcreate_f(file_id, 'chi4', group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /chi4 group'
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+      dims = [int(naxis, hsize_t)]
+      allocate (buf(naxis), cbuf(naxis))
+      buf = real(axis, real64)
+      call write_dataset_f(group_id, 'tau', H5T_NATIVE_DOUBLE, dims, buf, ierr, message)
+      if (ierr == 0) then
+         buf = real(overlap, real64)
+         call write_dataset_f(group_id, 'Q', H5T_NATIVE_DOUBLE, dims, buf, ierr, message)
+      end if
+      if (ierr == 0) then
+         buf = real(chi4, real64)
+         call write_dataset_f(group_id, 'chi4', H5T_NATIVE_DOUBLE, dims, buf, ierr, message)
+      end if
+      if (ierr == 0) then
+         cbuf = int(count, int64)
+         call write_dataset_i8_f(group_id, 'count', dims, cbuf, ierr, message)
+      end if
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (buf, cbuf)
+   end subroutine hdf5_write_chi4
 
    !> Text label of a normalization code (kept in sync with sqc_structure_factor).
    pure function norm_label(norm) result(label)

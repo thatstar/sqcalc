@@ -39,6 +39,11 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
 | `--sqw-format NAME` | `text` (default) or `hdf5`, applies to `--sqw` and `--fsq` |
+| `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
+| `--chi4 FILE` | the average overlap $Q(t)$ and dynamic susceptibility $\chi_4(t)$ |
+| `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
+| `--s4-format NAME` | `text` (default) or `hdf5`, applies to `--s4` and `--chi4` |
+| `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0; GB = $10^9$ bytes) |
 | `-q, --quiet` | suppress the progress output on stderr |
 | `-h, --help` | option summary |
 | `-v, --version` | program version |
@@ -179,6 +184,98 @@ $\int S(q,\omega)\,d\omega = F(q,0) = S(q)$, the value in `OUTPUT`.  Chemical
 weighting (`-w neutron`/`xray`, `--norm`) is applied to the partial correlation
 functions exactly as for the static partials, so the same conventions hold.
 
+### Four-point structure factor (`--s4`, `--chi4`)
+
+`--s4` adds the total four-point structure factor to the same dynamic run,
+and `--chi4` writes the average overlap and the dynamic susceptibility.  Both
+need the overlap cutoff,
+
+```sh
+--s4-cutoff A
+```
+
+in the length unit of the dump.  The cutoff is a fraction of the particle
+diameter; a common choice is a value near the first minimum of $g(r)$, for
+example $0.3\,\sigma$ for a Lennard-Jones glass.  There is no default: the
+dump does not carry the particle size.
+
+The overlap of atom $i$ between the origin $t_0$ and the later time
+$t_0+t$ is
+
+$$
+w_i(t,t_0) = \Theta\!\left(a - |\mathbf r_i(t_0+t) - \mathbf r_i(t_0)|\right),
+$$
+
+and the four-point structure factor is the connected fluctuation of its
+origin-position Fourier transform,
+
+$$
+W(\mathbf q;t_0,t) = \sum_i e^{i\mathbf q\cdot\mathbf r_i(t_0)}\, w_i(t,t_0),
+$$
+
+$$
+S_4(\mathbf q,t) = \frac{1}{N}\left[
+  \langle W(\mathbf q;t_0,t) W(-\mathbf q;t_0,t)\rangle_{t_0}
+  - \left|\langle W(\mathbf q;t_0,t)\rangle_{t_0}\right|^2
+\right].
+$$
+
+`--chi4` writes the scalar $q = 0$ case,
+
+$$
+Q(t) = \frac{1}{N}\left\langle \sum_i w_i(t,t_0)\right\rangle_{t_0},
+$$
+
+$$
+\chi_4(t) = \frac{1}{N}\left(\langle W_0(t)^2\rangle-\langle W_0(t)\rangle^2\right),
+$$
+
+with $W_0(t) = \sum_i w_i(t,t_0)$.  This is the same quantity as the $q \to 0$
+limit of $S_4(q,t)$,
+
+$$
+\lim_{q\to0} S_4(q,t) = \chi_4(t),
+$$
+
+and a small-$q$ Ornstein-Zernike fit,
+
+$$
+S_4(q,t) \simeq \frac{\chi_4(t)}{1+[q\,\xi(t)]^2},
+$$
+
+gives the dynamic correlation length $\xi(t)$.  $Q(0) = 1$ and
+$\chi_4(0) = 0$; $\chi_4(t)$ peaks near the structural relaxation time and
+both functions decay at long times.
+
+The estimator is the unbiased connected covariance over time origins, with
+the same origin count per lag as the coherent correlation.  A lag with a
+single time origin is written as zero; the HDF5 `count` dataset shows how
+many origins contributed.  The overlap uses unit weights, so `-w` and
+`--norm` affect $S(q)$, $F(q,t)$ and $S(q,\omega)$ but not $S_4$ or
+$\chi_4$.  Both are total quantities: `--partials` does not add partial
+four-point columns.
+
+`--chi4` can be used without `--s4`.  It still needs the position ring buffer
+to evaluate the overlap, but it skips the q-resolved sums, so it is much
+cheaper.  The full $S_4$ calculation is dominated by the per-atom displacement
+check and the phase sum over the atoms inside the cutoff; a large `--lag`
+(more widely spaced time origins) and a short, low-$q$ line are the practical
+ways to control the cost.  The position buffer grows with `--maxframes`;
+`--s4-buffer-limit GB` sets its limit (default 2.0, GB = $10^9$ bytes) and an
+oversized request is rejected before any large allocation.
+
+The dynamic method allocates only what the requested outputs need.  A run with
+only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
+multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
+static `OUTPUT` table is still written.  A run with only `--sqw`/`--fsq` does
+not allocate the S4 position buffer.
+
+```sh
+# low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
+sqcalc -i traj.dump -w unit --dyn 20,0.5,4,1,1,0 --dt 0.005 --maxframes 400 \
+       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
+```
+
 ## Output
 
 The shell table is text:
@@ -218,6 +315,15 @@ datasets are `/sqw/q` (one row per q: `qx qy qz |q|`), `/sqw/omega`,
 The partial spectra are always in the plain (OVITO) convention of the static
 partial columns: transforming to the Faber-Ziman form would need the self part,
 which the method does not separate, so `-fz` applies to the static table only.
+
+`--s4 FILE` (dynamic method) holds one row per $(q,\tau)$ sample,
+`# qx qy qz tau S4(q,t)`, with no partial columns.  `--chi4 FILE` is the
+scalar time series `# tau Q(t) chi4(t)`.  Both accept a `.h5`/`.hdf5` name (or
+`--s4-format hdf5`) for HDF5, where the datasets are `/s4/q`, `/s4/tau`,
+`/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`, `/chi4/chi4`,
+`/chi4/count`, with the overlap cutoff in the `overlap` attribute.  The count
+is the number of time origins at each lag; a lag with a single origin has no
+measurable fluctuation and is written as zero.
 
 The shell, `g(r)` and grid tables are plain text, with the column names in the
 header line, so any plotting tool reads them as they are.  The skill ships

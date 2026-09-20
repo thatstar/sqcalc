@@ -41,7 +41,7 @@ module sqc_dynamics
    use, intrinsic :: iso_fortran_env, only: output_unit
    use omp_lib, only: omp_get_max_threads
 #ifdef SQC_HAVE_HDF5
-   use sqc_hdf5, only: hdf5_write_dynamics
+   use sqc_hdf5, only: hdf5_write_dynamics, hdf5_write_chi4
 #endif
    implicit none
    private
@@ -55,6 +55,7 @@ module sqc_dynamics
    !> Which quantity a writer is asked for.
    integer, parameter :: dyn_sqw = 1
    integer, parameter :: dyn_fsq = 2
+   integer, parameter :: dyn_s4 = 3
 
    !> Direct summation over a q line plus a multi-origin time correlation.
    type, extends(structure_factor_t) :: dynamics_structure_factor_t
@@ -72,6 +73,31 @@ module sqc_dynamics
       !> Optional output files (empty = not written) and their format.
       character(len=:), allocatable :: sqw_path, fsq_path
       integer :: sqw_format = dyn_format_text
+      !> Four-point structure factor and average overlap / chi4.
+      logical :: s4_enabled = .false.
+      logical :: chi4_enabled = .false.
+      real(rk) :: s4_cutoff = 0.0_rk
+      real(rk) :: s4_cutoff2 = 0.0_rk
+      character(len=:), allocatable :: s4_path, chi4_path
+      integer :: s4_format = dyn_format_text
+      integer :: chi4_format = dyn_format_text
+      !> True when F(q,t)/S(q,w) buffers and transforms are needed.
+      logical :: coherent_enabled = .true.
+      !> Position buffer limit [GB, 10^9 bytes] for --s4/--chi4.
+      real(rk) :: s4_buffer_gb = 2.0_rk
+      !> Ring buffer of the last frames' positions for the overlap function.
+      real(rk), allocatable :: pos_buffer(:, :, :)
+      !> Atoms inside the overlap cutoff for the current lag.
+      integer(ik), allocatable :: over_list(:)
+      !> S4 accumulators: sum |W|^2 and sum W per (mode, lag).
+      real(rk), allocatable :: s4_asum(:, :)
+      complex(c_double_complex), allocatable :: s4_bsum(:, :)
+      complex(c_double_complex), allocatable :: w_scratch(:)
+      !> chi4 accumulators over the scalar overlap W0.
+      real(rk), allocatable :: chi4_asum(:), chi4_bsum(:)
+      !> Results: S4(q,t), average overlap Q(t) and chi4(t).
+      real(rk), allocatable :: s4(:, :)
+      real(rk), allocatable :: overlap(:), chi4(:)
       !> Species present and their grouping by contiguous atom ranges.
       integer(ik), allocatable :: species_of(:), species_type(:)
       integer(ik), allocatable :: atom_of(:), species_first(:)
@@ -99,6 +125,8 @@ module sqc_dynamics
       procedure :: prepare_output => dyn_prepare_output
       procedure :: write_sqw => dyn_write_sqw
       procedure :: write_fsq => dyn_write_fsq
+      procedure :: write_s4 => dyn_write_s4
+      procedure :: write_chi4 => dyn_write_chi4
    end type dynamics_structure_factor_t
 
 contains
@@ -172,10 +200,31 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(ik), allocatable :: cursor(:)
-      integer :: i, t, isp
+      integer(lk) :: limit_bytes
+      integer :: i, t, isp, astat
+      character(len=256) :: amsg
 
       ierr = 0
       message = ''
+      ! Validate the overlap request before the coherent ring buffers are
+      ! allocated, so an oversized --maxframes fails with the S4 message
+      ! instead of exhausting memory in the unrelated F(q,t) accumulators.
+      if (self%s4_enabled .or. self%chi4_enabled) then
+         if (self%s4_cutoff <= 0.0_rk) then
+            ierr = 1
+            message = '--s4-cutoff must be a positive number'
+            return
+         end if
+         self%s4_cutoff2 = self%s4_cutoff**2
+         limit_bytes = int(self%s4_buffer_gb*1.0e9_rk, lk)
+         if (24_lk*int(self%natoms, lk)*int(self%maxframes + 1, lk) > limit_bytes) then
+            ierr = 1
+            write (message, '(a,f0.4,a,i0,a)') 'the S4/chi4 position buffer would need more than ', &
+               self%s4_buffer_gb, ' GB (', limit_bytes, &
+               ' bytes); raise --s4-buffer-limit or reduce --maxframes'
+            return
+         end if
+      end if
       call sf_prepare_species(self, frame, scheme, self%species_of, self%species_type, &
                               self%amp_const, self%amp_table, self%q_dependent, ierr, message)
       if (ierr /= 0) return
@@ -212,14 +261,48 @@ contains
          end do
       end if
 
-      allocate (self%rho(self%nmodes, self%nspecies, 0:self%maxframes))
-      self%rho = (0.0_rk, 0.0_rk)
-      allocate (self%csum(self%nmodes, 0:self%maxframes, self%nspecies, self%nspecies))
-      self%csum = (0.0_rk, 0.0_rk)
+      if (self%coherent_enabled) then
+         allocate (self%rho(self%nmodes, self%nspecies, 0:self%maxframes))
+         self%rho = (0.0_rk, 0.0_rk)
+         allocate (self%csum(self%nmodes, 0:self%maxframes, self%nspecies, self%nspecies))
+         self%csum = (0.0_rk, 0.0_rk)
+      else
+         ! The static S(q) table only needs the current frame; the ring buffer
+         ! and the coherent multi-origin correlation belong to F(q,t)/S(q,w).
+         allocate (self%rho(self%nmodes, self%nspecies, 0:0))
+         self%rho = (0.0_rk, 0.0_rk)
+      end if
       allocate (self%c0sum(self%nmodes, self%nspecies, self%nspecies))
       self%c0sum = (0.0_rk, 0.0_rk)
       allocate (self%ccnt(self%nmodes, 0:self%maxframes))
       self%ccnt = 0
+
+      ! --- four point structure factor / overlap accumulators ---------------
+      ! S4(q,t) and chi4(t) both need the positions of the frames that are
+      ! still inside the correlation window.  The list of overlapping atoms
+      ! is built once per lag and reused by every q mode.
+      if (self%s4_enabled .or. self%chi4_enabled) then
+         allocate (self%pos_buffer(3, int(self%natoms), 0:self%maxframes), &
+                   stat=astat, errmsg=amsg)
+         if (astat /= 0) then
+            ierr = 1
+            message = 'cannot allocate the S4/chi4 position buffer: '//trim(amsg)
+            return
+         end if
+         self%pos_buffer = 0.0_rk
+         allocate (self%over_list(int(self%natoms)))
+         allocate (self%chi4_asum(0:self%maxframes), self%chi4_bsum(0:self%maxframes))
+         self%chi4_asum = 0.0_rk
+         self%chi4_bsum = 0.0_rk
+      end if
+      if (self%s4_enabled) then
+         allocate (self%s4_asum(self%nmodes, 0:self%maxframes))
+         allocate (self%s4_bsum(self%nmodes, 0:self%maxframes))
+         allocate (self%w_scratch(self%nmodes))
+         self%s4_asum = 0.0_rk
+         self%s4_bsum = (0.0_rk, 0.0_rk)
+         self%w_scratch = (0.0_rk, 0.0_rk)
+      end if
    end subroutine dyn_setup
 
    !> Add one frame: the density amplitudes and their time correlations.
@@ -230,8 +313,8 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       complex(c_double_complex) :: acc
-      real(rk) :: qx, qy, qz, phase
-      integer :: t_frame, slot, l, oslot, im, isp, jsp, i
+      real(rk) :: qx, qy, qz, phase, dx, dy, dz
+      integer :: t_frame, slot, s4_slot, l, oslot, im, isp, jsp, i, k, nover
 
       ierr = 0
       message = ''
@@ -247,7 +330,12 @@ contains
       end if
 
       t_frame = int(self%nframes)
-      slot = mod(t_frame, self%maxframes + 1)
+      if (self%coherent_enabled) then
+         slot = mod(t_frame, self%maxframes + 1)
+      else
+         slot = 0
+      end if
+      s4_slot = mod(t_frame, self%maxframes + 1)
 
       ! --- rho_a(q,t) by direct summation over the q line -------------------
       !$omp parallel do schedule(static) private(im, isp, i, acc, phase, qx, qy, qz)
@@ -278,24 +366,81 @@ contains
       end do
 
       ! --- multi-origin correlation of the lags -----------------------------
-      !$omp parallel do schedule(static) private(l, oslot, im, isp, jsp)
-      do l = 0, min(t_frame, self%maxframes)
-         if (mod(t_frame - l, self%lag_stride) /= 0) cycle
-         oslot = mod(t_frame - l, self%maxframes + 1)
-         do im = 1, int(self%nmodes)
-            do isp = 1, self%nspecies
-               do jsp = 1, self%nspecies
-                  self%csum(im, l, isp, jsp) = self%csum(im, l, isp, jsp) &
-                     + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, oslot))
+      if (self%coherent_enabled) then
+         !$omp parallel do schedule(static) private(l, oslot, im, isp, jsp)
+         do l = 0, min(t_frame, self%maxframes)
+            if (mod(t_frame - l, self%lag_stride) /= 0) cycle
+            oslot = mod(t_frame - l, self%maxframes + 1)
+            do im = 1, int(self%nmodes)
+               do isp = 1, self%nspecies
+                  do jsp = 1, self%nspecies
+                     self%csum(im, l, isp, jsp) = self%csum(im, l, isp, jsp) &
+                        + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, oslot))
+                  end do
                end do
             end do
          end do
-      end do
-      !$omp end parallel do
+         !$omp end parallel do
+      end if
       do l = 0, min(t_frame, self%maxframes)
          if (mod(t_frame - l, self%lag_stride) /= 0) cycle
          self%ccnt(:, l) = self%ccnt(:, l) + 1
       end do
+
+      ! --- four point structure factor and the scalar overlap ---------------
+      if (self%s4_enabled .or. self%chi4_enabled) then
+         self%pos_buffer(:, :, s4_slot) = frame%pos
+         do l = 0, min(t_frame, self%maxframes)
+            if (mod(t_frame - l, self%lag_stride) /= 0) cycle
+            oslot = mod(t_frame - l, self%maxframes + 1)
+
+            ! Atoms still inside the overlap sphere at this lag.  The scalar
+            ! overlap W0 is their number; the q dependent W(q) is their
+            ! origin-position Fourier sum.  The list is built once and reused
+            ! by every q mode.
+            nover = 0
+            do i = 1, int(self%natoms)
+               dx = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
+               dy = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
+               dz = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
+               if (dx*dx + dy*dy + dz*dz <= self%s4_cutoff2) then
+                  nover = nover + 1
+                  self%over_list(nover) = int(i, ik)
+               end if
+            end do
+
+            if (self%s4_enabled) then
+               if (nover > 0) then
+                  !$omp parallel do schedule(static) private(im, k, i, qx, qy, qz, phase, acc)
+                  do im = 1, int(self%nmodes)
+                     qx = self%qvec(1, im)
+                     qy = self%qvec(2, im)
+                     qz = self%qvec(3, im)
+                     acc = (0.0_rk, 0.0_rk)
+                     do k = 1, nover
+                        i = int(self%over_list(k))
+                        phase = qx*self%pos_buffer(1, i, oslot) &
+                                + qy*self%pos_buffer(2, i, oslot) &
+                                + qz*self%pos_buffer(3, i, oslot)
+                        acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
+                     end do
+                     self%w_scratch(im) = acc
+                  end do
+                  !$omp end parallel do
+               else
+                  self%w_scratch = (0.0_rk, 0.0_rk)
+               end if
+               do im = 1, int(self%nmodes)
+                  self%s4_bsum(im, l) = self%s4_bsum(im, l) + self%w_scratch(im)
+                  self%s4_asum(im, l) = self%s4_asum(im, l) &
+                     + real(self%w_scratch(im), rk)**2 + aimag(self%w_scratch(im))**2
+               end do
+            end if
+
+            self%chi4_bsum(l) = self%chi4_bsum(l) + real(nover, rk)
+            self%chi4_asum(l) = self%chi4_asum(l) + real(nover, rk)**2
+         end do
+      end if
 
       self%nframes = self%nframes + 1
    end subroutine dyn_accumulate
@@ -308,7 +453,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk), allocatable :: f(:)
       real(rk) :: frames, value
-      integer :: im, l, isp, jsp, t, u, p, n_pairs
+      integer :: im, l, isp, jsp, t, u, p, n_pairs, n
 
       ierr = 0
       message = ''
@@ -320,17 +465,21 @@ contains
          return
       end if
       frames = real(self%nframes, rk)
-      self%dw = acos(-1.0_rk)/(real(self%maxframes, rk)*self%frame_dt)
-
-      allocate (self%omega(0:self%maxframes), self%tau(0:self%maxframes))
+      allocate (self%tau(0:self%maxframes))
       do l = 0, self%maxframes
          self%tau(l) = real(l, rk)*self%frame_dt
-         self%omega(l) = real(l, rk)*self%dw
       end do
-      allocate (self%sqw(self%nmodes, 0:self%maxframes))
-      allocate (self%ftau(self%nmodes, 0:self%maxframes))
-      self%sqw = 0.0_rk
-      self%ftau = 0.0_rk
+      if (self%coherent_enabled) then
+         self%dw = acos(-1.0_rk)/(real(self%maxframes, rk)*self%frame_dt)
+         allocate (self%omega(0:self%maxframes))
+         do l = 0, self%maxframes
+            self%omega(l) = real(l, rk)*self%dw
+         end do
+         allocate (self%sqw(self%nmodes, 0:self%maxframes))
+         allocate (self%ftau(self%nmodes, 0:self%maxframes))
+         self%sqw = 0.0_rk
+         self%ftau = 0.0_rk
+      end if
 
       ! Static table: |rho(q)|^2 averaged over every frame, with the same
       ! normalization as the other methods.
@@ -357,88 +506,125 @@ contains
          end do
       end if
 
-      ! F(q,tau), and the partial intermediate functions.
-      n_pairs = 0
-      do t = 1, self%ntypes
-         do u = t, self%ntypes
-            if (.not. pair_present(self, t, u)) cycle
-            n_pairs = n_pairs + 1
+      if (self%coherent_enabled) then
+         ! F(q,tau), and the partial intermediate functions.
+         n_pairs = 0
+         do t = 1, self%ntypes
+            do u = t, self%ntypes
+               if (.not. pair_present(self, t, u)) cycle
+               n_pairs = n_pairs + 1
+            end do
          end do
-      end do
-      if (self%partials) then
-         allocate (self%ftau_partial(self%nmodes, 0:self%maxframes, max(n_pairs, 1)))
-         allocate (self%sqw_partial(self%nmodes, 0:self%maxframes, max(n_pairs, 1)))
-         self%ftau_partial = 0.0_rk
-         self%sqw_partial = 0.0_rk
-      else
-         allocate (self%ftau_partial(0, 0, 0), self%sqw_partial(0, 0, 0))
-      end if
+         if (self%partials) then
+            allocate (self%ftau_partial(self%nmodes, 0:self%maxframes, max(n_pairs, 1)))
+            allocate (self%sqw_partial(self%nmodes, 0:self%maxframes, max(n_pairs, 1)))
+            self%ftau_partial = 0.0_rk
+            self%sqw_partial = 0.0_rk
+         else
+            allocate (self%ftau_partial(0, 0, 0), self%sqw_partial(0, 0, 0))
+         end if
 
-      allocate (f(0:self%maxframes))
-      do im = 1, int(self%nmodes)
-         ! total
-         do l = 0, self%maxframes
-            if (l == 0) then
-               value = 0.0_rk
-               do isp = 1, self%nspecies
-                  do jsp = 1, self%nspecies
-                     value = value + self%amp(im, isp)*self%amp(im, jsp) &
-                             *real(self%c0sum(im, isp, jsp), rk)/frames
-                  end do
-               end do
-            else
-               value = 0.0_rk
-               if (self%ccnt(im, l) > 0) then
+         allocate (f(0:self%maxframes))
+         do im = 1, int(self%nmodes)
+            ! total
+            do l = 0, self%maxframes
+               if (l == 0) then
+                  value = 0.0_rk
                   do isp = 1, self%nspecies
                      do jsp = 1, self%nspecies
                         value = value + self%amp(im, isp)*self%amp(im, jsp) &
-                                *real(self%csum(im, l, isp, jsp), rk)/real(self%ccnt(im, l), rk)
+                                *real(self%c0sum(im, isp, jsp), rk)/frames
                      end do
                   end do
+               else
+                  value = 0.0_rk
+                  if (self%ccnt(im, l) > 0) then
+                     do isp = 1, self%nspecies
+                        do jsp = 1, self%nspecies
+                           value = value + self%amp(im, isp)*self%amp(im, jsp) &
+                                   *real(self%csum(im, l, isp, jsp), rk)/real(self%ccnt(im, l), rk)
+                        end do
+                     end do
+                  end if
                end if
-            end if
-            if (self%den(im) > 0.0_rk) then
-               self%ftau(im, l) = value/self%den(im)
-            else
-               self%ftau(im, l) = 0.0_rk
+               if (self%den(im) > 0.0_rk) then
+                  self%ftau(im, l) = value/self%den(im)
+               else
+                  self%ftau(im, l) = 0.0_rk
+               end if
+            end do
+            f = self%ftau(im, :)
+            call dyn_spectrum(f, self%frame_dt, self%sqw(im, :))
+
+            ! partials, in the OVITO (1/N) convention of the static columns
+            if (self%partials) then
+               p = 0
+               do t = 1, self%ntypes
+                  do u = t, self%ntypes
+                     if (.not. pair_present(self, t, u)) cycle
+                     p = p + 1
+                     isp = species_index(self, t)
+                     jsp = species_index(self, u)
+                     do l = 0, self%maxframes
+                        if (l == 0) then
+                           value = real(self%c0sum(im, isp, jsp), rk)/frames
+                        else
+                           value = 0.0_rk
+                           if (self%ccnt(im, l) > 0) then
+                              value = real(self%csum(im, l, isp, jsp), rk)/real(self%ccnt(im, l), rk)
+                              ! The cross partial has to be symmetrized, otherwise
+                              ! the OVITO sum rule S = S_aa + 2 S_ab + S_bb would
+                              ! hold only at zero lag (C_ab and C_ba differ by the
+                              ! finite-trajectory noise).
+                              if (isp /= jsp) value = 0.5_rk*(value &
+                                 + real(self%csum(im, l, jsp, isp), rk)/real(self%ccnt(im, l), rk))
+                           end if
+                        end if
+                        self%ftau_partial(im, l, p) = value/real(self%natoms, rk)
+                     end do
+                     f = self%ftau_partial(im, :, p)
+                     call dyn_spectrum(f, self%frame_dt, self%sqw_partial(im, :, p))
+                  end do
+               end do
             end if
          end do
-         f = self%ftau(im, :)
-         call dyn_spectrum(f, self%frame_dt, self%sqw(im, :))
+         deallocate (f)
+      end if
 
-         ! partials, in the OVITO (1/N) convention of the static columns
-         if (self%partials) then
-            p = 0
-            do t = 1, self%ntypes
-               do u = t, self%ntypes
-                  if (.not. pair_present(self, t, u)) cycle
-                  p = p + 1
-                  isp = species_index(self, t)
-                  jsp = species_index(self, u)
-                  do l = 0, self%maxframes
-                     if (l == 0) then
-                        value = real(self%c0sum(im, isp, jsp), rk)/frames
-                     else
-                        value = 0.0_rk
-                        if (self%ccnt(im, l) > 0) then
-                           value = real(self%csum(im, l, isp, jsp), rk)/real(self%ccnt(im, l), rk)
-                           ! The cross partial has to be symmetrized, otherwise
-                           ! the OVITO sum rule S = S_aa + 2 S_ab + S_bb would
-                           ! hold only at zero lag (C_ab and C_ba differ by the
-                           ! finite-trajectory noise).
-                           if (isp /= jsp) value = 0.5_rk*(value &
-                              + real(self%csum(im, l, jsp, isp), rk)/real(self%ccnt(im, l), rk))
-                        end if
-                     end if
-                     self%ftau_partial(im, l, p) = value/real(self%natoms, rk)
-                  end do
-                  f = self%ftau_partial(im, :, p)
-                  call dyn_spectrum(f, self%frame_dt, self%sqw_partial(im, :, p))
-               end do
+      ! --- four point structure factor and the scalar overlap ----------------
+      ! The connected covariance is evaluated with the unbiased (n-1)
+      ! denominator; a lag with a single time origin has no fluctuation and is
+      ! written as zero (the HDF5 counts show why).
+      if (self%s4_enabled) then
+         allocate (self%s4(self%nmodes, 0:self%maxframes))
+         self%s4 = 0.0_rk
+         do im = 1, int(self%nmodes)
+            do l = 0, self%maxframes
+               n = int(self%ccnt(im, l))
+               if (n > 1) then
+                  value = (self%s4_asum(im, l) &
+                           - abs(self%s4_bsum(im, l))**2/real(n, rk))/real(n - 1, rk)
+                  self%s4(im, l) = value/real(self%natoms, rk)
+               end if
             end do
-         end if
-      end do
-      deallocate (f)
+         end do
+      end if
+      if (self%chi4_enabled) then
+         allocate (self%overlap(0:self%maxframes), self%chi4(0:self%maxframes))
+         self%overlap = 0.0_rk
+         self%chi4 = 0.0_rk
+         do l = 0, self%maxframes
+            n = int(self%ccnt(1, l))
+            if (n > 0) then
+               self%overlap(l) = (self%chi4_bsum(l)/real(n, rk))/real(self%natoms, rk)
+            end if
+            if (n > 1) then
+               value = (self%chi4_asum(l) &
+                        - self%chi4_bsum(l)**2/real(n, rk))/real(n - 1, rk)
+               self%chi4(l) = value/real(self%natoms, rk)
+            end if
+         end do
+      end if
    end subroutine dyn_prepare_output
 
    !> One-sided spectrum of a real, even correlation function.
@@ -540,6 +726,69 @@ contains
                            self%tau, self%ftau, self%ftau_partial, ierr, message)
    end subroutine dyn_write_fsq
 
+   !> The total S4(q,tau) table (text or HDF5).
+   subroutine dyn_write_s4(self, path, format, scheme, input, ierr, message)
+      class(dynamics_structure_factor_t), intent(in) :: self
+      character(len=*), intent(in) :: path, input
+      integer, intent(in) :: format
+      type(weight_scheme_t), intent(in) :: scheme
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk), allocatable :: empty_part(:, :, :)
+
+      allocate (empty_part(0, 0, 0))
+      call dyn_write_table(self, path, format, scheme, input, dyn_s4, 'tau', &
+                           self%tau, self%s4, empty_part, ierr, message)
+      deallocate (empty_part)
+   end subroutine dyn_write_s4
+
+   !> The average overlap Q(t) and the dynamic susceptibility chi4(t).
+   subroutine dyn_write_chi4(self, path, format, input, ierr, message)
+      class(dynamics_structure_factor_t), intent(in) :: self
+      character(len=*), intent(in) :: path, input
+      integer, intent(in) :: format
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer :: unit, l
+
+      ierr = 0
+      message = ''
+      if (format == dyn_format_hdf5) then
+#ifdef SQC_HAVE_HDF5
+         call hdf5_write_chi4(path, self%tau, self%overlap, self%chi4, self%ccnt(1, :), &
+                              self%nframes, self%frame_dt, self%maxframes, self%lag_stride, &
+                              self%s4_cutoff, ierr, message)
+#else
+         ierr = 1
+         message = 'this build has no HDF5 support; use --s4-format text'
+#endif
+         return
+      end if
+
+      if (trim(path) == '-') then
+         unit = output_unit
+      else
+         open (newunit=unit, file=trim(path), status='replace', action='write', iostat=ierr)
+         if (ierr /= 0) then
+            message = 'cannot write the chi4 output "'//trim(path)//'"'
+            return
+         end if
+      end if
+
+      write (unit, '(a)') '# sqcalc 0.1.0 average overlap Q(t) and four-point '// &
+         'susceptibility chi4(t)'
+      write (unit, '(a)') '# input '//trim(input)
+      write (unit, '(a,f12.6,a,f12.6,a,i0,a,i0,a,i0)') '# overlap ', self%s4_cutoff, &
+         '  frame_dt ', self%frame_dt, '  maxframes ', self%maxframes, '  lag ', &
+         self%lag_stride, '  nframes ', self%nframes
+      write (unit, '(a)') '# the overlap uses unit weights; Q and chi4 are the q = 0 limit'
+      write (unit, '(a)') '# tau Q(t) chi4(t)'
+      do l = 0, self%maxframes
+         write (unit, '(f16.8,2x,es20.12,2x,es20.12)') self%tau(l), self%overlap(l), self%chi4(l)
+      end do
+      if (unit /= output_unit) close (unit)
+   end subroutine dyn_write_chi4
+
    !> Text or HDF5 writer shared by the spectra and F(q,tau).
    subroutine dyn_write_table(self, path, format, scheme, input, kind, axis_name, &
                               axis, spec, part, ierr, message)
@@ -559,7 +808,7 @@ contains
          call dyn_write_hdf5(self, scheme, path, kind, axis_name, axis, spec, part, ierr, message)
 #else
          ierr = 1
-         message = 'this build has no HDF5 support; use --sqw-format text'
+         message = 'this build has no HDF5 support; write the dynamic tables as text'
 #endif
          return
       end if
@@ -579,7 +828,7 @@ contains
          do n = 0, self%maxframes
             write (unit, '(3(f14.8,2x),f16.8,2x,es20.12)', advance='no') &
                self%qvec(1, im), self%qvec(2, im), self%qvec(3, im), axis(n), spec(im, n)
-            if (self%partials) then
+            if (self%partials .and. kind /= dyn_s4) then
                p = 0
                do t = 1, self%ntypes
                   do u = t, self%ntypes
@@ -606,14 +855,21 @@ contains
       character(len=24) :: label
 
       unorm = sqrt(sum(self%direction**2))
-      if (kind == dyn_sqw) then
+      select case (kind)
+      case (dyn_sqw)
          write (unit, '(a)') '# sqcalc 0.1.0 dynamic structure factor S(q,w)'
-      else
+      case (dyn_fsq)
          write (unit, '(a)') '# sqcalc 0.1.0 intermediate scattering function F(q,t)'
+      case default
+         write (unit, '(a)') '# sqcalc 0.1.0 four-point structure factor S4(q,t)'
+      end select
+      if (kind == dyn_s4) then
+         write (unit, '(a)') '# input '//trim(input)//'  weight unit (overlap)  norm unit'
+      else
+         write (unit, '(a)') '# input '//trim(input)//'  weight '//trim(scheme%label())// &
+            '  norm '//trim(norm_name(self%norm))
       end if
-      write (unit, '(a)') '# input '//trim(input)//'  weight '//trim(scheme%label())// &
-         '  norm '//trim(norm_name(self%norm))
-      if (self%q_dependent) then
+      if (self%q_dependent .and. kind /= dyn_s4) then
          write (unit, '(a)') '# note the amplitudes depend on q (X-ray form factors)'
       end if
       write (unit, '(a,f12.6,a,i0,a,i0,a,i0)') '# frame_dt ', self%frame_dt, &
@@ -621,25 +877,36 @@ contains
       write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
          ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
       write (unit, '(a,3(f12.8,1x))') '# direction ', self%direction/unorm
-      if (kind == dyn_sqw) then
+      select case (kind)
+      case (dyn_sqw)
          write (unit, '(a,i0,a,f0.6,a,f0.6,a)') '# nomega ', self%maxframes + 1, &
             '  omega 0 .. ', real(self%maxframes, rk)*self%dw, ' dw ', self%dw, &
             ' (1/time unit of dt, one-sided)'
          write (unit, '(a)') '# S(q,-w) = S(q,w);  sum_n S(q,w_n)*dw = F(q,0) '// &
             '= the OUTPUT table of this run'
-      else
+      case (dyn_fsq)
          write (unit, '(a,i0,a,f0.6,a)') '# nlag ', self%maxframes + 1, &
             '  tau 0 .. ', real(self%maxframes, rk)*self%frame_dt, ' (time unit of dt)'
          write (unit, '(a)') '# F(q,0) = the OUTPUT table of this run; the spectra are '// &
             'its Fourier transform'
-      end if
+      case default
+         write (unit, '(a,i0,a,f0.6,a)') '# nlag ', self%maxframes + 1, &
+            '  tau 0 .. ', real(self%maxframes, rk)*self%frame_dt, ' (time unit of dt)'
+         write (unit, '(a,f12.6,a)') '# overlap cutoff a = ', self%s4_cutoff, &
+            ' (same length unit as the dump)'
+         write (unit, '(a)') '# S4 is the unbiased connected overlap covariance; '// &
+            'lim_q->0 S4 = chi4(t)'
+      end select
       write (unit, '(a)', advance='no') '# qx qy qz '//trim(axis_name)//' '
-      if (kind == dyn_sqw) then
+      select case (kind)
+      case (dyn_sqw)
          write (unit, '(a)', advance='no') 'S(q,w)'
-      else
+      case (dyn_fsq)
          write (unit, '(a)', advance='no') 'F(q,t)'
-      end if
-      if (self%partials) then
+      case default
+         write (unit, '(a)', advance='no') 'S4(q,t)'
+      end select
+      if (self%partials .and. kind /= dyn_s4) then
          do t = 1, self%ntypes
             do u = t, self%ntypes
                if (.not. pair_present(self, t, u)) cycle
@@ -664,12 +931,28 @@ contains
       real(rk), allocatable :: q4(:, :)
       character(len=18), allocatable :: labels(:)
       character(len=:), allocatable :: group
+      character(len=32) :: wlabel, nlabel
+      real(rk) :: overlap
       integer :: im, p, t, u, npair
 
       ierr = 0
       message = ''
-      group = 'sqw'
-      if (kind == dyn_fsq) group = 'fsq'
+      overlap = -1.0_rk
+      select case (kind)
+      case (dyn_fsq)
+         group = 'fsq'
+         wlabel = trim(scheme%label())
+         nlabel = trim(norm_name(self%norm))
+      case (dyn_s4)
+         group = 's4'
+         wlabel = 'unit'
+         nlabel = 'unit'
+         overlap = self%s4_cutoff
+      case default
+         group = 'sqw'
+         wlabel = trim(scheme%label())
+         nlabel = trim(norm_name(self%norm))
+      end select
       allocate (q4(self%nmodes, 4))
       do im = 1, int(self%nmodes)
          q4(im, 1:3) = self%qvec(:, im)
@@ -688,7 +971,7 @@ contains
       end do
       call hdf5_write_dynamics(path, group, axis_name, q4, axis, spec, part, labels, self%ccnt, &
                                self%nframes, self%frame_dt, self%maxframes, self%lag_stride, &
-                               trim(scheme%label()), trim(norm_name(self%norm)), ierr, message)
+                               trim(wlabel), trim(nlabel), overlap, ierr, message)
       deallocate (q4, labels)
    end subroutine dyn_write_hdf5
 #endif

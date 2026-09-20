@@ -19,6 +19,7 @@ command line error cases.
 """
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -727,6 +728,114 @@ def main():
     compare(read_matrix(path("dyn_lag_fsq.dat")), read_matrix(path("dyn_lag_ref_fsq.dat")),
             "lag stride 3 vs reference", rtol=1.0e-9)
 
+    # --- four point structure factor S4(q,t), Q(t) and chi4(t) ------------
+    print("four-point structure factor (--s4/--chi4)")
+    ref_four = os.path.join(HERE, "ref_s4.py")
+    s4_spec = "1,2,3,1,0,0"            # 2 q points, |q| = 2 and 3 along x
+    s4_cutoff = "0.5"
+    s4_base = ["--dyn", s4_spec, "--dt", "1", "--maxframes", "8"]
+    s4_q = s4_base + ["--lag", "1"]
+    run([exe, "-i", diff_dump, "-w", "unit", "--norm", "mean", *s4_q,
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4.dat"),
+         "--chi4", path("chi4.dat"), path("s4_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
+         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+         "--output-s4", path("s4_ref.dat"), "--output-chi4", path("chi4_ref.dat")])
+    s4 = read_matrix(path("s4.dat"))
+    chi4 = read_matrix(path("chi4.dat"))
+    compare(s4, read_matrix(path("s4_ref.dat")), "S4(q,t) vs numpy reference", rtol=1.0e-9)
+    compare(chi4, read_matrix(path("chi4_ref.dat")), "Q(t)/chi4(t) vs numpy reference",
+            rtol=1.0e-9)
+    if abs(chi4[0, 1] - 1.0) > 1.0e-12 or abs(chi4[0, 2]) > 1.0e-12:
+        raise SystemExit("FAIL Q(0)=1 and chi4(0)=0")
+    print("  ok   %-42s Q(0)=%.6f chi4(0)=%.1e"
+          % ("Q(0) and chi4(0)", chi4[0, 1], chi4[0, 2]))
+
+    # The q = 0 row of the S4 table is the scalar chi4(t).
+    s4_q0 = ["--dyn", "2,0,2,1,0,0", "--dt", "1", "--maxframes", "8", "--lag", "1"]
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_q0, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_q0.dat"), path("s4_q0_sq.dat")])
+    compare(read_matrix(path("s4_q0.dat"))[:9, 4].reshape(-1, 1),
+            chi4[:, 2].reshape(-1, 1), "S4(q=0,t) = chi4(t)", rtol=1.0e-12)
+
+    # --partials must not add S4 columns.
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--partials", *s4_q,
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_part.dat"), path("s4_part_sq.dat")])
+    if read_matrix(path("s4_part.dat")).shape != s4.shape:
+        raise SystemExit("FAIL --partials changed the S4 table layout")
+    print("  ok   %-42s no partial columns" % "--partials is ignored by S4")
+
+    # --chi4 alone must reproduce the chi4 of the combined run.
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--chi4", path("chi4_only.dat"), path("chi4_only_sq.dat")])
+    compare(read_matrix(path("chi4_only.dat")), chi4, "chi4 without --s4", rtol=1.0e-9)
+
+    # --s4-format overrides the suffix for both four-point outputs.
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--s4-format", "text", "--s4", path("s4_forced.h5"),
+         "--chi4", path("chi4_forced.h5"), path("s4_forced_sq.dat")])
+    compare(read_matrix(path("s4_forced.h5")), s4, "S4 --s4-format text override", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_forced.h5")), chi4, "chi4 --s4-format text override",
+            rtol=1.0e-9)
+
+    # A run with only --s4/--chi4 must not need the coherent ring buffers;
+    # adding --sqw has to leave S4, chi4 and the static S(q) table unchanged.
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_coherent.dat"), "--chi4", path("chi4_coherent.dat"),
+         "--sqw", path("s4_coherent_sqw.dat"), path("s4_coherent_sq.dat")])
+    compare(read_matrix(path("s4_coherent.dat")), s4, "S4-only == S4 with --sqw", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_coherent.dat")), chi4, "chi4-only == chi4 with --sqw",
+            rtol=1.0e-9)
+    compare(read_table(path("s4_sq.dat"))[1].reshape(-1, 1),
+            read_table(path("s4_coherent_sq.dat"))[1].reshape(-1, 1),
+            "S4-only static S(q) == full", rtol=1.0e-9)
+
+    # --s4-buffer-limit is in GB and can be lowered for this small buffer.
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--s4-buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
+         path("s4_limit_sq.dat")])
+    compare(read_matrix(path("s4_limit.dat"))[:, 4].reshape(-1, 1),
+            s4[:, 4].reshape(-1, 1), "S4 with --s4-buffer-limit 0.001", rtol=1.0e-9)
+
+    # The origin stride is shared with the coherent correlations.
+    s4_lag = s4_base + ["--lag", "3"]
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_lag.dat"), "--chi4", path("chi4_lag.dat"),
+         path("s4_lag_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
+         "--maxframes", "8", "--lag", "3", "--dt", "1", "--cutoff", s4_cutoff,
+         "--output-s4", path("s4_lag_ref.dat"), "--output-chi4", path("chi4_lag_ref.dat")])
+    compare(read_matrix(path("s4_lag.dat")), read_matrix(path("s4_lag_ref.dat")),
+            "S4 lag stride 3 vs reference", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_lag.dat")), read_matrix(path("chi4_lag_ref.dat")),
+            "chi4 lag stride 3 vs reference", rtol=1.0e-9)
+
+    # Ideal-gas diffusive limit: for independent Brownian particles and q
+    # away from the reciprocal lattice, S4(q,t) -> p(t), Q(t) -> p(t) and
+    # chi4(t) -> p(t)(1-p(t)), with p the 3D Gaussian overlap probability.
+    diffusivity = 0.1
+    cutoff = float(s4_cutoff)
+    tau = chi4[:, 0]
+
+    def overlap_probability(time):
+        if time <= 0.0:
+            return 1.0
+        sigma = math.sqrt(diffusivity*time)
+        return (math.erf(cutoff/(2.0*sigma))
+                - cutoff/(math.sqrt(math.pi)*sigma)
+                * math.exp(-cutoff*cutoff/(4.0*diffusivity*time)))
+
+    p = np.array([overlap_probability(t) for t in tau])
+    worst_q = max(float(np.max(np.abs(s4[1:9, 4] - p[1:]))),
+                  float(np.max(np.abs(s4[10:18, 4] - p[1:]))))
+    worst_q0 = float(np.max(np.abs(chi4[1:, 1] - p[1:])))
+    worst_c = float(np.max(np.abs(chi4[1:, 2] - p[1:]*(1.0 - p[1:]))))
+    if worst_q > 0.02 or worst_q0 > 0.01 or worst_c > 0.015:
+        raise SystemExit("FAIL ideal gas diffusive limit: S4 %.3f Q %.3f chi4 %.3f"
+                         % (worst_q, worst_q0, worst_c))
+    print("  ok   %-42s max deviations S4 %.3f Q %.3f chi4 %.3f"
+          % ("ideal gas diffusive limit", worst_q, worst_q0, worst_c))
+
     # A non-periodic direction must not be wrapped: the dump writes the true
     # coordinate for it (x, not xu), so an atom that leaves the box has to be
     # kept outside it.  Both spellings of the same slab trajectory must agree.
@@ -762,6 +871,14 @@ def main():
             handle.write(run([args.h5read, path("dyn_fsq.h5"), "fsq"]).stdout)
         compare(read_matrix(path("dyn_sqw_h5.txt")), sqw, "HDF5 S(q,w) vs text", rtol=1.0e-9)
         compare(read_matrix(path("dyn_fsq_h5.txt")), fsq, "HDF5 F(q,t) vs text", rtol=1.0e-9)
+        run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+             "--s4", path("s4.h5"), "--chi4", path("chi4.h5"), path("s4_h5_sq.dat")])
+        with open(path("s4_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("s4.h5"), "s4"]).stdout)
+        with open(path("chi4_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("chi4.h5"), "chi4"]).stdout)
+        compare(read_matrix(path("s4_h5.txt")), s4, "HDF5 S4(q,t) vs text", rtol=1.0e-9)
+        compare(read_matrix(path("chi4_h5.txt")), chi4, "HDF5 chi4 vs text", rtol=1.0e-9)
 
     # option validation
     bad = [
@@ -772,6 +889,21 @@ def main():
         (["--sqw", "x.dat"], "--sqw without --dyn"),
         (["--dyn", "0,1,4,1,0,0", "--dt", "1", "--maxframes", "20"], "--dyn without intervals"),
         (["--dyn", "4,4,1,1,0,0", "--dt", "1", "--maxframes", "20"], "--dyn with S1 <= S0"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--s4", "s.dat"],
+         "--s4 without --s4-cutoff"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--s4-cutoff", "0.5"],
+         "--s4-cutoff without --s4/--chi4"),
+        (["--s4", "s.dat", "--s4-cutoff", "0.5"], "--s4 without --dyn"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "20", "--s4-cutoff", "0.5",
+          "--s4-format", "bogus", "--s4", "s.dat"], "--s4-format bogus"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "100000000", "--s4-cutoff", "0.5",
+          "--s4", "s.dat"], "S4 position buffer too large"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
+          "--s4-buffer-limit", "0.0001", "--s4", "s.dat"], "S4 buffer limit too small"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-buffer-limit", "2.0"],
+         "--s4-buffer-limit without --s4/--chi4"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
+          "--s4-buffer-limit", "0", "--s4", "s.dat"], "--s4-buffer-limit zero"),
     ]
     rejected = 0
     for options, label in bad:

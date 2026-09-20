@@ -11,8 +11,10 @@ $S_{ab}(q)$, one column per pair of LAMMPS types.
 With `--dyn` the time axis is kept instead of being averaged away, and the
 run writes the dynamic structure factor $S(q,\omega)$ along a line in
 reciprocal space, plus optionally the intermediate scattering function
-$F(q,t)$.  That method correlates the density amplitudes in time rather than
-averaging their squares.
+$F(q,t)$.  The same dynamic run can also write the four-point structure factor
+$S_4(q,t)$, the average overlap $Q(t)$ and the dynamic susceptibility
+$\chi_4(t)$ with `--s4` and `--chi4`.  That method correlates the density
+amplitudes (or the overlap field) in time rather than averaging their squares.
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -114,6 +116,11 @@ With `--dyn` these options select the $q$ line and the correlation window:
 | `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--fsq FILE` | the intermediate scattering function $F(q,t)$ |
 | `--sqw-format NAME` | `text` (default) or `hdf5` for the two files above |
+| `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
+| `--chi4 FILE` | the average overlap $Q(t)$ and the susceptibility $\chi_4(t)$ |
+| `--s4-cutoff A` | overlap cutoff $a$, required by `--s4` and `--chi4` |
+| `--s4-format NAME` | `text` (default) or `hdf5` for `--s4` and `--chi4` |
+| `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0 GB) |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -247,6 +254,111 @@ points of a line scan the direct sum costs $O(N\,n_q)$ per frame, far less
 than transforming the $(q_{\max}L)^3$ grid.  Off-lattice $q$ requires
 unwrapped coordinates, which `--dyn` reconstructs while reading if the dump
 carries only wrapped `x y z` (preferring `xu yu zu` when available).
+
+### Four-point structure factor and dynamic susceptibility
+
+`--s4` and `--chi4` extend the same dynamic run to the four-point quantities
+used to characterize dynamical heterogeneity.  They need the overlap cutoff
+$a$ in the length unit of the dump,
+
+$$
+w_i(t,t_0) = \Theta\!\left(a - |\mathbf r_i(t_0+t) - \mathbf r_i(t_0)|\right),
+$$
+
+and the Fourier transform of the overlap field at the time origin,
+
+$$
+W(\mathbf q;t_0,t) = \sum_i e^{i\mathbf q\cdot\mathbf r_i(t_0)}\, w_i(t,t_0).
+$$
+
+The total four-point structure factor is the connected fluctuation of that
+field,
+
+$$
+S_4(\mathbf q,t) = \frac{1}{N}\left[
+  \langle W(\mathbf q;t_0,t) W(-\mathbf q;t_0,t)\rangle_{t_0}
+  - \left|\langle W(\mathbf q;t_0,t)\rangle_{t_0}\right|^2
+\right],
+$$
+
+and `--chi4` writes the scalar $q = 0$ case,
+
+$$
+Q(t) = \frac{1}{N}\left\langle \sum_i w_i(t,t_0)\right\rangle_{t_0},
+$$
+
+$$
+\chi_4(t) = \frac{1}{N}\left(\langle W_0(t)^2\rangle-\langle W_0(t)\rangle^2\right),
+$$
+
+with $W_0(t) = \sum_i w_i(t,t_0)$.  Equivalently,
+
+$$
+\chi_4(t) = N\left(\langle Q(t)^2\rangle-\langle Q(t)\rangle^2\right),
+$$
+
+so $Q(0) = 1$, $\chi_4(0) = 0$, and both decay at long times.  The $q \to 0$
+limit of the four-point structure factor is the susceptibility,
+
+$$
+\lim_{q\to0} S_4(q,t) = \chi_4(t),
+$$
+
+and a small-$q$ Ornstein-Zernike fit,
+
+$$
+S_4(q,t) \simeq \frac{\chi_4(t)}{1+[q\,\xi(t)]^2},
+$$
+
+gives the dynamic correlation length $\xi(t)$.
+
+The estimator is the unbiased connected covariance over time origins, with
+the same origin count per lag as the coherent correlation.  `--s4-cutoff` is
+required and has no default: the relevant $a$ is a fraction of the particle
+diameter (or of the first-neighbour distance from $g(r)$), which the dump
+does not carry.  The four-point quantities use unit overlap weights, so
+`-w`/`--norm` continue to affect $S(q)$, $F(q,t)$ and $S(q,\omega)$ but not
+$S_4$ or $\chi_4$.  They are total quantities: `--partials` does not add
+partial four-point columns.
+
+The $S_4$ table is written as one row per $(q,t)$ sample,
+
+```
+# qx qy qz tau S4(q,t)
+```
+
+and the chi4 table is a single time series,
+
+```
+# tau Q(t) chi4(t)
+```
+
+Both accept a `.h5`/`.hdf5` name or `--s4-format hdf5`.  The HDF5 layout is
+`/s4/q`, `/s4/tau`, `/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`,
+`/chi4/chi4`, `/chi4/count`, with the overlap cutoff in the `overlap`
+attribute.  The count is the number of time origins at each lag; a lag with a
+single origin has no measurable fluctuation and is written as zero.
+
+The calculation is more expensive than $F(q,t)$ because every atom and every
+lag has to be compared with its origin position, and every atom inside the
+cutoff contributes to every $q$ mode.  A large `--lag` thins the time origins,
+and a short, low-$q$ line is usually enough for the Ornstein-Zernike fit.  The
+position ring buffer grows with `--maxframes`; `--s4-buffer-limit GB` sets its
+limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size is
+printed in the run summary, and an oversized request is rejected before any
+large allocation.
+
+The dynamic method allocates only what the requested outputs need.  A run with
+only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
+multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
+static `OUTPUT` table is still written.  Conversely, a run with only
+`--sqw`/`--fsq` does not allocate the S4 position buffer.
+
+```sh
+# low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
+sqcalc -i traj.dump -w unit --dyn 20,0.5,4,1,1,0 --dt 0.005 --maxframes 400 \
+       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
+```
 
 ### Partial structure factors
 

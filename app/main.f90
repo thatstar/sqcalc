@@ -111,6 +111,21 @@ program sqcalc
          if (opts%sqw_format == grid_format_hdf5) method%sqw_format = dyn_format_hdf5
          if (allocated(opts%sqw_output)) method%sqw_path = opts%sqw_output
          if (allocated(opts%fsq_output)) method%fsq_path = opts%fsq_output
+         method%coherent_enabled = allocated(opts%sqw_output) .or. allocated(opts%fsq_output)
+         method%s4_cutoff = opts%s4_cutoff
+         method%s4_buffer_gb = opts%s4_buffer_gb
+         method%s4_format = dyn_format_text
+         if (opts%s4_format == grid_format_hdf5) method%s4_format = dyn_format_hdf5
+         method%chi4_format = dyn_format_text
+         if (opts%chi4_format == grid_format_hdf5) method%chi4_format = dyn_format_hdf5
+         if (allocated(opts%s4_output)) then
+            method%s4_path = opts%s4_output
+            method%s4_enabled = .true.
+         end if
+         if (allocated(opts%chi4_output)) then
+            method%chi4_path = opts%chi4_output
+            method%chi4_enabled = .true.
+         end if
       end select
    case default
       if (opts%device == device_gpu) then
@@ -289,6 +304,22 @@ program sqcalc
                stop 23
             end if
          end if
+         if (allocated(method%s4_path)) then
+            call method%write_s4(method%s4_path, method%s4_format, opts%scheme, opts%input, &
+                                 ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 26
+            end if
+         end if
+         if (allocated(method%chi4_path)) then
+            call method%write_chi4(method%chi4_path, method%chi4_format, opts%input, &
+                                   ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 27
+            end if
+         end if
       end select
    end if
    if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
@@ -407,6 +438,13 @@ contains
             m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
          write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
             ' frames, origin lag ', m%lag_stride
+         if (m%s4_enabled .or. m%chi4_enabled) then
+            write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
+               ' (S4/chi4 use unit weights)'
+            write (error_unit, '(a,f0.4,a,f0.4,a)') '  S4 buffer  : ', &
+               24.0_rk*real(m%natoms, rk)*real(m%maxframes + 1, rk)/1.0e9_rk, &
+               ' GB (limit ', m%s4_buffer_gb, ' GB)'
+         end if
       class default
          write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes
          write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints

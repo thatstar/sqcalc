@@ -15,7 +15,10 @@ and a real space Debye pair histogram, which can also write $g(r)$.
 
 With `--dyn` it instead keeps the time axis and writes the dynamic structure
 factor $S(q,\omega)$ along a line in reciprocal space (`--sqw`), optionally
-with the intermediate scattering function $F(q,t)$ (`--fsq`).
+with the intermediate scattering function $F(q,t)$ (`--fsq`).  The same run
+can write the total four-point structure factor $S_4(q,t)$ (`--s4`) and the
+average overlap and dynamic susceptibility $Q(t)$, $\chi_4(t)$ (`--chi4`);
+both need the overlap cutoff `--s4-cutoff`.
 
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
@@ -55,9 +58,9 @@ suffix, so `.pdf` or `.svg` gives vector output.  A dashed line marks the 1 that
 S(q), g(r) and the Faber-Ziman partials tend to; `--refline 0` or
 `--refline none` changes or removes it.
 
-`scripts/plot_sqw.py` plots a `--sqw`/`--fsq` table instead: the map of the
-quantity over $(|q|,\omega)$ next to a few selected spectra, or single curves
-with `--mode spectra --q 1,4`:
+`scripts/plot_sqw.py` plots a `--sqw`/`--fsq`/`--s4` table instead: the map of
+the quantity over $(|q|,\omega)$ (or $(|q|,\tau)$) next to a few selected
+spectra, or single curves with `--mode spectra --q 1,4`:
 
 ```sh
 python3 scripts/plot_sqw.py S_qw.dat
@@ -96,6 +99,13 @@ and `--dr` instead of the box sets the usable q range.
 * Report partials with `-fz` (Faber-Ziman) in preference to the default OVITO
   columns: they tend to 1 for every pair, so they do not hide the structure
   behind the concentrations and compare directly between systems.
+* `--s4` and `--chi4` are total overlap quantities and use unit weights, so
+  `-w`/`--norm` and `--partials` do not change them.  They need a physically
+  meaningful `--s4-cutoff` (a fraction of the particle diameter), and the
+  full $S_4$ calculation is the most expensive dynamic output; use a large
+  `--lag` and a short low-$q$ line when needed.  The position buffer is
+  limited to 2 GB by default (`--s4-buffer-limit GB` raises it), and a run
+  with only `--s4`/`--chi4` skips the coherent $F(q,t)/S(q,\omega)$ buffers.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.

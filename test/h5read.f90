@@ -11,6 +11,8 @@
 !!   h5read file.h5 shell    -> "# q S(q)" table
 !!   h5read file.h5 partials -> "# q Si-Si Si-O ..." table
 !!   h5read file.h5 rdf      -> "# r g(r) Si-Si Si-O ..." table
+!!   h5read file.h5 s4       -> "# qx qy qz tau S4(q,t)" table
+!!   h5read file.h5 chi4     -> "# tau Q(t) chi4(t)" table
 program h5read
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64, error_unit, output_unit
    use hdf5
@@ -29,7 +31,7 @@ program h5read
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fsq)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fsq|s4|chi4)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -162,6 +164,31 @@ program h5read
             end do
             write (output_unit, '(a)') ''
          end do
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('s4')
+      ! total four-point structure factor: one row per (q, lag) sample
+      call h5gopen_f(file_id, 's4', group_id, hdferr)
+      call read_real_2d(group_id, 'q', q2, nq, ncol)
+      call read_real_1d(group_id, 'tau', axis, naxis)
+      call read_real_2d(group_id, 'S4', spec, nq, naxis_check)
+      write (output_unit, '(a)') '# qx qy qz tau S4(q,t)'
+      do j = 1, nq
+         do i = 1, naxis
+            write (output_unit, '(3(f14.8,2x),f16.8,2x,es20.12)') &
+               q2(j, 1), q2(j, 2), q2(j, 3), axis(i), spec(j, i)
+         end do
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('chi4')
+      ! average overlap Q(t) and dynamic susceptibility chi4(t)
+      call h5gopen_f(file_id, 'chi4', group_id, hdferr)
+      call read_real_1d(group_id, 'tau', axis, naxis)
+      call read_real_1d(group_id, 'Q', q, naxis_check)
+      call read_real_1d(group_id, 'chi4', s, naxis_check)
+      write (output_unit, '(a)') '# tau Q(t) chi4(t)'
+      do i = 1, naxis
+         write (output_unit, '(f16.8,2x,es20.12,2x,es20.12)') axis(i), q(i), s(i)
       end do
       call h5gclose_f(group_id, hdferr)
    case default
