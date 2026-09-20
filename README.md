@@ -276,10 +276,12 @@ The total four-point structure factor is the connected fluctuation of that
 field,
 
 $$
-S_4(\mathbf q,t) = \frac{1}{N}\left[
-  \langle W(\mathbf q;t_0,t) W(-\mathbf q;t_0,t)\rangle_{t_0}
-  - \left|\langle W(\mathbf q;t_0,t)\rangle_{t_0}\right|^2
-\right],
+\begin{aligned}
+S_4(\mathbf q,t) = \frac{1}{N}\Bigl[
+  &\langle W(\mathbf q;t_0,t) W(-\mathbf q;t_0,t)\rangle_{t_0} \\
+  &- \left|\langle W(\mathbf q;t_0,t)\rangle_{t_0}\right|^2
+\Bigr],
+\end{aligned}
 $$
 
 and `--chi4` writes the scalar $q = 0$ case,
