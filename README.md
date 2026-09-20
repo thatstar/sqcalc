@@ -103,6 +103,8 @@ With `--method debye` these options select the pair histogram:
 | `--dr VALUE`             | radial bin width (default 0.01 A, reliable up to$q \sim \pi/(2\,dr)$; ~150 1/A at the default)                                                          |
 | `--skin VALUE`           | Verlet skin for reusing the pair list (default 1.0 A,`0` rebuilds every frame)                                                                          |
 | `--rdf FILE`             | total and all partial$g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`)                                                                           |
+| `--pair-entropy FILE`    | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$                                                                                     |
+| `--s2-accum FILE`        | the $S_2(r)$ accumulation curve for tail extrapolation                                                                                              |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic)                                       |
 
 With `--dyn` these options select the $q$ line and the correlation window:
@@ -207,6 +209,27 @@ and the output format behave identically.  A finite pair cutoff biases the low
 $q$ region; sqcalc applies the same cut-off density correction as `debyer`
 whenever at least one direction is periodic (`--no-cutoff-correction` disables
 it).  `--grid` is not available with this method, and it runs on the CPU.
+
+The same histograms give the two-body excess entropy (pair entropy) per
+particle in units of $k_B$,
+
+$$
+S_2^{ab} = -2\pi\rho\,x_a x_b \int_0^{r_{\max}} r^2
+\left[g_{ab}\ln g_{ab}-g_{ab}+1\right]dr,
+$$
+
+with the total following the partial sum rule
+$S_2 = \sum_a S_2^{aa} + 2\sum_{a<b} S_2^{ab}$.  `--pair-entropy FILE` writes
+the final total and partial values; `--s2-accum FILE` writes the $S_2(r)$
+accumulation curve.  The integral uses the exact shell volume of each bin, the
+$g\to0$ limit of the integrand and a leading-order Poisson bias correction;
+no smoothing is applied by default and no statistical error is estimated.  A
+single Debye run cannot make a rigorous tail correction (the $g(r)$ stops at
+half the periodic box, and the Debye $S(q)$ has truncation ripples), so the
+model-dependent part is left to `scripts/s2_analysis.py`, which can GCV-smooth
+the partial $g(r)$, apply the `--dr` Richardson extrapolation and fit the tail
+or multiple box sizes.  Do not use the Debye $S(q)$ for the reciprocal-space
+entropy; use the NUFFT/direct $S(q)$ for that.
 
 ### Dynamic structure factor
 

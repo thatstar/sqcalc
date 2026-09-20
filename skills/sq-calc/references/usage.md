@@ -31,6 +31,8 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--dr VALUE` | Debye radial bin width [A] (default 0.01, reliable up to $q \sim \pi/(2\,dr)$) |
 | `--skin VALUE` | Debye Verlet skin for reusing the pair list [A] (default 1.0, `0` rebuilds every frame) |
 | `--rdf FILE` | total and partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
+| `--pair-entropy FILE` | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$ |
+| `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
 | `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
 | `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
@@ -123,6 +125,41 @@ fixes the low $q$ end.  So `--nq` can be pushed as far as the table length is
 convenient: `scripts/choose_q.py DUMP --method debye` suggests
 `--qmin 0 --qmax 20 --nq 2000` ($\Delta q = 0.01$) and checks `--dr` against
 the requested `--qmax`.
+
+### Pair entropy (`--pair-entropy`, `--s2-accum`)
+
+The Debye histograms also give the two-body excess entropy (pair entropy) per
+particle in units of $k_B$.  The partial contribution is
+
+$$
+S_2^{ab} = -2\pi\rho\,x_a x_b \int_0^{r_{\max}} r^2
+\left[g_{ab}\ln g_{ab} - g_{ab} + 1\right]dr
+$$
+
+and the total follows the usual partial sum rule,
+
+$$
+S_2 = \sum_a S_2^{aa} + 2\sum_{a<b}S_2^{ab}.
+$$
+
+The integration uses the exact shell volume of each radial bin (not
+$4\pi r^2 dr$), takes the $g\to0$ limit of the integrand as 1, and symmetrizes
+the cross partials before taking the logarithm.  A leading-order Poisson bias
+correction removes the noise-induced offset of the nonlinear integrand, so
+even a noisy ideal gas stays close to $S_2=0$; no smoothing is applied by
+default.  No statistical error is estimated: $S_2$ is used as a
+qualitative/trend quantity, and the dominant uncertainties are the
+$r_{\max}$ tail, the finite box and the multiparticle corrections.
+
+`--s2-accum` writes the $S_2(r)$ accumulation curve instead of only the final
+value at $r_{\max}$.  A single Debye run cannot make a rigorous tail
+correction (the $g(r)$ data stop at half the periodic box, and the Debye
+$S(q)$ is not suitable for the reciprocal-space route), so the model-dependent
+analysis is left to `scripts/s2_analysis.py`: it can GCV-smooth the partial
+$g(r)$ (with `--rdf`), apply the `--dr` Richardson extrapolation, and fit the
+tail with power-law, exponential or damped-oscillation forms.  Do not use the
+Debye $S(q)$ to estimate the reciprocal-space entropy; use the NUFFT/direct
+method for that.
 
 ### Partials
 
@@ -365,6 +402,14 @@ text.
 the order of `-m`, with the partials normalized to $g_{ab} \to 1$ at large $r$
 (HDF5: `/rdf/r`, `/rdf/g`, `/rdf/g_partial/<label>`, `/rdf/pairs`).  The
 weighted total uses the $q \to 0$ amplitudes.
+
+`--pair-entropy FILE` (Debye method) holds the final total and partial
+$S_2/k_B$, one `total` row followed by one row per type pair, with the
+`natoms`/`volume`/`nframes`/`rmax`/`dr`/`counts` metadata in the header.
+`--s2-accum FILE` holds the accumulation curve
+`# r S2_total(r)/kB S2(a-a)(r)/kB ...`.  Both accept a `.h5`/`.hdf5` name;
+the HDF5 group is `/pair_entropy` with `S2`, `S2_total`, `pairs`, and, for the
+accumulation file, `r`, `S2_curve` and `S2_total_curve`.
 
 `--sqw FILE` (dynamic method) holds one row per $(q,\omega)$ sample,
 `# qx qy qz omega S(q,w) S(a-a) ...`, and `--fqt FILE` the intermediate

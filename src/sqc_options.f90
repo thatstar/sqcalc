@@ -48,6 +48,8 @@ module sqc_options
       real(rk) :: dr = debye_default_dr
       real(rk) :: skin = debye_default_skin
       character(len=:), allocatable :: rdf_output
+      character(len=:), allocatable :: pair_entropy_output
+      character(len=:), allocatable :: s2_accum_output
       logical :: rmax_given = .false.
       logical :: dr_given = .false.
       logical :: skin_given = .false.
@@ -172,6 +174,7 @@ contains
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
                   '--device', '--gpu-id', '--precision', '--grid-format', &
                   '--rmax', '--dr', '--skin', '--rdf', &
+                  '--pair-entropy', '--s2-accum', &
                   '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
                   '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride')
                if (.not. has_inline) then
@@ -291,6 +294,10 @@ contains
                   self%skin_given = .true.
                case ('--rdf')
                   self%rdf_output = trim(value)
+               case ('--pair-entropy')
+                  self%pair_entropy_output = trim(value)
+               case ('--s2-accum')
+                  self%s2_accum_output = trim(value)
                case ('--dyn')
                   call parse_dyn(self, trim(value), ierr, message)
                   if (ierr /= 0) return
@@ -535,11 +542,18 @@ contains
             message = 'the Debye method runs on the CPU; use --device cpu'
             return
          end if
+         if (allocated(self%s2_accum_output) .and. .not. allocated(self%pair_entropy_output)) then
+            ierr = 1
+            message = '--s2-accum needs --pair-entropy'
+            return
+         end if
       else
          if (self%rmax_given .or. self%dr_given .or. self%skin_given .or. &
-             allocated(self%rdf_output)) then
+             allocated(self%rdf_output) .or. allocated(self%pair_entropy_output) .or. &
+             allocated(self%s2_accum_output)) then
             ierr = 1
-            message = '--rmax, --dr, --skin and --rdf belong to --method debye'
+            message = '--rmax, --dr, --skin, --rdf, --pair-entropy and --s2-accum '// &
+               'belong to --method debye'
             return
          end if
       end if
@@ -686,6 +700,8 @@ contains
       write (unit, '(a)') '      --dr VALUE      Debye radial bin width [A] (default 0.01)'
       write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [A] (default 1.0)'
       write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
+      write (unit, '(a)') '      --pair-entropy FILE  total and partial pair entropy S2/kB'
+      write (unit, '(a)') '      --s2-accum FILE  S2(r) accumulation curve for tail extrapolation'
       write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
       write (unit, '(a)') '      --dyn SPEC      dynamic structure factor S(q,w) along a q line:'
       write (unit, '(a)') '                      NINT,S0,S1,DX,DY,DZ, e.g. 100,0.5,20,1,1,0'

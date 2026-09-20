@@ -411,6 +411,101 @@ def main():
                              % (rdf_h5.shape, rdf.shape))
         compare(rdf[:, 1:], rdf_h5[:, 1:], "HDF5 rdf vs text rdf", rtol=1.0e-8)
 
+    # --- pair entropy from the Debye g(r) ---------------------------------
+    print("pair entropy (--pair-entropy/--s2-accum)")
+    s2_dump = generate("s2_gas.dump", natoms=1000, length=25, frames=200, seed=13)
+    run([exe, "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
+         "--rmax", "8", "--dr", "0.05", "--rdf", path("s2.rdf"),
+         "--pair-entropy", path("s2.dat"), "--s2-accum", path("s2acc.dat"),
+         path("s2_sq.dat")])
+    rdf = read_matrix(path("s2.rdf"))
+    accum = read_matrix(path("s2acc.dat"))
+    meta = {}
+    with open(path("s2acc.dat")) as handle:
+        for line in handle:
+            if line.startswith("# counts"):
+                meta["counts"] = [int(v) for v in line.split()[2:]]
+            elif line.startswith("# input"):
+                tokens = line.split()
+                for i, token in enumerate(tokens):
+                    if token in ("natoms", "nframes"):
+                        meta[token] = int(tokens[i + 1])
+                    if token in ("volume", "rmax", "dr"):
+                        meta[token] = float(tokens[i + 1])
+    counts = meta["counts"]
+    natoms = float(meta["natoms"])
+    volume = float(meta["volume"])
+    nframes = float(meta["nframes"])
+    dr = float(meta["dr"])
+    npairs = rdf.shape[1] - 2
+    ntypes = int((math.isqrt(1 + 8*npairs) - 1)//2)
+    pairs = [(a, b) for a in range(ntypes) for b in range(a, ntypes)]
+    r = rdf[:, 0]
+    rho = natoms/volume
+    dv = 4.0*math.pi/3.0*((r + 0.5*dr)**3 - np.maximum(0.0, r - 0.5*dr)**3)
+    curves = np.zeros((len(r), npairs))
+    for p, (a, b) in enumerate(pairs):
+        if (a == b and counts[a] <= 1) or (a != b and (counts[a] == 0 or counts[b] == 0)):
+            continue
+        # The --rdf table uses the historical midpoint shell for g(r); the
+        # pair-entropy integral uses the exact shell volume, so convert first.
+        g = rdf[:, 2 + p]*(4.0*math.pi*r**2*dr)/dv
+        integrand = np.where(g > 0.0,
+                             g*np.log(np.maximum(g, 1.0e-300)) - g + 1.0, 1.0)
+        contrib = dv*integrand
+        bias = volume/(2.0*nframes*counts[a]*counts[b])
+        curves[:, p] = -2.0*math.pi*rho*(counts[a]/natoms)*(counts[b]/natoms) \
+            * np.cumsum(contrib - bias)
+    total_curve = np.zeros(len(r))
+    for p, (a, b) in enumerate(pairs):
+        total_curve += (1.0 if a == b else 2.0)*curves[:, p]
+    compare(accum[:, 1].reshape(-1, 1), total_curve.reshape(-1, 1),
+            "S2 total curve vs reference", rtol=1.0e-9)
+    compare(accum[:, 2:], curves, "S2 partial curves vs reference", rtol=1.0e-9)
+    text_final = []
+    with open(path("s2.dat")) as handle:
+        for line in handle:
+            if line.startswith("#") or not line.strip():
+                continue
+            text_final.append(float(line.split()[1]))
+    text_final = np.array(text_final)
+    if abs(text_final[0] - total_curve[-1]) > 1.0e-12:
+        raise SystemExit("FAIL final S2 does not match the accumulation curve")
+    if abs(text_final[0]) > 0.1:
+        raise SystemExit("FAIL ideal gas S2 = %.3f is too large" % text_final[0])
+    print("  ok   %-42s total %.4f, partials %d" %
+          ("ideal gas S2 and partial curves", text_final[0], npairs))
+
+    if args.h5read:
+        run([exe, "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
+             "--rmax", "8", "--dr", "0.05", "--pair-entropy", path("s2.h5"),
+             "--s2-accum", path("s2acc.h5"), path("s2_h5_sq.dat")])
+        with open(path("s2_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("s2.h5"), "pair_entropy"]).stdout)
+        with open(path("s2acc_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("s2acc.h5"), "s2_accum"]).stdout)
+        compare(read_matrix(path("s2acc_h5.txt")), accum, "HDF5 S2 curve vs text", rtol=1.0e-8)
+        compare(read_matrix(path("s2_h5.txt")).reshape(-1),
+                text_final.reshape(-1), "HDF5 pair entropy vs text", rtol=1.0e-8)
+
+    # The optional Python analysis tool must run on the generated files.
+    try:
+        import scipy  # noqa: F401
+        have_scipy = True
+    except ImportError:
+        have_scipy = False
+    if have_scipy:
+        tool = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts", "s2_analysis.py")
+        run([sys.executable, tool, "--s2", path("s2.dat"), "--rdf", path("s2.rdf"),
+             "--accum", path("s2acc.dat"), "--s2-smooth", "--fit", "power",
+             "--r-fit-min", "4", "--r-fit-max", "8", "--json", path("s2_tool.json")])
+        import json
+        with open(path("s2_tool.json")) as handle:
+            data = json.load(handle)
+        if "tail_fit" not in data or "gcv_smooth" not in data:
+            raise SystemExit("FAIL s2_analysis.py JSON is missing results")
+        print("  ok   %-42s tail fit + GCV" % "s2_analysis.py")
+
     # Lattice: the RDF peaks at the neighbour shell distances of a cubic
     # lattice with a = 4 A (4, 5.66, 6.93, 8 A).
     lattice_dump = generate("lattice_debye.dump", natoms=125, length=20, frames=1,
@@ -997,6 +1092,9 @@ def main():
         (["--fqt-self", "f.dat"], "--fqt-self without --dyn"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
           "--fqt-self", "f.dat"], "--s4-cutoff with --fqt-self but no S4/chi4"),
+        (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
+        (["--method", "debye", "--s2-accum", "a.dat"],
+         "--s2-accum without --pair-entropy"),
     ]
     rejected = 0
     for options, label in bad:

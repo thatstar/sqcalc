@@ -34,7 +34,7 @@ module sqc_hdf5
    private
 
    public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics, &
-             hdf5_write_chi4, hdf5_write_fqt_self
+             hdf5_write_chi4, hdf5_write_fqt_self, hdf5_write_pair_entropy
 
    !> HDF5 was compiled into this binary.
    logical, parameter :: hdf5_support = .true.
@@ -800,6 +800,108 @@ contains
       call h5close_f(hdferr)
       deallocate (one_d, label_buf)
    end subroutine hdf5_write_rdf
+
+   !> Pair entropy S2 and its r-accumulation curve.
+   subroutine hdf5_write_pair_entropy(path, r, s2_partial, total, s2_curve, s2_total_curve, &
+                                      labels, natoms, volume, nframes, rmax, dr, with_curve, &
+                                      ierr, message)
+      character(len=*), intent(in) :: path
+      real(rk), intent(in) :: r(:)
+      real(rk), intent(in) :: s2_partial(:)
+      real(rk), intent(in) :: total
+      real(rk), intent(in) :: s2_curve(:, :)
+      real(rk), intent(in) :: s2_total_curve(:)
+      character(len=*), intent(in) :: labels(:)
+      integer(ik), intent(in) :: natoms
+      real(rk), intent(in) :: volume, rmax, dr
+      integer(lk), intent(in) :: nframes
+      logical, intent(in) :: with_curve
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id
+      integer(hsize_t) :: dims(1)
+      integer :: hdferr, idum, p, nbins, npair
+      real(real64), allocatable :: one_d(:)
+      real(real64) :: scalar(1)
+      character(len=18), allocatable :: label_buf(:)
+
+      ierr = 0
+      message = ''
+      npair = size(labels)
+      nbins = size(r)
+      call h5open_f(hdferr)
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+      call write_int_attr(file_id, 'natoms', int(natoms, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'volume', real(volume, real64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'nframes', int(nframes, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'rmax', real(rmax, real64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'dr', real(dr, real64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'n_pairs', int(npair, int64), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'quantity', 'pair_entropy', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'units', 'kB', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'weight', 'unit', ierr, message)
+      if (ierr /= 0) then
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+      call h5gcreate_f(file_id, 'pair_entropy', group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /pair_entropy group'
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+      allocate (label_buf(npair))
+      do p = 1, npair
+         label_buf(p) = labels(p)
+      end do
+      call write_string_dataset(group_id, 'pairs', label_buf, ierr, message)
+      if (ierr == 0) then
+         allocate (one_d(npair))
+         one_d = real(s2_partial, real64)
+         dims = [int(npair, hsize_t)]
+         call write_dataset_f(group_id, 'S2', H5T_NATIVE_DOUBLE, dims, one_d, ierr, message)
+         deallocate (one_d)
+      end if
+      if (ierr == 0) then
+         scalar(1) = real(total, real64)
+         call write_dataset_f(group_id, 'S2_total', H5T_NATIVE_DOUBLE, [1_hsize_t], scalar, &
+                              ierr, message)
+      end if
+      if (ierr == 0 .and. with_curve) then
+         allocate (one_d(nbins))
+         one_d = real(r, real64)
+         call write_dataset_f(group_id, 'r', H5T_NATIVE_DOUBLE, [int(nbins, hsize_t)], one_d, &
+                              ierr, message)
+         deallocate (one_d)
+      end if
+      if (ierr == 0 .and. with_curve) then
+         allocate (one_d(nbins*npair))
+         one_d = reshape(real(s2_curve, real64), [nbins*npair])
+         call write_dataset_f(group_id, 'S2_curve', H5T_NATIVE_DOUBLE, &
+                              [int(nbins, hsize_t), int(npair, hsize_t)], one_d, ierr, message)
+         deallocate (one_d)
+      end if
+      if (ierr == 0 .and. with_curve) then
+         allocate (one_d(nbins))
+         one_d = real(s2_total_curve, real64)
+         call write_dataset_f(group_id, 'S2_total_curve', H5T_NATIVE_DOUBLE, &
+                              [int(nbins, hsize_t)], one_d, ierr, message)
+         deallocate (one_d)
+      end if
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (label_buf)
+   end subroutine hdf5_write_pair_entropy
 
    !> Fixed length string dataset (1D).
    !> Partial structure factors of the shell table: `/shell/S_partial/<pair>`

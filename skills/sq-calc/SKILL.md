@@ -110,6 +110,12 @@ and `--dr` instead of the box sets the usable q range.
   and the work.  A run with only `--s4`/`--chi4` skips the coherent
   $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
   always includes every atom and never applies `--s4-cutoff`.
+* The Debye method can also write the pair entropy (`--pair-entropy`) and its
+  accumulation curve (`--s2-accum`).  The raw integral is a finite-$r_{\max}$
+  estimate; `scripts/s2_analysis.py` does the optional GCV smoothing, the
+  `--dr` Richardson extrapolation and the tail/multi-box fits.  $S_2$ is
+  treated as a qualitative/trend quantity, so no statistical error is
+  reported.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.

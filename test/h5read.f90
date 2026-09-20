@@ -26,12 +26,12 @@ program h5read
    real(real64), allocatable :: part3(:, :, :)
    real(real64), allocatable :: q2(:, :), spec(:, :), spec2(:, :), axis(:)
    character(len=18), allocatable :: dnames(:)
-   integer :: nq, ncol, naxis, naxis_check, nq_check, kk
+   integer :: nq, ncol, naxis, naxis_check, nq_check, npairs2, kk
 
    call get_command_argument(1, path)
    call get_command_argument(2, which)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4)'
+      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -221,6 +221,43 @@ program h5read
             end do
             write (output_unit, '(a)') ''
          end do
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('pair_entropy')
+      ! final pair entropy values: one numeric row, total then partials
+      call h5gopen_f(file_id, 'pair_entropy', group_id, hdferr)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      call read_real_1d(group_id, 'S2', s, n)
+      call read_real_1d(group_id, 'S2_total', q, nq_check)
+      write (output_unit, '(a)', advance='no') '# S2_total'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' S2('//trim(dnames(i))//')'
+      end do
+      write (output_unit, '(a)') ''
+      write (output_unit, '(es20.12)', advance='no') q(1)
+      do i = 1, npairs
+         write (output_unit, '(2x,es20.12)', advance='no') s(i)
+      end do
+      write (output_unit, '(a)') ''
+      call h5gclose_f(group_id, hdferr)
+   case ('s2_accum')
+      ! accumulation curve: one row per r bin
+      call h5gopen_f(file_id, 'pair_entropy', group_id, hdferr)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      call read_real_1d(group_id, 'r', q, n)
+      call read_real_1d(group_id, 'S2_total_curve', s, naxis_check)
+      call read_real_2d(group_id, 'S2_curve', spec, nq_check, npairs2)
+      write (output_unit, '(a)', advance='no') '# r S2_total(r)'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' S2('//trim(dnames(i))//')(r)'
+      end do
+      write (output_unit, '(a)') ''
+      do j = 1, n
+         write (output_unit, '(f12.6,2x,es20.12)', advance='no') q(j), s(j)
+         do i = 1, npairs
+            write (output_unit, '(2x,es20.12)', advance='no') spec(j, i)
+         end do
+         write (output_unit, '(a)') ''
       end do
       call h5gclose_f(group_id, hdferr)
    case default

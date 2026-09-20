@@ -30,7 +30,7 @@ module sqc_debye
                             norm_mean, norm_self
    use omp_lib, only: omp_get_max_threads, omp_get_thread_num
 #ifdef SQC_HAVE_HDF5
-   use sqc_hdf5, only: hdf5_write_rdf
+   use sqc_hdf5, only: hdf5_write_rdf, hdf5_write_pair_entropy
 #endif
    implicit none
    private
@@ -55,6 +55,9 @@ module sqc_debye
       logical :: pbc(3) = .true.
       !> Optional pair distribution function file ('' = none).
       character(len=:), allocatable :: rdf_path
+      !> Optional pair-entropy outputs ('' = none).
+      character(len=:), allocatable :: pair_entropy_path
+      character(len=:), allocatable :: s2_accum_path
       !> Apply the cut-off density correction (debyer's add_cutoff_correction).
       logical :: correct_cutoff = .true.
       !> Type id of each atom and number of atoms per type id.
@@ -73,6 +76,7 @@ module sqc_debye
       procedure :: accumulate_frame => debye_accumulate
       procedure :: prepare_output => debye_prepare_output
       procedure :: write_rdf => debye_write_rdf
+      procedure :: write_pair_entropy => debye_write_pair_entropy
       final :: debye_finalize
    end type debye_structure_factor_t
 
@@ -337,7 +341,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk), allocatable :: g_partial(:, :, :), g_total(:), r(:), weight(:)
       character(len=18), allocatable :: labels(:)
-      real(rk) :: shell, rho_b, f_mean, s_of_q
+      real(rk) :: f_mean, s_of_q
       integer :: k, ia, ib, u, t, npair, p
 
       ierr = 0
@@ -354,20 +358,7 @@ contains
          end do
       end do
 
-      do k = 1, self%nbins
-         r(k) = (real(k, rk) - 0.5_rk)*self%dr
-         shell = 4.0_rk*acos(-1.0_rk)*r(k)**2*self%dr
-         do ia = 1, self%ntypes
-            do ib = 1, self%ntypes
-               g_partial(ia, ib, k) = 0.0_rk
-               if (self%count_type(ia) == 0 .or. self%count_type(ib) == 0) cycle
-               rho_b = real(self%count_type(ib), rk)/self%volume
-               if (rho_b*shell > 0.0_rk) g_partial(ia, ib, k) = &
-                  (self%histogram(ia, ib, k)/real(self%nhist, rk)) &
-                  /(real(self%count_type(ia), rk)*shell*rho_b)
-            end do
-         end do
-      end do
+      call debye_fill_g_partial(self, g_partial, r, .false.)
 
       ! Total g(r), scattering weighted with the q -> 0 amplitudes.
       do t = 1, self%ntypes
@@ -419,6 +410,211 @@ contains
       end if
       deallocate (g_partial, g_total, r, weight, labels)
    end subroutine debye_write_rdf
+
+   !> Fill the partial g_ab(r) from the accumulated histogram.
+   !!
+   !! With `exact_shell = .false.` the historical midpoint shell
+   !! 4 pi r_k^2 dr is used (the --rdf output); with `.true.` the exact
+   !! shell volume of the bin is used (the pair-entropy integral).
+   subroutine debye_fill_g_partial(self, g_partial, r, exact_shell)
+      class(debye_structure_factor_t), intent(in) :: self
+      real(rk), intent(out) :: g_partial(:, :, :)
+      real(rk), intent(out) :: r(:)
+      logical, intent(in) :: exact_shell
+      real(rk) :: shell, rho_b, rlo, rhi
+      integer :: k, ia, ib
+
+      do k = 1, self%nbins
+         r(k) = (real(k, rk) - 0.5_rk)*self%dr
+         if (exact_shell) then
+            rlo = max(0.0_rk, r(k) - 0.5_rk*self%dr)
+            rhi = r(k) + 0.5_rk*self%dr
+            shell = 4.0_rk*acos(-1.0_rk)/3.0_rk*(rhi**3 - rlo**3)
+         else
+            shell = 4.0_rk*acos(-1.0_rk)*r(k)**2*self%dr
+         end if
+         do ia = 1, self%ntypes
+            do ib = 1, self%ntypes
+               g_partial(ia, ib, k) = 0.0_rk
+               if (self%count_type(ia) == 0 .or. self%count_type(ib) == 0) cycle
+               rho_b = real(self%count_type(ib), rk)/self%volume
+               if (rho_b*shell > 0.0_rk) g_partial(ia, ib, k) = &
+                  (self%histogram(ia, ib, k)/real(self%nhist, rk)) &
+                  /(real(self%count_type(ia), rk)*shell*rho_b)
+            end do
+         end do
+      end do
+   end subroutine debye_fill_g_partial
+
+   !> Total and partial pair entropy from the Debye g(r).
+   subroutine debye_write_pair_entropy(self, scheme, path, accum_path, input, ierr, message)
+      class(debye_structure_factor_t), intent(in) :: self
+      type(weight_scheme_t), intent(in) :: scheme
+      character(len=*), intent(in) :: path, accum_path, input
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk), allocatable :: g_partial(:, :, :), r(:)
+      real(rk), allocatable :: s2_partial(:), s2_curve(:, :), s2_total_curve(:)
+      real(rk) :: rho, xa, xb, gf, integrand, shell, rlo, rhi, cum, total, bias
+      character(len=18), allocatable :: labels(:)
+      integer :: npair, k, ia, ib, p, unit
+      logical :: hdf5_out
+
+      ierr = 0
+      message = ''
+      npair = self%ntypes*(self%ntypes + 1)/2
+      allocate (g_partial(self%ntypes, self%ntypes, self%nbins), r(self%nbins))
+      allocate (s2_partial(npair), s2_curve(self%nbins, npair), s2_total_curve(self%nbins))
+      allocate (labels(npair))
+
+      call debye_fill_g_partial(self, g_partial, r, .true.)
+
+      ! Symmetrize the cross partials before the nonlinear integrand.
+      do k = 1, self%nbins
+         do ia = 1, self%ntypes
+            do ib = ia + 1, self%ntypes
+               gf = 0.5_rk*(g_partial(ia, ib, k) + g_partial(ib, ia, k))
+               g_partial(ia, ib, k) = gf
+               g_partial(ib, ia, k) = gf
+            end do
+         end do
+      end do
+
+      rho = real(self%natoms, rk)/self%volume
+      p = 0
+      do ia = 1, self%ntypes
+         do ib = ia, self%ntypes
+            p = p + 1
+            labels(p) = scheme%pair_label(ia, ib)
+            if ((ia == ib .and. self%count_type(ia) <= 1) .or. &
+                (ia /= ib .and. (self%count_type(ia) == 0 .or. self%count_type(ib) == 0))) then
+               s2_curve(:, p) = 0.0_rk
+               s2_partial(p) = 0.0_rk
+               cycle
+            end if
+            xa = real(self%count_type(ia), rk)/real(self%natoms, rk)
+            xb = real(self%count_type(ib), rk)/real(self%natoms, rk)
+            cum = 0.0_rk
+            do k = 1, self%nbins
+               rlo = max(0.0_rk, r(k) - 0.5_rk*self%dr)
+               rhi = r(k) + 0.5_rk*self%dr
+               shell = 4.0_rk*acos(-1.0_rk)/3.0_rk*(rhi**3 - rlo**3)
+               gf = g_partial(ia, ib, k)
+               if (gf > 0.0_rk) then
+                  integrand = gf*log(gf) - gf + 1.0_rk
+               else
+                  integrand = 1.0_rk
+               end if
+               ! Leading-order Poisson bias of the nonlinear integrand.
+               ! The histogram g_ab is noisy, and E[g ln g - g + 1] carries a
+               ! positive 1/(2 c) bias (c = the ideal pair count scale), which
+               ! would otherwise make even an ideal gas look non-zero.  The
+               ! correction is exact to O(1/c^2) and needs no extra parameter.
+               bias = self%volume/(2.0_rk*real(self%nhist, rk) &
+                      *real(self%count_type(ia), rk)*real(self%count_type(ib), rk))
+               cum = cum + shell*integrand - bias
+               s2_curve(k, p) = -2.0_rk*acos(-1.0_rk)*rho*xa*xb*cum
+            end do
+            s2_partial(p) = s2_curve(self%nbins, p)
+         end do
+      end do
+
+      s2_total_curve = 0.0_rk
+      total = 0.0_rk
+      p = 0
+      do ia = 1, self%ntypes
+         do ib = ia, self%ntypes
+            p = p + 1
+            if (ia == ib) then
+               s2_total_curve = s2_total_curve + s2_curve(:, p)
+               total = total + s2_partial(p)
+            else
+               s2_total_curve = s2_total_curve + 2.0_rk*s2_curve(:, p)
+               total = total + 2.0_rk*s2_partial(p)
+            end if
+         end do
+      end do
+
+      hdf5_out = index(path, '.h5') > 0 .or. index(path, '.hdf5') > 0
+      if (hdf5_out) then
+#ifdef SQC_HAVE_HDF5
+         call hdf5_write_pair_entropy(path, r, s2_partial, total, s2_curve, s2_total_curve, &
+                                      labels, self%natoms, self%volume, self%nframes, &
+                                      self%rmax, self%dr, .false., ierr, message)
+#else
+         ierr = 1
+         message = 'this build has no HDF5 support; use a text file name for --pair-entropy'
+#endif
+         if (ierr /= 0) return
+      else
+         open (newunit=unit, file=trim(path), status='replace', action='write', iostat=ierr)
+         if (ierr /= 0) then
+            message = 'cannot write the pair entropy file "'//trim(path)//'"'
+            return
+         end if
+         write (unit, '(a)') '# sqcalc 0.1.0 pair entropy from Debye g(r)'
+         write (unit, '(a,a,a,i0,a,f0.6,a,i0,a,f0.6,a,f0.6)') '# input ', trim(input), &
+            '  natoms ', self%natoms, '  volume ', self%volume, '  nframes ', self%nframes, &
+            '  rmax ', self%rmax, '  dr ', self%dr
+         write (unit, '(a)', advance='no') '# counts'
+         do ia = 1, self%ntypes
+            write (unit, '(1x,i0)', advance='no') self%count_type(ia)
+         end do
+         write (unit, '(a)') ''
+         write (unit, '(a)') '# units kB per particle'
+         write (unit, '(a)') '# pair S2/kB'
+         write (unit, '(a,2x,es20.12)') 'total', total
+         do k = 1, npair
+            write (unit, '(a,2x,es20.12)') trim(labels(k)), s2_partial(k)
+         end do
+         close (unit)
+      end if
+
+      if (len_trim(accum_path) > 0) then
+         hdf5_out = index(accum_path, '.h5') > 0 .or. index(accum_path, '.hdf5') > 0
+         if (hdf5_out) then
+#ifdef SQC_HAVE_HDF5
+            call hdf5_write_pair_entropy(accum_path, r, s2_partial, total, s2_curve, &
+                                         s2_total_curve, labels, self%natoms, self%volume, &
+                                         self%nframes, self%rmax, self%dr, .true., ierr, message)
+#else
+            ierr = 1
+            message = 'this build has no HDF5 support; use a text file name for --s2-accum'
+#endif
+            if (ierr /= 0) return
+         else
+            open (newunit=unit, file=trim(accum_path), status='replace', action='write', iostat=ierr)
+            if (ierr /= 0) then
+               message = 'cannot write the S2 accumulation file "'//trim(accum_path)//'"'
+               return
+            end if
+            write (unit, '(a)') '# sqcalc 0.1.0 S2 accumulation from Debye g(r)'
+            write (unit, '(a,a,a,i0,a,f0.6,a,i0,a,f0.6,a,f0.6)') '# input ', trim(input), &
+               '  natoms ', self%natoms, '  volume ', self%volume, '  nframes ', self%nframes, &
+               '  rmax ', self%rmax, '  dr ', self%dr
+            write (unit, '(a)', advance='no') '# counts'
+            do ia = 1, self%ntypes
+               write (unit, '(1x,i0)', advance='no') self%count_type(ia)
+            end do
+            write (unit, '(a)') ''
+            write (unit, '(a)', advance='no') '# r S2_total(r)/kB'
+            do k = 1, npair
+               write (unit, '(a)', advance='no') ' S2('//trim(labels(k))//')(r)/kB'
+            end do
+            write (unit, '(a)') ''
+            do k = 1, self%nbins
+               write (unit, '(f12.6,2x,es20.12)', advance='no') r(k), s2_total_curve(k)
+               do p = 1, npair
+                  write (unit, '(2x,es20.12)', advance='no') s2_curve(k, p)
+               end do
+               write (unit, '(a)') ''
+            end do
+            close (unit)
+         end if
+      end if
+
+      deallocate (g_partial, r, s2_partial, s2_curve, s2_total_curve, labels)
+   end subroutine debye_write_pair_entropy
 
    !> HDF5 flavour of the RDF output.
    subroutine write_rdf_hdf5(self, labels, path, r, g_total, g_partial, ierr, message)

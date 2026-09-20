@@ -29,7 +29,7 @@ program sqcalc
    class(frame_reader_t), allocatable :: reader
    class(structure_factor_t), allocatable :: method
    type(frame_t) :: frame
-   character(len=512) :: message
+   character(len=512) :: message, accum
    integer :: ierr, shell_unit, grid_unit, tick, tick_rate, progress_step
    integer(ik) :: natoms, step
    real(rk) :: ref_a(3, 3), elapsed, wall0, wall1, eps_used
@@ -96,6 +96,9 @@ program sqcalc
          method%skin = opts%skin
          method%correct_cutoff = .not. opts%no_cutoff_correction
          if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
+         if (allocated(opts%pair_entropy_output)) method%pair_entropy_path = &
+            opts%pair_entropy_output
+         if (allocated(opts%s2_accum_output)) method%s2_accum_path = opts%s2_accum_output
       end select
    case (method_dynamic)
       allocate (dynamics_structure_factor_t :: method)
@@ -272,6 +275,19 @@ program sqcalc
       if (ierr /= 0) then
          write (error_unit, '(a)') 'sqcalc: '//trim(message)
          stop 20
+      end if
+   end if
+   if (opts%method == method_debye .and. allocated(opts%pair_entropy_output)) then
+      select type (method)
+      type is (debye_structure_factor_t)
+         accum = ''
+         if (allocated(method%s2_accum_path)) accum = method%s2_accum_path
+         call method%write_pair_entropy(opts%scheme, method%pair_entropy_path, trim(accum), &
+                                        opts%input, ierr, message)
+      end select
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 30
       end if
    end if
    call open_output(opts%output, shell_unit, ierr, message)
