@@ -93,6 +93,8 @@ module sqc_options
       logical :: s4_cutoff_given = .false.
       real(rk) :: s4_buffer_gb = 2.0_rk
       logical :: s4_buffer_given = .false.
+      integer :: s4_stride = 1
+      logical :: s4_stride_given = .false.
       integer :: s4_format = grid_format_text
       integer :: chi4_format = grid_format_text
       logical :: s4_format_given = .false.
@@ -167,7 +169,8 @@ contains
                   '--device', '--gpu-id', '--precision', '--grid-format', &
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fsq', '--sqw-format', &
-                  '--s4', '--chi4', '--s4-cutoff', '--s4-format', '--s4-buffer-limit')
+                  '--s4', '--chi4', '--s4-cutoff', '--s4-format', '--s4-buffer-limit', &
+                  '--s4-stride')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -346,6 +349,14 @@ contains
                      return
                   end if
                   self%s4_buffer_given = .true.
+               case ('--s4-stride')
+                  read (value, *, iostat=ierr) self%s4_stride
+                  if (ierr /= 0 .or. self%s4_stride < 1) then
+                     ierr = 1
+                     message = '--s4-stride must be a positive integer'
+                     return
+                  end if
+                  self%s4_stride_given = .true.
                case ('--s4-format')
                   select case (trim(value))
                   case ('text', 'txt', 'ascii')
@@ -490,9 +501,16 @@ contains
                message = '--s4 and --chi4 need --s4-cutoff A'
                return
             end if
-         else if (self%s4_cutoff_given .or. self%s4_format_given .or. self%s4_buffer_given) then
+            if (self%s4_stride > self%maxframes) then
+               ierr = 1
+               message = '--s4-stride cannot exceed --maxframes'
+               return
+            end if
+         else if (self%s4_cutoff_given .or. self%s4_format_given .or. self%s4_buffer_given .or. &
+                  self%s4_stride_given) then
             ierr = 1
-            message = '--s4-cutoff, --s4-format and --s4-buffer-limit belong to --s4 or --chi4'
+            message = '--s4-cutoff, --s4-format, --s4-buffer-limit and --s4-stride '// &
+               'belong to --s4 or --chi4'
             return
          end if
       else if (allocated(self%sqw_output) .or. allocated(self%fsq_output) .or. &
@@ -502,10 +520,10 @@ contains
          return
       else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
                self%sqw_format_given .or. self%s4_cutoff_given .or. self%s4_format_given .or. &
-               self%s4_buffer_given) then
+               self%s4_buffer_given .or. self%s4_stride_given) then
          ierr = 1
          message = '--dt, --maxframes, --lag, --sqw-format, --s4-cutoff, '// &
-            '--s4-format and --s4-buffer-limit belong to --dyn'
+            '--s4-format, --s4-buffer-limit and --s4-stride belong to --dyn'
          return
       end if
       if (self%method == method_debye) then
@@ -672,6 +690,7 @@ contains
       write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
       write (unit, '(a)') '      --s4-format NAME  text (default) or hdf5 for --s4 and --chi4'
       write (unit, '(a)') '      --s4-buffer-limit GB  position buffer limit for --s4/--chi4 (default 2.0)'
+      write (unit, '(a)') '      --s4-stride N   use every N-th frame for S4/chi4 (default 1)'
       write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
       write (unit, '(a)') '      --partials      write the partial structure factor columns (default)'
       write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'

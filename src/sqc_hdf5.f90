@@ -213,7 +213,7 @@ contains
    !! dataset S) or "fsq" (axis tau, dataset F).
    subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
                                   nframes, frame_dt, maxframes, lag, weight, norm, overlap, &
-                                  ierr, message)
+                                  s4_stride, s4_maxframes, ierr, message)
       character(len=*), intent(in) :: path, group, axis_name, weight, norm
       real(rk), intent(in) :: q(:, :)          ! (nq, 4): qx qy qz |q|
       real(rk), intent(in) :: axis(0:)
@@ -224,7 +224,7 @@ contains
       integer(lk), intent(in) :: nframes
       real(rk), intent(in) :: frame_dt
       real(rk), intent(in) :: overlap
-      integer, intent(in) :: maxframes, lag
+      integer, intent(in) :: maxframes, lag, s4_stride, s4_maxframes
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id, subgroup_id
@@ -273,6 +273,12 @@ contains
       if (ierr == 0) call write_string_attr(file_id, 'norm', trim(norm), ierr, message)
       if (ierr == 0 .and. overlap >= 0.0_rk) then
          call write_real_attr(file_id, 'overlap', real(overlap, real64), ierr, message)
+      end if
+      if (ierr == 0 .and. s4_stride > 0) then
+         call write_int_attr(file_id, 's4_stride', int(s4_stride, int64), ierr, message)
+      end if
+      if (ierr == 0 .and. s4_maxframes > 0) then
+         call write_int_attr(file_id, 's4_maxframes', int(s4_maxframes, int64), ierr, message)
       end if
       if (ierr /= 0) then
          call h5fclose_f(file_id, idum)
@@ -340,13 +346,13 @@ contains
    !> Average overlap Q(t) and dynamic susceptibility chi4(t): one value per
    !! lag, with the time origins counted at every lag.
    subroutine hdf5_write_chi4(path, axis, overlap, chi4, count, nframes, frame_dt, &
-                              maxframes, lag, cutoff, ierr, message)
+                              maxframes, lag, cutoff, s4_stride, s4_maxframes, ierr, message)
       character(len=*), intent(in) :: path
       real(rk), intent(in) :: axis(0:), overlap(0:), chi4(0:)
       integer(lk), intent(in) :: count(0:)
       integer(lk), intent(in) :: nframes
       real(rk), intent(in) :: frame_dt, cutoff
-      integer, intent(in) :: maxframes, lag
+      integer, intent(in) :: maxframes, lag, s4_stride, s4_maxframes
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id
@@ -373,6 +379,9 @@ contains
       if (ierr == 0) call write_int_attr(file_id, 'lag', int(lag, int64), ierr, message)
       if (ierr == 0) call write_int_attr(file_id, 'naxis', int(naxis, int64), ierr, message)
       if (ierr == 0) call write_real_attr(file_id, 'overlap', real(cutoff, real64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 's4_stride', int(s4_stride, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 's4_maxframes', int(s4_maxframes, int64), &
+                                         ierr, message)
       if (ierr == 0) call write_string_attr(file_id, 'quantity', 'chi4', ierr, message)
       if (ierr == 0) call write_string_attr(file_id, 'axis', 'tau', ierr, message)
       if (ierr == 0) call write_string_attr(file_id, 'weight', 'unit', ierr, message)

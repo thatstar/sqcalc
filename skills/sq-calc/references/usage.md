@@ -44,6 +44,7 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
 | `--s4-format NAME` | `text` (default) or `hdf5`, applies to `--s4` and `--chi4` |
 | `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0; GB = $10^9$ bytes) |
+| `--s4-stride N` | use every N-th dump frame for `--s4`/`--chi4` (default 1) |
 | `-q, --quiet` | suppress the progress output on stderr |
 | `-h, --help` | option summary |
 | `-v, --version` | program version |
@@ -260,9 +261,20 @@ to evaluate the overlap, but it skips the q-resolved sums, so it is much
 cheaper.  The full $S_4$ calculation is dominated by the per-atom displacement
 check and the phase sum over the atoms inside the cutoff; a large `--lag`
 (more widely spaced time origins) and a short, low-$q$ line are the practical
-ways to control the cost.  The position buffer grows with `--maxframes`;
+ways to control the cost.  The position buffer grows with the effective S4
+window (`--maxframes` divided by `--s4-stride`, rounded down);
 `--s4-buffer-limit GB` sets its limit (default 2.0, GB = $10^9$ bytes) and an
 oversized request is rejected before any large allocation.
+
+`--s4-stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+contributes, the lag axis is $0, N, 2N, \ldots$ dump frames, and the position
+buffer stores only those frames.  This reduces the buffer and the S4/chi4
+work by roughly a factor $N$, at the cost of a coarser time axis.  The
+coherent $F(q,t)/S(q,\omega)$ outputs still use every dump frame and the full
+`--maxframes`; the S4/chi4 window is reduced to the largest multiple of $N$
+that does not exceed `--maxframes`, and the run summary prints a note when
+that happens.  `--lag` is still counted in dump frames, so with stride $N$,
+`--lag m` selects origins every $m$ dump frames, not every $m$ S4 samples.
 
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the

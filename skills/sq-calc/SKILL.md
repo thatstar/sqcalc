@@ -104,8 +104,10 @@ and `--dr` instead of the box sets the usable q range.
   meaningful `--s4-cutoff` (a fraction of the particle diameter), and the
   full $S_4$ calculation is the most expensive dynamic output; use a large
   `--lag` and a short low-$q$ line when needed.  The position buffer is
-  limited to 2 GB by default (`--s4-buffer-limit GB` raises it), and a run
-  with only `--s4`/`--chi4` skips the coherent $F(q,t)/S(q,\omega)$ buffers.
+  limited to 2 GB by default (`--s4-buffer-limit GB` raises it), and
+  `--s4-stride N` subsamples the S4/chi4 trajectory to reduce both the buffer
+  and the work.  A run with only `--s4`/`--chi4` skips the coherent
+  $F(q,t)/S(q,\omega)$ buffers.
 * The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.

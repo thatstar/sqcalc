@@ -28,22 +28,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ref_sqw import read_dump, unwrap_frames  # noqa: E402  (sibling module)
 
 
-def four_point(frames, qvec, cutoff, maxframes, lag):
+def four_point(frames, qvec, cutoff, maxframes, lag, stride):
     """Return S4(q,lag), Q(lag), chi4(lag) and the origin counts."""
     nq = len(qvec)
     natoms = len(frames[0][1])
-    s4_a = np.zeros((nq, maxframes + 1))
-    s4_b = np.zeros((nq, maxframes + 1), dtype=complex)
-    chi4_a = np.zeros(maxframes + 1)
-    chi4_b = np.zeros(maxframes + 1)
-    counts = np.zeros(maxframes + 1, dtype=int)
+    nsteps = maxframes // stride
+    s4_a = np.zeros((nq, nsteps + 1))
+    s4_b = np.zeros((nq, nsteps + 1), dtype=complex)
+    chi4_a = np.zeros(nsteps + 1)
+    chi4_b = np.zeros(nsteps + 1)
+    counts = np.zeros(nsteps + 1, dtype=int)
     cutoff2 = cutoff * cutoff
 
     for frame_index, (_, _, pos, _) in enumerate(frames):
-        for ell in range(min(frame_index, maxframes) + 1):
-            if (frame_index - ell) % lag:
+        if frame_index % stride:
+            continue
+        sample = frame_index // stride
+        for ell in range(min(sample, nsteps) + 1):
+            if (frame_index - ell * stride) % lag:
                 continue
-            origin = frames[frame_index - ell][2]
+            origin = frames[frame_index - ell * stride][2]
             displacement = pos - origin
             inside = np.einsum("ij,ij->i", displacement, displacement) <= cutoff2
             nover = int(np.count_nonzero(inside))
@@ -57,10 +61,10 @@ def four_point(frames, qvec, cutoff, maxframes, lag):
             s4_b[:, ell] += w
             s4_a[:, ell] += np.abs(w) ** 2
 
-    s4 = np.zeros((nq, maxframes + 1))
-    overlap = np.zeros(maxframes + 1)
-    chi4 = np.zeros(maxframes + 1)
-    for ell in range(maxframes + 1):
+    s4 = np.zeros((nq, nsteps + 1))
+    overlap = np.zeros(nsteps + 1)
+    chi4 = np.zeros(nsteps + 1)
+    for ell in range(nsteps + 1):
         n = counts[ell]
         if n > 0:
             overlap[ell] = (chi4_b[ell] / n) / natoms
@@ -96,6 +100,7 @@ def main():
     parser.add_argument("--dyn", required=True, help="NINT,S0,S1,DX,DY,DZ")
     parser.add_argument("--maxframes", type=int, required=True)
     parser.add_argument("--lag", type=int, default=1)
+    parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--output-s4", default=None)
@@ -110,8 +115,10 @@ def main():
     qvec = scale[:, None] * direction[None, :]
 
     frames = unwrap_frames(list(read_dump(args.input)))
-    s4, overlap, chi4, _ = four_point(frames, qvec, args.cutoff, args.maxframes, args.lag)
-    tau = np.arange(args.maxframes + 1) * args.dt
+    nsteps = args.maxframes // args.stride
+    s4, overlap, chi4, _ = four_point(frames, qvec, args.cutoff, args.maxframes, args.lag,
+                                      args.stride)
+    tau = np.arange(nsteps + 1) * args.stride * args.dt
     if args.output_s4:
         write_s4(args.output_s4, qvec, tau, s4)
     if args.output_chi4:

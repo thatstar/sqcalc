@@ -797,6 +797,38 @@ def main():
     compare(read_matrix(path("s4_limit.dat"))[:, 4].reshape(-1, 1),
             s4[:, 4].reshape(-1, 1), "S4 with --s4-buffer-limit 0.001", rtol=1.0e-9)
 
+    # --s4-stride subsamples the S4/chi4 trajectory.  maxframes is rounded
+    # down to a multiple of the stride; the coherent window is unchanged.
+    for stride in (2, 3):
+        run([exe, "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
+             "--s4-cutoff", s4_cutoff, "--s4-stride", str(stride),
+             "--s4", path("s4_stride.dat"), "--chi4", path("chi4_stride.dat"),
+             path("s4_stride_sq.dat")])
+        run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
+             "--maxframes", "8", "--lag", "1", "--stride", str(stride), "--dt", "1",
+             "--cutoff", s4_cutoff, "--output-s4", path("s4_stride_ref.dat"),
+             "--output-chi4", path("chi4_stride_ref.dat")])
+        compare(read_matrix(path("s4_stride.dat")), read_matrix(path("s4_stride_ref.dat")),
+                "S4 stride %d vs reference" % stride, rtol=1.0e-9)
+        compare(read_matrix(path("chi4_stride.dat")), read_matrix(path("chi4_stride_ref.dat")),
+                "chi4 stride %d vs reference" % stride, rtol=1.0e-9)
+
+    s4_round = ["--dyn", s4_spec, "--dt", "1", "--maxframes", "9"]
+    run([exe, "-i", diff_dump, "-w", "unit", *s4_round, "--lag", "1",
+         "--s4-cutoff", s4_cutoff, "--s4-stride", "2", "--s4", path("s4_round.dat"),
+         "--chi4", path("chi4_round.dat"), path("s4_round_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--dyn", s4_spec,
+         "--maxframes", "9", "--lag", "1", "--stride", "2", "--dt", "1",
+         "--cutoff", s4_cutoff, "--output-s4", path("s4_round_ref.dat"),
+         "--output-chi4", path("chi4_round_ref.dat")])
+    compare(read_matrix(path("s4_round.dat")), read_matrix(path("s4_round_ref.dat")),
+            "S4 stride rounding vs reference", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_round.dat")), read_matrix(path("chi4_round_ref.dat")),
+            "chi4 stride rounding vs reference", rtol=1.0e-9)
+    if read_matrix(path("s4_round.dat"))[:, 3].max() != 8.0:
+        raise SystemExit("FAIL maxframes 9 with stride 2 should use an effective window of 8")
+    print("  ok   %-42s effective window 8" % "S4 stride rounding")
+
     # The origin stride is shared with the coherent correlations.
     s4_lag = s4_base + ["--lag", "3"]
     run([exe, "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
@@ -904,6 +936,12 @@ def main():
          "--s4-buffer-limit without --s4/--chi4"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
           "--s4-buffer-limit", "0", "--s4", "s.dat"], "--s4-buffer-limit zero"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
+          "--s4-stride", "9", "--s4", "s.dat"], "--s4-stride exceeds --maxframes"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
+          "--s4-stride", "0", "--s4", "s.dat"], "--s4-stride zero"),
+        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8", "--s4-stride", "2"],
+         "--s4-stride without --s4/--chi4"),
     ]
     rejected = 0
     for options, label in bad:

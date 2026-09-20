@@ -114,6 +114,7 @@ program sqcalc
          method%coherent_enabled = allocated(opts%sqw_output) .or. allocated(opts%fsq_output)
          method%s4_cutoff = opts%s4_cutoff
          method%s4_buffer_gb = opts%s4_buffer_gb
+         method%s4_stride = opts%s4_stride
          method%s4_format = dyn_format_text
          if (opts%s4_format == grid_format_hdf5) method%s4_format = dyn_format_hdf5
          method%chi4_format = dyn_format_text
@@ -441,8 +442,15 @@ contains
          if (m%s4_enabled .or. m%chi4_enabled) then
             write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
                ' (S4/chi4 use unit weights)'
+            write (error_unit, '(a,i0,a,i0,a,i0,a)') '  S4 stride  : ', m%s4_stride, &
+               ' dump frames, effective maxframes ', m%s4_maxframes, ' (requested ', &
+               m%maxframes, ')'
+            if (m%s4_maxframes /= m%maxframes) then
+               write (error_unit, '(a)') '  note       : the S4/chi4 window was reduced to a '// &
+                  'multiple of --s4-stride; the coherent F(q,t)/S(q,w) window is unchanged'
+            end if
             write (error_unit, '(a,f0.4,a,f0.4,a)') '  S4 buffer  : ', &
-               24.0_rk*real(m%natoms, rk)*real(m%maxframes + 1, rk)/1.0e9_rk, &
+               24.0_rk*real(m%natoms, rk)*real(m%s4_nsteps + 1, rk)/1.0e9_rk, &
                ' GB (limit ', m%s4_buffer_gb, ' GB)'
          end if
       class default

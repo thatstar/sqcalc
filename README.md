@@ -121,6 +121,7 @@ With `--dyn` these options select the $q$ line and the correlation window:
 | `--s4-cutoff A` | overlap cutoff $a$, required by `--s4` and `--chi4` |
 | `--s4-format NAME` | `text` (default) or `hdf5` for `--s4` and `--chi4` |
 | `--s4-buffer-limit GB` | position buffer limit for `--s4`/`--chi4` (default 2.0 GB) |
+| `--s4-stride N` | use every N-th dump frame for `--s4`/`--chi4` (default 1) |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -343,10 +344,22 @@ The calculation is more expensive than $F(q,t)$ because every atom and every
 lag has to be compared with its origin position, and every atom inside the
 cutoff contributes to every $q$ mode.  A large `--lag` thins the time origins,
 and a short, low-$q$ line is usually enough for the Ornstein-Zernike fit.  The
-position ring buffer grows with `--maxframes`; `--s4-buffer-limit GB` sets its
-limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size is
-printed in the run summary, and an oversized request is rejected before any
+position ring buffer grows with the effective window; `--s4-buffer-limit GB`
+sets its limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size
+is printed in the run summary, and an oversized request is rejected before any
 large allocation.
+
+`--s4-stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+contributes, the lag axis becomes $0, N, 2N, \ldots$ in dump frames, and the
+position buffer stores only those frames.  This reduces both the buffer and
+the S4/chi4 work by roughly a factor $N$, at the cost of a coarser time axis.
+The coherent $F(q,t)/S(q,\omega)$ outputs still use every dump frame and the
+full `--maxframes`; only the S4/chi4 window is reduced to the largest multiple
+of $N$ that does not exceed `--maxframes`.  The run summary prints the
+effective window and a note when it is shorter than the requested one.
+`--lag` keeps its meaning in dump frames: an origin is used when its original
+frame index is a multiple of `--lag`, so with stride $N$, `--lag m` gives an
+origin every $m$ dump frames, not every $m$ S4 samples.
 
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
