@@ -5,10 +5,10 @@
 
 !> Cell list for pair enumeration (triclinic cells, per-direction periodicity).
 !!
-!! Adapted from the nnap2 neighbour list (`~/develop/nnap2/src/neighbour_list.f90`)
-!! to the sqcalc conventions: kinds from `sqc_kinds`, geometry from `sqc_cell`,
-!! errors through `ierr`/`message` instead of `stop`, and an interface aimed at
-!! pair-distance histograms rather than atomic environments.
+!! Adapted from the nnap2 neighbour list to the sqcalc conventions: kinds from
+!! `sqc_kinds`, geometry from `sqc_cell`, errors through `ierr`/`message` instead
+!! of `stop`, and an interface aimed at pair-distance histograms rather than
+!! atomic environments.
 !!
 !! Working principle (unchanged from nnap2):
 !!
