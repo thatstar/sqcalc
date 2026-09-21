@@ -37,7 +37,7 @@ logs clean.
 | `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
 | `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor and overlap (see below) |
-| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC` or `grid:QMAX` |
+| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` |
 | `--dyn-modes N` | mode budget of `--dyn-q grid`: 0 = unlimited (default) |
 | `--dyn-thin KIND` | order of the mode thinning: `shells` (default) or `orbits` |
 | `--dyn-keep-modes` | write the grid rows per lattice vector instead of the `\|q\|` shell average |
@@ -198,6 +198,7 @@ space is sampled,
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
 | `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
+| `single:N1,N2,N3` | one reciprocal-lattice vector of the box | all |
 
 Without q points there is no $S(q)$ at all: the run takes no `OUTPUT` table,
 and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the
@@ -294,6 +295,24 @@ trajectory is not equilibrated or the system is not isotropic, and then
 neither the orbit reduction nor an isotropic correlation length may be
 trusted.  The per-mode numbers behind it are in the `S4` table of a
 `--dyn-keep-modes` run.
+
+#### One lattice vector
+
+`single:N1,N2,N3` samples exactly one reciprocal-lattice vector of the box,
+
+$$
+\mathbf q = N_1 \mathbf b_1 + N_2 \mathbf b_2 + N_3 \mathbf b_3,
+$$
+
+with integer indices that may be negative.  This is the exact way to ask for a
+single lattice mode: the vector is built from the integers, so it sits on the
+lattice however the box is oriented, whereas a hand written $|q|$ on a `line:`
+would be a few ulps away, and a density amplitude that is even slightly off the
+lattice stops being independent of the choice of the periodic images.  The
+table has one row, labelled by $|\mathbf q|$, while the header carries the
+indices and the vector.  `single:0,0,0` is the Gamma point, whose $S_4$ row is
+$\chi_4(t)$; a run that wants only $Q(t)$ and $\chi_4(t)$ is cheaper with
+`--dyn-q -` and `--chi4`.
 
 The dynamics come from the same density amplitudes $\rho_a(q,t)$, evaluated by
 direct summation at the sampled $q$ and correlated in time with a multi-origin

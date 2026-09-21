@@ -49,13 +49,14 @@ module sqc_dynamics
    private
 
    public :: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
-             dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
+             dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
 
    !> q sampling modes of a dynamic run (`--dyn-q`).
    integer, parameter :: dyn_q_none = 0
    integer, parameter :: dyn_q_line = 1
    integer, parameter :: dyn_q_shell = 2
    integer, parameter :: dyn_q_grid = 3
+   integer, parameter :: dyn_q_single = 4
 
    !> Output flavours of the two optional files.
    integer, parameter :: dyn_format_text = 0
@@ -96,6 +97,10 @@ module sqc_dynamics
       logical :: grid_budget_met = .true.
       !> Lattice shell and orbit multiplicity of every mode (grid sampling).
       integer, allocatable :: grid_shell(:), grid_orbit(:), orbit_mult(:)
+      !> Single lattice vector sampling (`--dyn-q single`): the Miller indices
+      !! and the q vector they build.
+      integer :: single_index(3) = 0
+      real(rk) :: single_q(3) = 0.0_rk
       !> Modes of the grid before the rows were collapsed onto the shells, and
       !! whether the per-mode rows were kept instead.
       integer :: grid_nmodes = 0
@@ -308,6 +313,22 @@ contains
          self%grid_budget_met = grid%budget_met
          self%grid_nmodes = int(self%nmodes)
          call grid%finalize()
+      case (dyn_q_single)
+         ! One reciprocal-lattice vector, built from its Miller indices so that
+         ! it sits exactly on the lattice.  The row is labelled by |q|, while
+         ! the indices, the vector and its length all go into the table header.
+         self%nmodes = 1
+         allocate (self%qvec(3, 1), self%qlen(1), self%shell(1), self%gidx(1))
+         self%single_q = matmul(frame%cell%b, real(self%single_index, rk))
+         self%qlen(1) = sqrt(sum(self%single_q**2))
+         ! qvec is what the density amplitude uses, so it keeps the true vector
+         ! here; the rows are relabelled by |q| once the accumulation is done.
+         self%qvec(:, 1) = self%single_q
+         self%shell(1) = 1
+         self%gidx(1) = 1
+         self%shell_dq = 0.0_rk
+         self%qmin = self%qlen(1)
+         self%qmax = self%qlen(1)
       case default
          ! No q points at all: the scalar overlap Q(t)/chi4(t) is all that is
          ! left, and it needs neither the density amplitudes nor a table.
@@ -881,6 +902,10 @@ contains
       ! that needs the individual lattice vectors asks for them with
       ! --dyn-keep-modes.
       if (self%q_mode == dyn_q_grid .and. .not. self%keep_modes) call dyn_collapse_shells(self)
+      ! A single lattice vector is accumulated at its true q, which is what the
+      ! density amplitude needs; its rows are labelled by |q| instead, with the
+      ! indices and the vector left to the table header.
+      if (self%q_mode == dyn_q_single) self%qvec(:, 1) = [0.0_rk, 0.0_rk, self%qlen(1)]
    end subroutine dyn_prepare_output
 
    !> Collapse the grid tables onto one row per lattice shell.
@@ -1752,6 +1777,11 @@ contains
          end if
          return
       end if
+      if (self%q_mode == dyn_q_single) then
+         write (unit, '(a,3(i0,1x),a,3(f10.6,1x),a,f10.6,a)') '# q single n = (', &
+            self%single_index, ') -> q = (', self%single_q, ') 1/A, |q| = ', self%qlen(1), ' 1/A'
+         return
+      end if
       unorm = sqrt(sum(self%direction**2))
       write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
          ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
@@ -1783,6 +1813,8 @@ contains
       select case (self%q_mode)
       case (dyn_q_grid)
          sampling = 'grid'
+      case (dyn_q_single)
+         sampling = 'single'
       case (dyn_q_shell)
          sampling = 'shell'
       case default
@@ -1835,7 +1867,7 @@ contains
                                self%nframes, self%frame_dt, maxframes_use, self%lag_stride, &
                                trim(wlabel), trim(nlabel), overlap, stride_use, &
                                effective_maxframes_use, trim(sampling), self%grid_budget, &
-                               self%grid_thinned, ierr, message)
+                               self%grid_thinned, self%single_index, ierr, message)
       deallocate (q4, labels, count_use)
    end subroutine dyn_write_hdf5
 #endif

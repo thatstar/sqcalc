@@ -256,6 +256,7 @@ reciprocal space sampling is a separate choice, `--dyn-q`:
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
 | `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
+| `single:N1,N2,N3` | one reciprocal-lattice vector of the box | all |
 
 With `grid:QMAX` the q points are the reciprocal-lattice vectors of the box with
 $|\mathbf q| \le Q_{\max}$, plus the $\Gamma$ point.  Only a lattice vector
@@ -266,6 +267,14 @@ lattice vectors of that $|q|$ with their orbit multiplicities, the $\Gamma$ row
 is $\chi_4(t)$, and a run with `--s4` also reports the spread of the symmetry
 related modes of the smallest shell, which is the isotropy assumption behind
 the reduction.  Add `--dyn-keep-modes` for the per-vector rows.
+
+With `single:N1,N2,N3` the run samples exactly one reciprocal-lattice vector,
+$\mathbf q = N_1\mathbf b_1 + N_2\mathbf b_2 + N_3\mathbf b_3$, with integer
+indices that may be negative.  Building the vector from the integers keeps it
+exactly on the lattice, which is what $S_4$ needs: a hand written $|q|$ would
+sit a few ulps away and the box form factor would come back.  The single table
+row is labelled by $|\mathbf q|$ and the header carries the indices and the
+vector, so nothing is lost.
 
 A run without q points computes no $S(q)$ at all: it takes no `OUTPUT` table,
 and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected, which leaves the

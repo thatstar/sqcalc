@@ -214,7 +214,7 @@ contains
    subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
                                   nframes, frame_dt, maxframes, lag, weight, norm, overlap, &
                                   stride, effective_maxframes, sampling, mode_budget, thinned, &
-                                  ierr, message)
+                                  single_n, ierr, message)
       character(len=*), intent(in) :: path, group, axis_name, weight, norm
       !> q sampling that produced the table: `line`, `shell` or `grid`.
       character(len=*), intent(in) :: sampling
@@ -231,6 +231,9 @@ contains
       !> Mode budget of the grid sampling (0 = unlimited) and whether it bit.
       integer, intent(in) :: mode_budget
       logical, intent(in) :: thinned
+      !> Miller indices when `sampling` is `single`: |q| alone does not say
+      !! which lattice vector was used, so they have to be recorded.
+      integer, intent(in) :: single_n(3)
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id, subgroup_id
@@ -292,6 +295,13 @@ contains
       end if
       if (ierr == 0) then
          call write_int_attr(file_id, 'thinned', merge(1_int64, 0_int64, thinned), ierr, message)
+      end if
+      if (ierr == 0 .and. trim(sampling) == 'single') then
+         call write_int_attr(file_id, 'single_n1', int(single_n(1), int64), ierr, message)
+         if (ierr == 0) call write_int_attr(file_id, 'single_n2', int(single_n(2), int64), &
+                                            ierr, message)
+         if (ierr == 0) call write_int_attr(file_id, 'single_n3', int(single_n(3), int64), &
+                                            ierr, message)
       end if
       if (ierr /= 0) then
          call h5fclose_f(file_id, idum)

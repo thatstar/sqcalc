@@ -14,6 +14,7 @@
 !!   h5read file.h5 s4       -> "# qx qy qz tau S4(q,t)" table
 !!   h5read file.h5 chi4     -> "# tau Q(t) chi4(t)" table
 !!   h5read file.h5 count G  -> the per-lag origin counts of the dynamic group G
+!!   h5read file.h5 attr N   -> the value of the file attribute N
 program h5read
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64, error_unit, output_unit
    use hdf5
@@ -37,7 +38,7 @@ program h5read
    call get_command_argument(3, subject)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
       write (error_unit, '(a)') 'usage: h5read FILE '// &
-         '(grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|count GROUP)'
+         '(grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|count GROUP|attr NAME)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -280,6 +281,11 @@ program h5read
          write (output_unit, '(*(i0,1x))') (cnt(j, i), i = 1, ncount2)
       end do
       call h5gclose_f(group_id, hdferr)
+   case ('attr')
+      ! One file attribute, so that the suite can check the metadata a run
+      ! writes next to its tables (the q sampling and, for a single lattice
+      ! vector, the Miller indices, which |q| alone does not identify).
+      call read_attr(file_id, trim(subject))
    case default
       write (error_unit, '(a)') 'unknown table "'//trim(which)//'"'
       stop 3
@@ -299,6 +305,53 @@ contains
          name = 'tau'
       end if
    end function axis_of
+
+   !> Print one file attribute: an integer, a real or a string.
+   !!
+   !! The suite uses it to check the metadata a run writes next to its tables,
+   !! in particular the q sampling and, for a single lattice vector, the Miller
+   !! indices, which |q| alone does not identify.
+   subroutine read_attr(loc, name)
+      integer(hid_t), intent(in) :: loc
+      character(len=*), intent(in) :: name
+      integer(hid_t) :: attr_id, type_id
+      integer :: hdferr, iclass
+      integer(size_t) :: asize
+      integer(int64) :: ibuf(1)
+      real(real64) :: rbuf(1)
+      character(len=:), allocatable :: sbuf(:)
+
+      call h5aopen_f(loc, trim(name), attr_id, hdferr)
+      if (hdferr /= 0) then
+         write (error_unit, '(a)') 'no attribute "'//trim(name)//'"'
+         stop 5
+      end if
+      call h5aget_type_f(attr_id, type_id, hdferr)
+      call h5tget_class_f(type_id, iclass, hdferr)
+      ! The HDF5 Fortran interface of this build exports the type classes as
+      ! variables rather than parameters, so they cannot head a CASE.
+      if (iclass == H5T_INTEGER_F) then
+         call h5aread_f(attr_id, H5T_STD_I64LE, ibuf, [1_hsize_t], hdferr)
+         write (output_unit, '(i0)') ibuf(1)
+      else if (iclass == H5T_FLOAT_F) then
+         call h5aread_f(attr_id, H5T_NATIVE_DOUBLE, rbuf, [1_hsize_t], hdferr)
+         write (output_unit, '(es20.12)') rbuf(1)
+      else if (iclass == H5T_STRING_F) then
+         call h5tget_size_f(type_id, asize, hdferr)
+         allocate (character(len=max(int(asize), 1)) :: sbuf(1))
+         call h5aread_f(attr_id, type_id, sbuf, [1_hsize_t], hdferr)
+         write (output_unit, '(a)') trim(sbuf(1))
+      else
+         write (error_unit, '(a)') 'attribute "'//trim(name)//'" has an unsupported type'
+         stop 6
+      end if
+      if (hdferr /= 0) then
+         write (error_unit, '(a)') 'cannot read attribute "'//trim(name)//'"'
+         stop 7
+      end if
+      call h5tclose_f(type_id, hdferr)
+      call h5aclose_f(attr_id, hdferr)
+   end subroutine read_attr
 
    !> Read a 2D real dataset.
    subroutine read_real_2d(group, name, values, n1, n2)

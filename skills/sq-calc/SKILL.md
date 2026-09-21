@@ -16,7 +16,9 @@ and a real space Debye pair histogram, which can also write $g(r)$.
 With `--dyn` it instead keeps the time axis, and `--dyn-q` chooses the
 reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
 `shell:Q,low|medium|high` for the isotropic average over the sphere $|q| = Q$,
-or `-` (the default) for no q points.  A line or a shell supports the dynamic
+`grid:QMAX` for every reciprocal-lattice vector up to $|q| = Q_{\max}$, or
+`single:N1,N2,N3` for one lattice vector of the box; `-` (the default) samples
+no q points.  Any of the q samplings supports the dynamic
 structure factor $S(q,\omega)$ (`--sqw`), the coherent intermediate scattering
 function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
 the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q

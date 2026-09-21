@@ -13,7 +13,7 @@ program sqcalc
    use sqc_elements, only: element_table
    use sqc_structure_factor
    use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
-                           dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
+                           dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
@@ -116,6 +116,7 @@ program sqcalc
          method%grid_budget = opts%dyn_modes
          method%grid_thin = opts%dyn_thin
          method%keep_modes = opts%dyn_keep_modes
+         method%single_index = opts%dyn_single
          method%maxframes = opts%maxframes
          method%lag_stride = opts%lag_stride
          method%sqw_format = dyn_format_text
@@ -329,6 +330,13 @@ program sqcalc
             end if
          end select
       end if
+      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_single) then
+         select type (method)
+         type is (dynamics_structure_factor_t)
+            write (shell_unit, '(a,3(i0,1x),a,f0.4,a)') '# single q from n = (', &
+               method%single_index, ') at |q| = ', method%qlen(1), ' 1/A (one row)'
+         end select
+      end if
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
@@ -533,6 +541,9 @@ contains
                write (error_unit, '(a,i0,a,i0,a)') '  note       : --dyn-modes ', m%grid_budget, &
                   ' could not be met; the two end shells alone need ', m%nmodes, ' modes'
             end if
+         case (dyn_q_single)
+            write (error_unit, '(a,3(i0,1x),a,f0.4,a)') '  q single   : n = (', &
+               m%single_index, ') -> |q| = ', m%qlen(1), ' 1/A'
          case (dyn_q_none)
             write (error_unit, '(a)') '  q sampling : none (only Q(t) and chi4(t))'
          case default

@@ -11,7 +11,7 @@ module sqc_options
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
                             norm_self, norm_natom, method_dynamic
    use sqc_debye, only: debye_default_dr, debye_default_skin
-   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
+   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
    use sqc_modes, only: thin_none, thin_shells, thin_orbits
    use sqc_lebedev, only: lebedev_points, lebedev_order_from_name, &
                           lebedev_low, lebedev_medium, lebedev_high
@@ -90,6 +90,8 @@ module sqc_options
       integer :: dyn_shell_order = 0
       !> grid: the upper bound of |q|, the mode budget and the thinning policy.
       real(rk) :: dyn_grid_qmax = 0.0_rk
+      !> single: the Miller indices of the one lattice vector to sample.
+      integer :: dyn_single(3) = 0
       integer :: dyn_modes = 0
       integer :: dyn_thin = thin_none
       logical :: dyn_modes_given = .false.
@@ -723,10 +725,13 @@ contains
       else if (starts_with(spec, 'grid:')) then
          call parse_dyn_grid(self, spec(6:), ierr, message)
          if (ierr /= 0) return
+      else if (starts_with(spec, 'single:')) then
+         call parse_dyn_single(self, spec(8:), ierr, message)
+         if (ierr /= 0) return
       else
          ierr = 1
          message = '--dyn-q wants "-", "line:NINT,S0,S1,DX,DY,DZ" or '// &
-            '"shell:Q,low|medium|high" or "grid:QMAX"'
+            '"shell:Q,low|medium|high", "grid:QMAX" or "single:N1,N2,N3"'
          return
       end if
       self%dyn_q_given = .true.
@@ -864,6 +869,84 @@ contains
       self%dyn_q_mode = dyn_q_grid
    end subroutine parse_dyn_grid
 
+   !> Parse "N1,N2,N3" of `--dyn-q single`.
+   !!
+   !! The three integers are the Miller indices of one reciprocal-lattice
+   !! vector of the dump box,
+   !!
+   !!   q = n1 b1 + n2 b2 + n3 b3.
+   !!
+   !! Building q from the integers keeps it exactly on the lattice, which is
+   !! what S4 needs: a hand written |q| would sit a few ulps away, the density
+   !! amplitude would stop being independent of the periodic images, and the
+   !! box form factor would come back.
+   subroutine parse_dyn_single(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=48) :: fields(4)
+      integer :: n, i, values(3)
+
+      ierr = 0
+      message = ''
+      fields = ' '
+      call split_fields(spec, fields, n)
+      if (n /= 3) then
+         ierr = 1
+         message = '--dyn-q single wants N1,N2,N3, e.g. --dyn-q single:1,0,0'
+         return
+      end if
+      do i = 1, 3
+         if (.not. is_integer_field(fields(i))) then
+            ierr = 1
+            message = 'cannot read "'//trim(fields(i))//'" as an integer of --dyn-q single'
+            return
+         end if
+         read (fields(i), *, iostat=ierr) values(i)
+         if (ierr /= 0) then
+            ierr = 1
+            message = 'the index "'//trim(fields(i))//'" of --dyn-q single is out of range'
+            return
+         end if
+      end do
+      self%dyn_single = values
+      self%dyn_q_mode = dyn_q_single
+   end subroutine parse_dyn_single
+
+   !> True when `text` is an optionally signed integer and nothing else.
+   !!
+   !! List directed input would read "1.5" as 1 and silently ignore the rest,
+   !! so the field is checked character by character first.
+   pure logical function is_integer_field(text) result(ok)
+      character(len=*), intent(in) :: text
+      integer :: i, first, last
+      logical :: seen_digit
+
+      ok = .false.
+      last = len_trim(text)
+      first = 0
+      do i = 1, last
+         if (text(i:i) /= ' ') then
+            first = i
+            exit
+         end if
+      end do
+      if (first == 0) return
+      seen_digit = .false.
+      do i = first, last
+         select case (text(i:i))
+         case ('+', '-')
+            if (i /= first) return
+         case ('0':'9')
+            seen_digit = .true.
+         case default
+            return
+         end select
+      end do
+      ok = seen_digit
+   end function is_integer_field
+
    !> Split a comma separated option value into at most `size(fields)` tokens.
    !!
    !! `n` is the number of tokens, so a caller that expects a fixed count also
@@ -956,6 +1039,7 @@ contains
          lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
          lebedev_points(lebedev_high), ' point rules)'
       write (unit, '(a)') '                      grid:QMAX  every reciprocal lattice vector |q| <= QMAX'
+      write (unit, '(a)') '                      single:N1,N2,N3  one lattice vector of the box'
       write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (with --dyn)'
       write (unit, '(a)') '      --dyn-modes N   mode budget of grid:QMAX, 0 = unlimited (default)'
       write (unit, '(a)') '      --dyn-thin NAME order of the grid thinning: shells (default) or orbits'

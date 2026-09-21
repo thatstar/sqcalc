@@ -1023,6 +1023,75 @@ def main():
     print("  ok   %-42s weights %s" % ("grid: two-orbit shell weighting",
                                        weights.astype(int)))
 
+    # --- one reciprocal-lattice vector (--dyn-q single) --------------------
+    print("single reciprocal-lattice vector (--dyn-q single)")
+    single_base = ["--dyn", "--dyn-q", "single:1,0,0", "--dt", "1", "--maxframes", "8",
+                   "--lag", "1"]
+    run([exe, "-i", diff_dump, "-w", "unit", *single_base, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single.dat"), "--chi4", path("chi4_single.dat"),
+         path("s4_single_sq.dat")])
+    single_table = read_matrix(path("s4_single.dat"))
+    # The row is keyed by |q|, the indices and the vector go into the header.
+    if np.any(np.abs(single_table[:, :2]) > 1.0e-9) or \
+            np.max(np.abs(single_table[:, 2] - q1)) > 1.0e-6:
+        raise SystemExit("FAIL single: the rows are not labelled by |q|")
+    single_header = "".join(line for line in open(path("s4_single.dat")) if line.startswith("#"))
+    if "n = (1 0 0" not in single_header or "q = (" not in single_header:
+        raise SystemExit("FAIL single: the header does not carry n and the q vector")
+    # It has to agree, bit for bit, with both existing routes to that vector.
+    run([exe, "-i", diff_dump, "-w", "unit", *dyn_line("1,0,%.12f,1,0,0" % q1),
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single_line.dat"), path("s4_single_line_sq.dat")])
+    compare(rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
+            rows_at(read_matrix(path("s4_single_line.dat")), [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
+            "single: matches the q line at that vector", rtol=1.0e-12)
+    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_grid.dat"),
+         path("s4_single_grid_sq.dat")])
+    grid_row = rows_at(read_matrix(path("s4_single_grid.dat")), [q1, 0.0, 0.0])
+    compare(rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
+            grid_row[:, 4].reshape(-1, 1),
+            "single: matches the grid at that vector", rtol=1.0e-12)
+    if np.max(np.abs(rows_at_q(single_table, q1)[:, 4] - grid_row[:, 4])) == 0.0 and \
+            np.allclose(grid_row[:, 4], 0.0):
+        raise SystemExit("FAIL single: the comparison is vacuous")
+    # The mirrored indices are the same vector up to a sign, and S4 is even.
+    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:-1,0,0",
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single_neg.dat"), path("s4_single_neg_sq.dat")])
+    compare(rows_at_q(read_matrix(path("s4_single_neg.dat")), q1)[:, 4].reshape(-1, 1),
+            rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
+            "single: (-1,0,0) agrees with (1,0,0)", rtol=1.0e-12)
+    # Gamma is a legal lattice vector, and its row is the scalar chi4(t).
+    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:0,0,0",
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single_gamma.dat"), "--chi4", path("chi4_single_gamma.dat"),
+         path("s4_single_gamma_sq.dat")])
+    compare(read_matrix(path("s4_single_gamma.dat"))[:, 4].reshape(-1, 1),
+            read_matrix(path("chi4_single_gamma.dat"))[:, 2].reshape(-1, 1),
+            "single: the Gamma row is chi4(t)", rtol=1.0e-12)
+    # The HDF5 flavour has no header, so the indices have to be attributes:
+    # |q| alone cannot tell single:1,0,0 from single:0,1,0.
+    if args.h5read:
+        run([exe, "-i", diff_dump, "-w", "unit", *single_base, "--dyn-format", "hdf5",
+             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single.h5"),
+             path("s4_single_h5_sq.dat")])
+        attrs = {name: run([args.h5read, path("s4_single.h5"), "attr", name]).stdout.strip()
+                 for name in ("sampling", "single_n1", "single_n2", "single_n3")}
+        if attrs["sampling"] != "single" or \
+                (attrs["single_n1"], attrs["single_n2"], attrs["single_n3"]) != ("1", "0", "0"):
+            raise SystemExit("FAIL single: HDF5 attributes are %s" % attrs)
+        run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:0,1,0",
+             "--dt", "1", "--maxframes", "8", "--lag", "1", "--dyn-format", "hdf5",
+             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_y.h5"),
+             path("s4_single_y_h5_sq.dat")])
+        if run([args.h5read, path("s4_single_y.h5"), "attr", "single_n2"]).stdout.strip() != "1":
+            raise SystemExit("FAIL single: the HDF5 indices do not follow the request")
+        print("  ok   %-42s n = (%s %s %s)"
+              % ("single: HDF5 records the indices", attrs["single_n1"], attrs["single_n2"],
+                 attrs["single_n3"]))
+    print("  ok   %-42s |q| = %.4f" % ("single lattice vector", q1))
+
     # --buffer-limit is in GB and can be lowered for this small buffer.
     run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
          "--buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
@@ -1370,6 +1439,15 @@ def main():
         (["--dyn", "--dyn-q", "grid:1", "--dyn-thin", "diagonal",
           "--dt", "1", "--maxframes", "8"],
          "--dyn-thin with an unknown policy"),
+        (["--dyn", "--dyn-q", "single:1,0", "--dt", "1", "--maxframes", "8"],
+         "--dyn-q single with two indices"),
+        (["--dyn", "--dyn-q", "single:1,0,0,0", "--dt", "1", "--maxframes", "8"],
+         "--dyn-q single with four indices"),
+        (["--dyn", "--dyn-q", "single:1.5,0,0", "--dt", "1", "--maxframes", "8"],
+         "--dyn-q single with a non-integer index"),
+        (["--dyn", "--dyn-q", "single:1,0,0", "--dyn-modes", "4",
+          "--dt", "1", "--maxframes", "8"],
+         "--dyn-modes with a single q"),
         (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
         (["--method", "debye", "--s2-accum", "a.dat"],
          "--s2-accum without --pair-entropy"),
