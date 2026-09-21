@@ -1055,6 +1055,16 @@ def main():
     if np.max(np.abs(rows_at_q(single_table, q1)[:, 4] - grid_row[:, 4])) == 0.0 and \
             np.allclose(grid_row[:, 4], 0.0):
         raise SystemExit("FAIL single: the comparison is vacuous")
+    # A vector with more than one nonzero index: at (1,0,0) the phase is
+    # t_1(1) alone, because every t_j(0) is 1, so that comparison cannot see a
+    # mix-up in the other two axes.
+    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:1,1,0", "--dt", "1",
+         "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single_diag.dat"), path("s4_single_diag_sq.dat")])
+    compare(rows_at_q(read_matrix(path("s4_single_diag.dat")),
+                      math.sqrt(2.0)*q1)[:, 4].reshape(-1, 1),
+            rows_at(read_matrix(path("s4_single_grid.dat")), [q1, q1, 0.0])[:, 4].reshape(-1, 1),
+            "single: a two-axis vector matches the grid", rtol=1.0e-12)
     # The mirrored indices are the same vector up to a sign, and S4 is even.
     run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:-1,0,0",
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,

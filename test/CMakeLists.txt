@@ -26,11 +26,17 @@ add_executable(test_modes test_modes.f90)
 target_link_libraries(test_modes PRIVATE sqcalc_lib)
 add_test(NAME modes COMMAND test_modes)
 
+# Separable phase factors: the tables have to reproduce the direct phase.
+add_executable(test_phase test_phase.f90)
+target_link_libraries(test_phase PRIVATE sqcalc_lib)
+add_test(NAME phase COMMAND test_phase)
+
 # Same runtime checks as the library and the driver (see the top level
 # CMakeLists.txt): the test helpers are exercised by the suite, so they should
 # not be the one place where an out of bounds access stays silent.
 if(SQC_ENABLE_RUNTIME_CHECKS)
-  foreach(_sqc_checked h5read test_finufft_opts test_neighbour_list test_lebedev test_modes)
+  foreach(_sqc_checked h5read test_finufft_opts test_neighbour_list test_lebedev test_modes
+                       test_phase)
     if(TARGET ${_sqc_checked})
       target_compile_options(
         ${_sqc_checked} PRIVATE $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<NOT:$<CONFIG:Debug>>>:-fcheck=bounds;-fbacktrace>

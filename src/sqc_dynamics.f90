@@ -39,9 +39,10 @@ module sqc_dynamics
                                    norm_natom, no_unit
    use sqc_lebedev, only: lebedev_rule, lebedev_points
    use sqc_modes, only: modes_t, modes_build, thin_none, thin_shells, thin_orbits
+   use sqc_phase, only: phase_tables, phase_factor, phase_min_modes
    use, intrinsic :: iso_c_binding, only: c_double_complex
    use, intrinsic :: iso_fortran_env, only: output_unit
-   use omp_lib, only: omp_get_max_threads
+   use omp_lib, only: omp_get_max_threads, omp_get_thread_num
 #ifdef SQC_HAVE_HDF5
    use sqc_hdf5, only: hdf5_write_dynamics, hdf5_write_chi4, hdf5_write_fqt_self
 #endif
@@ -97,6 +98,15 @@ module sqc_dynamics
       logical :: grid_budget_met = .true.
       !> Lattice shell and orbit multiplicity of every mode (grid sampling).
       integer, allocatable :: grid_shell(:), grid_orbit(:), orbit_mult(:)
+      !> Miller indices of every mode and the range they span; allocated for a
+      !! lattice sampling, which is what allows the separable phase evaluation.
+      integer, allocatable :: mode_index(:, :)
+      integer :: index_max(3) = 0
+      !> Reciprocal basis of the box, and one phase-factor table per thread
+      !! plus the per-thread mode accumulators that go with them.
+      real(rk) :: recip(3, 3) = 0.0_rk
+      integer :: phase_threads = 1
+      complex(c_double_complex), allocatable :: phase_pool(:, :, :), acc_thread(:, :)
       !> Single lattice vector sampling (`--dyn-q single`): the Miller indices
       !! and the q vector they build.
       integer :: single_index(3) = 0
@@ -312,6 +322,14 @@ contains
          self%grid_thinned = grid%thinned
          self%grid_budget_met = grid%budget_met
          self%grid_nmodes = int(self%nmodes)
+         ! The separable phase evaluation needs the Miller indices and the
+         ! reciprocal basis, both of which the grid builder already has.
+         allocate (self%mode_index(3, self%nmodes))
+         self%mode_index = grid%hkl
+         do i = 1, 3
+            self%index_max(i) = maxval(abs(grid%hkl(i, :)))
+         end do
+         self%recip = frame%cell%b
          call grid%finalize()
       case (dyn_q_single)
          ! One reciprocal-lattice vector, built from its Miller indices so that
@@ -489,6 +507,15 @@ contains
          self%s4_asum = 0.0_rk
          self%s4_bsum = (0.0_rk, 0.0_rk)
          self%w_scratch = (0.0_rk, 0.0_rk)
+         ! One phase-factor table and one mode accumulator per thread; the
+         ! thread count is the one the driver pinned before configure.
+         if (allocated(self%mode_index)) then
+            self%phase_threads = max(omp_get_max_threads(), 1)
+            allocate (self%phase_pool(3, 0:2*maxval(self%index_max), self%phase_threads))
+            allocate (self%acc_thread(self%nmodes, self%phase_threads))
+            self%phase_pool = (0.0_rk, 0.0_rk)
+            self%acc_thread = (0.0_rk, 0.0_rk)
+         end if
       end if
       if (self%fqt_self_enabled) then
          allocate (self%fs_sum(self%nmodes, 0:self%nsteps, self%nspecies))
@@ -508,8 +535,9 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       complex(c_double_complex) :: acc
-      real(rk) :: qx, qy, qz, phase, dx, dy, dz
+      real(rk) :: qx, qy, qz, phase, dx, dy, dz, phi(3)
       integer :: t_frame, slot, sample_slot, sample, l, j, oslot, im, isp, jsp, i, k, nover
+      integer :: tid, nthread
 
       ierr = 0
       message = ''
@@ -647,7 +675,45 @@ contains
             end if
 
             if (self%s4_enabled) then
-               if (nover > 0) then
+               if (nover > 0 .and. allocated(self%mode_index) .and. &
+                   self%nmodes >= phase_min_modes) then
+                  ! Separable phases: one factor table per atom replaces the
+                  ! sine and cosine of every (mode, atom) pair, and the atom
+                  ! loop becomes the parallel one.  Each thread owns a table
+                  ! and an accumulator; the accumulators are combined in
+                  ! thread order so the sum stays reproducible.
+                  nthread = self%phase_threads
+                  self%acc_thread = (0.0_rk, 0.0_rk)
+                  !$omp parallel private(k, i, im, tid, phi)
+                  tid = 1
+                  !$ tid = omp_get_thread_num() + 1
+                  !$omp do schedule(static)
+                  do k = 1, nover
+                     i = int(self%over_list(k))
+                     do im = 1, 3
+                        phi(im) = self%recip(1, im)*self%pos_buffer(1, i, oslot) &
+                                + self%recip(2, im)*self%pos_buffer(2, i, oslot) &
+                                + self%recip(3, im)*self%pos_buffer(3, i, oslot)
+                     end do
+                     call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+                     do im = 1, int(self%nmodes)
+                        self%acc_thread(im, tid) = self%acc_thread(im, tid) &
+                           + phase_factor(self%phase_pool(:, :, tid), self%index_max, &
+                                          self%mode_index(:, im))
+                     end do
+                  end do
+                  !$omp end do
+                  !$omp end parallel
+                  do tid = 2, nthread
+                     do im = 1, int(self%nmodes)
+                        self%acc_thread(im, 1) = self%acc_thread(im, 1) &
+                           + self%acc_thread(im, tid)
+                     end do
+                  end do
+                  do im = 1, int(self%nmodes)
+                     self%w_scratch(im) = self%acc_thread(im, 1)
+                  end do
+               else if (nover > 0) then
                   !$omp parallel do schedule(static) private(im, k, i, qx, qy, qz, phase, acc)
                   do im = 1, int(self%nmodes)
                      qx = self%qvec(1, im)
