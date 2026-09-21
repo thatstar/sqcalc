@@ -85,6 +85,12 @@ module sqc_structure_factor
       integer(lk) :: nmodes = 0
       !> Shell width, (qmax - qmin)/nq.
       real(rk) :: shell_dq = 1.0_rk
+      !> |q| of every shell when the shells are not evenly spaced, which is the
+      !! case for the reciprocal-lattice grid sampling of the dynamic method.
+      real(rk), allocatable :: shell_radii(:)
+      !> True when `shell_radii` labels the shells instead of the `shell_dq`
+      !! formula (which only fits an evenly spaced q set).
+      logical :: label_by_shell_radius = .false.
       !> Miller indices of the kept modes.
       integer, allocatable :: hkl(:, :)
       !> Cartesian q vector and its length for each kept mode.
@@ -123,6 +129,7 @@ module sqc_structure_factor
       procedure :: accumulate_partials => sf_accumulate_partials
       procedure :: prepare_output => sf_prepare_output
       procedure :: shell_value => sf_shell_value
+      procedure :: q_of_shell => sf_shell_q
       procedure :: partial_value => sf_partial_value
       procedure :: partial_column => sf_partial_column
       procedure :: grid_value => sf_grid_value
@@ -525,6 +532,24 @@ contains
       if (self%den(shell) > 0.0_rk) value = self%num(shell)/(frames*self%den(shell))
    end function sf_shell_value
 
+   !> |q| that labels one shell of the output tables.
+   !!
+   !! Evenly spaced shells (the static grid, the Debye method and the dynamic
+   !! q line) are recovered from `qmin` and `shell_dq`.  The dynamic grid has
+   !! lattice shells instead, whose radii are not equidistant, so it stores one
+   !! |q| per shell and asks for it here.
+   pure real(rk) function sf_shell_q(self, shell) result(qc)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: shell
+
+      if (self%label_by_shell_radius .and. allocated(self%shell_radii)) then
+         qc = 0.0_rk
+         if (shell >= 1 .and. shell <= size(self%shell_radii)) qc = self%shell_radii(shell)
+      else
+         qc = self%qmin + (real(shell, rk) - 0.5_rk)*self%shell_dq
+      end if
+   end function sf_shell_q
+
    !> Partial structure factors of one shell, in the OVITO convention
    !!
    !!   S_ab(q) = (1/N) < sum_{j in a} sum_{k in b} sin(q r_jk)/(q r_jk) >
@@ -638,7 +663,7 @@ contains
             write (shell_unit, '(a)') '# q S(q)'
          end if
          do s = 1, self%nq
-            qc = self%qmin + (real(s, rk) - 0.5_rk)*self%shell_dq
+            qc = self%q_of_shell(s)
             value = self%shell_value(s)
             if (self%partials .and. allocated(self%partial_num)) then
                write (shell_unit, '(f14.6,2x,es20.12)', advance='no') qc, value

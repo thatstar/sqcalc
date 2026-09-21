@@ -13,7 +13,7 @@ program sqcalc
    use sqc_elements, only: element_table
    use sqc_structure_factor
    use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
-                           dyn_q_none, dyn_q_line, dyn_q_shell
+                           dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
@@ -112,6 +112,10 @@ program sqcalc
          method%direction = opts%dyn_dir
          method%shell_q = opts%dyn_shell_q
          method%shell_order = opts%dyn_shell_order
+         method%grid_qmax = opts%dyn_grid_qmax
+         method%grid_budget = opts%dyn_modes
+         method%grid_thin = opts%dyn_thin
+         method%keep_modes = opts%dyn_keep_modes
          method%maxframes = opts%maxframes
          method%lag_stride = opts%lag_stride
          method%sqw_format = dyn_format_text
@@ -311,6 +315,20 @@ program sqcalc
                method%shell_q, ' 1/A (Lebedev quadrature, one row)'
          end select
       end if
+      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_grid) then
+         select type (method)
+         type is (dynamics_structure_factor_t)
+            if (method%keep_modes) then
+               write (shell_unit, '(a,i0,a,f0.4,a)') '# reciprocal lattice grid: ', &
+                  method%nmodes, ' lattice vectors with |q| <= ', method%grid_qmax, &
+                  ' 1/A (one row per vector)'
+            else
+               write (shell_unit, '(a,i0,a,f0.4,a)') '# reciprocal lattice grid: ', &
+                  method%nmodes, ' rows with |q| <= ', method%grid_qmax, &
+                  ' 1/A (one row per lattice shell, Gamma included)'
+            end if
+         end select
+      end if
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
@@ -386,6 +404,19 @@ program sqcalc
    if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
 
    if (.not. opts%quiet) then
+      if (opts%method == method_dynamic) then
+         select type (method)
+         type is (dynamics_structure_factor_t)
+            if (method%probe_valid) then
+               write (error_unit, '(a,i0,a,f0.2,a,f0.4)') '  isotropy   : ', &
+                  method%probe_modes, ' modes of the first shell spread by ', &
+                  100.0_rk*method%probe_spread, ' % at tau = ', method%probe_tau
+               write (error_unit, '(a)') '  note       : compare that spread with the run-to-run '// &
+                  'scatter of a single mode; if it stays far above it the system is not '// &
+                  'isotropic or not equilibrated, and the orbit reduction does not apply'
+            end if
+         end select
+      end if
       write (error_unit, '(a,i0,a,a,a,f0.2,a,i0,a)') 'averaged ', method%nframes, ' frames (', &
          trim(method_description(opts)), ', ', elapsed, ' s wall, threads = ', &
          opts%threads, ')'
@@ -488,6 +519,20 @@ contains
          case (dyn_q_shell)
             write (error_unit, '(a,f0.4,a,i0,a,i0,a)') '  q shell    : |q| = ', m%shell_q, &
                ' 1/A, Lebedev order ', m%shell_order, ' (', m%nmodes, ' directions)'
+         case (dyn_q_grid)
+            if (m%grid_nshell_kept < m%grid_nshell) then
+               write (error_unit, '(a,f0.4,a,i0,a,i0,a,i0,a,i0,a)') '  q grid     : |q| <= ', &
+                  m%grid_qmax, ' 1/A, ', m%nmodes, ' lattice modes in ', m%grid_nshell_kept, &
+                  ' of ', m%grid_nshell, ' shells (point group order ', m%grid_nops, ')'
+            else
+               write (error_unit, '(a,f0.4,a,i0,a,i0,a,i0,a)') '  q grid     : |q| <= ', &
+                  m%grid_qmax, ' 1/A, ', m%nmodes, ' lattice modes in ', m%grid_nshell, &
+                  ' shells (point group order ', m%grid_nops, ')'
+            end if
+            if (m%grid_thinned .and. .not. m%grid_budget_met) then
+               write (error_unit, '(a,i0,a,i0,a)') '  note       : --dyn-modes ', m%grid_budget, &
+                  ' could not be met; the two end shells alone need ', m%nmodes, ' modes'
+            end if
          case (dyn_q_none)
             write (error_unit, '(a)') '  q sampling : none (only Q(t) and chi4(t))'
          case default

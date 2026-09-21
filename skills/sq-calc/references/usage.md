@@ -37,7 +37,10 @@ logs clean.
 | `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
 | `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor and overlap (see below) |
-| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ` or `shell:Q,ACC` |
+| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC` or `grid:QMAX` |
+| `--dyn-modes N` | mode budget of `--dyn-q grid`: 0 = unlimited (default) |
+| `--dyn-thin KIND` | order of the mode thinning: `shells` (default) or `orbits` |
+| `--dyn-keep-modes` | write the grid rows per lattice vector instead of the `\|q\|` shell average |
 | `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
 | `--maxframes L` | correlation window in frames (the largest lag kept), required by `--dyn` |
 | `--lag N` | frames between two consecutive time origins (default 1) |
@@ -194,6 +197,7 @@ space is sampled,
 | `-` (default) | none | only `--chi4` ($Q(t)$ and $\chi_4(t)$) |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
 | `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
+| `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
 
 Without q points there is no $S(q)$ at all: the run takes no `OUTPUT` table,
 and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the
@@ -229,6 +233,67 @@ row at $q = (0,0,Q)$, and the static table is labelled by $|q| = Q$.  The
 average is taken over the *normalized* $S(q)$ of every direction, which matters
 for `-w xray`, where the form factor and hence the denominator depend on $q$
 even at fixed $|q|$.
+
+#### A reciprocal-lattice grid
+
+`grid:QMAX` samples the reciprocal lattice of the dump box instead of an
+arbitrary line or sphere,
+
+$$
+\mathbf q = n_1 \mathbf b_1 + n_2 \mathbf b_2 + n_3 \mathbf b_3,
+\qquad 0 < |\mathbf q| \le Q_{\max},
+$$
+
+plus the Gamma point.  This is the sampling to use when $S_4(q,t)$ is fitted to
+the Ornstein-Zernike form: only a reciprocal-lattice vector carries a density
+amplitude that does not depend on how the periodic images are chosen, so the
+grid is free of the box-form-factor contamination that makes the off-lattice
+Lebedev shell unusable for $S_4$.  The tables hold one row per lattice shell
+and the Gamma row is the $q \to 0$ limit, i.e. $\chi_4(\tau)$.
+
+The modes are reduced in three steps, in this order:
+
+* `W(-q) = conjg(W(q))` because the overlap weights are real, so one vector of
+  every $\pm$ pair is kept; this halves the work and loses nothing;
+* vectors that are related by the point group of the periodic lattice have the
+  same expectation for an isotropic system, so `--dyn-thin orbits` may keep one
+  representative per orbit.  The orbit multiplicity is kept, because a shell
+  can hold several orbits (for $|\mathbf n|^2 = 9$, a 6-fold $(3,0,0)$ orbit and
+  a 24-fold $(2,2,1)$ one);
+* `--dyn-thin shells`, the default, drops whole shells instead, which leaves the
+  remaining shells complete and therefore costs no accuracy in the points that
+  survive.  The kept shells are spread evenly over the q range and always
+  include its two ends.
+
+The tables are already the isotropic average: one row per lattice shell, at
+$q = (0,0,|q|)$, taken over the reciprocal-lattice vectors of that $|q|$ and
+weighted by their orbit multiplicities.  That is the object an
+Ornstein-Zernike fit and a powder average want, and the code does the weighting
+because a reader of the table cannot: the multiplicity of a vector such as
+$(1,2,2)$ follows from the point group of the cell, not from the row.
+`--dyn-keep-modes` writes one row per lattice vector instead, which is what a
+directional analysis and the verification below need.
+
+These shells are the exact ones, i.e. all lattice vectors of one $|\mathbf q|$.
+The static grid under `--method nufft` bins $|\mathbf q|$ uniformly instead,
+with a width the user sets through `--nq`, because it reads the whole transform
+at once and has no per-mode cost to control.
+
+`--dyn-modes N` caps how many modes the run pays for; without it the cell sets
+the count, which grows as $|q_{\max} L|^3$.  The budget is a target rather than
+a hard limit: when even the two end shells need more modes than it allows, they
+are kept anyway and the run summary says so.  Both the shell and the orbit
+reduction assume that the system is isotropic and in equilibrium.  The cheapest
+way to check that is built in: a `--dyn-q grid` run with `--s4` prints an
+`isotropy` line in its summary with the spread of the modes of the smallest
+shell at the lag of the $\chi_4$ peak, next to their mean value.  Compare that
+spread with the run-to-run scatter of a single mode (a second run with a
+different `--lag`, or the two halves of the trajectory): a spread that stays
+far above it, and that does not shrink when the box is enlarged, means the
+trajectory is not equilibrated or the system is not isotropic, and then
+neither the orbit reduction nor an isotropic correlation length may be
+trusted.  The per-mode numbers behind it are in the `S4` table of a
+`--dyn-keep-modes` run.
 
 The dynamics come from the same density amplitudes $\rho_a(q,t)$, evaluated by
 direct summation at the sampled $q$ and correlated in time with a multi-origin

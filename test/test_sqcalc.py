@@ -23,6 +23,7 @@ import math
 import os
 import subprocess
 import sys
+from itertools import permutations, product
 
 import numpy as np
 
@@ -898,6 +899,130 @@ def main():
             read_table(path("s4_coherent_sq.dat"))[1].reshape(-1, 1),
             "S4-only static S(q) == full", rtol=1.0e-9)
 
+    # --- reciprocal-lattice grid sampling (--dyn-q grid) ------------------
+    print("reciprocal-lattice grid sampling (--dyn-q grid)")
+    q1 = 2.0*math.pi/20.0              # smallest reciprocal vector of the box
+    grid_base = ["--dyn", "--dyn-q", "grid:%.6f" % (2.0*q1), "--dt", "1",
+                 "--maxframes", "8", "--lag", "1"]
+    grid_run = run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--s4-cutoff", s4_cutoff,
+                    "--s4", path("s4_grid.dat"), "--chi4", path("chi4_grid.dat"),
+                    path("s4_grid_sq.dat")])
+    grid = read_matrix(path("s4_grid.dat"))
+    grid_chi4 = read_matrix(path("chi4_grid.dat"))
+    # By default the rows are the |q| shells: the shells |n| = 1, sqrt(2),
+    # sqrt(3), 2 plus the Gamma point.
+    shells = np.unique(np.round(grid[:, :3], 6), axis=0)
+    if shells.shape[0] != 5:
+        raise SystemExit("FAIL grid: expected 5 shell rows, found %d" % shells.shape[0])
+    if np.any(np.abs(shells[:, 0]) > 1.0e-9) or np.any(np.abs(shells[:, 1]) > 1.0e-9):
+        raise SystemExit("FAIL grid: the shell rows are not keyed by |q|")
+    # The per-mode rows are still available on request.
+    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_modes.dat"),
+         path("s4_grid_modes_sq.dat")])
+    mode_table = read_matrix(path("s4_grid_modes.dat"))
+    modes = np.unique(np.round(mode_table[:, :3], 6), axis=0)
+    # The shells hold 6+12+8+6 = 32 vectors; +- keeps 16 and Gamma adds one.
+    if modes.shape[0] != 17:
+        raise SystemExit("FAIL grid: expected 17 modes, found %d" % modes.shape[0])
+    # The run has to report the isotropy probe next to the mode counts.
+    if "isotropy" not in grid_run.stderr:
+        raise SystemExit("FAIL grid: the isotropy probe is missing from the summary")
+
+    def rows_at(table, qvec):
+        sel = table[np.all(np.abs(table[:, :3] - np.array(qvec)) < 1.0e-6, axis=1)]
+        return sel[np.argsort(sel[:, 3])]
+
+    # Gamma is the q -> 0 limit, i.e. the scalar chi4(t).
+    compare(rows_at(grid, [0.0, 0.0, 0.0])[:, 4].reshape(-1, 1),
+            grid_chi4[:, 2].reshape(-1, 1), "grid: S4(q=0,t) = chi4(t)", rtol=1.0e-12)
+
+    # A lattice mode has to agree with a q line through the same vector.
+    run([exe, "-i", diff_dump, "-w", "unit",
+         *dyn_line("1,0,%.12f,1,0,0" % q1), "--dt", "1", "--maxframes", "8",
+         "--lag", "1", "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_line.dat"),
+         path("s4_grid_line_sq.dat")])
+    compare(rows_at(mode_table, [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
+            rows_at(read_matrix(path("s4_grid_line.dat")), [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
+            "grid: a lattice mode matches the q line", rtol=1.0e-12)
+
+    # The Gamma row is the q -> 0 limit in either flavour.
+    compare(rows_at(mode_table, [0.0, 0.0, 0.0])[:, 4].reshape(-1, 1),
+            grid_chi4[:, 2].reshape(-1, 1), "grid: per-mode Gamma row = chi4(t)",
+            rtol=1.0e-12)
+
+    # The mode budget drops whole shells, keeps the two ends of the q range and
+    # is reported in the table header.
+    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-modes", "12",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_thin.dat"),
+         path("s4_grid_thin_sq.dat")])
+    thin_modes = np.unique(np.round(read_matrix(path("s4_grid_thin.dat"))[:, :3], 6), axis=0)
+    if not 1 < thin_modes.shape[0] <= 12:
+        raise SystemExit("FAIL grid: --dyn-modes 12 gave %d modes" % thin_modes.shape[0])
+    if not any("thinned" in line for line in open(path("s4_grid_thin.dat"))):
+        raise SystemExit("FAIL grid: the thinning is not reported in the header")
+    print("  ok   %-42s %d modes, thinned to %d"
+          % ("grid modes and the mode budget", modes.shape[0], thin_modes.shape[0]))
+
+    # A budget that only the orbit route can meet must be met, not reported as
+    # impossible: three modes are the Gamma point plus two shell
+    # representatives, while one whole shell already costs four.
+    tight = run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-modes", "3",
+                 "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_tight.dat"),
+                 path("s4_grid_tight_sq.dat")])
+    tight_rows = np.unique(np.round(read_matrix(path("s4_grid_tight.dat"))[:, :3], 6), axis=0)
+    if tight_rows.shape[0] != 3:
+        raise SystemExit("FAIL grid: --dyn-modes 3 kept %d rows" % tight_rows.shape[0])
+    if "could not be met" in tight.stderr:
+        raise SystemExit("FAIL grid: --dyn-modes 3 was reported as impossible")
+    print("  ok   %-42s %d rows" % ("grid: the budget ladder reaches the orbit route",
+                                    tight_rows.shape[0]))
+
+    # A shell with two orbits: |n|^2 = 9 holds six (3,0,0) vectors and twenty
+    # four (2,2,1) ones, so a shell average that ignores the multiplicities is
+    # wrong.  Under --dyn-thin orbits one representative per orbit survives and
+    # the collapsed row must be their 6:24 weighted mean, which is an algebraic
+    # identity and therefore comparable to machine precision.
+    def rows_at_q(table, q):
+        sel = table[np.abs(np.linalg.norm(table[:, :3], axis=1) - q) < 1.0e-4]
+        return sel[np.argsort(sel[:, 3])]
+
+    def cubic_orbit_size(miller):
+        return len({tuple(np.array(perm)*np.array(sign))
+                    for perm in permutations(miller)
+                    for sign in product([1, -1], repeat=3)})
+
+    orbit_run = ["--dyn", "--dyn-q", "grid:%.6f" % (3.1*q1), "--dt", "1",
+                 "--maxframes", "8", "--lag", "1", "--dyn-thin", "orbits",
+                 "--dyn-modes", "10"]
+    run([exe, "-i", diff_dump, "-w", "unit", *orbit_run, "--dyn-keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_orbit_modes.dat"),
+         path("s4_orbit_modes_sq.dat")])
+    run([exe, "-i", diff_dump, "-w", "unit", *orbit_run, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_orbit_avg.dat"), path("s4_orbit_avg_sq.dat")])
+    shell = rows_at_q(read_matrix(path("s4_orbit_modes.dat")), 3.0*q1)
+    vectors = np.unique(np.round(shell[:, :3], 6), axis=0)
+    if vectors.shape[0] != 2:
+        raise SystemExit("FAIL grid: expected two orbit representatives at |n| = 3, got %d"
+                         % vectors.shape[0])
+    curves = []
+    for vector in vectors:
+        rows = shell[np.all(np.abs(shell[:, :3] - vector) < 1.0e-6, axis=1)]
+        curves.append(rows[np.argsort(rows[:, 3])][:, 4])
+    curves = np.array(curves)
+    weights = np.array([cubic_orbit_size(np.round(vector/q1).astype(int)) for vector in vectors],
+                       dtype=float)
+    if sorted(weights) != [6.0, 24.0]:
+        raise SystemExit("FAIL grid: unexpected orbit multiplicities %s" % weights)
+    weighted = (weights[:, None]*curves).sum(axis=0)/weights.sum()
+    collapsed = rows_at_q(read_matrix(path("s4_orbit_avg.dat")), 3.0*q1)[:, 4]
+    compare(collapsed.reshape(-1, 1), weighted.reshape(-1, 1),
+            "grid: the shell row is the multiplicity weighted mean", rtol=1.0e-12)
+    if np.allclose(collapsed, curves.mean(axis=0), rtol=1.0e-9):
+        raise SystemExit("FAIL grid: the weighted and plain means coincide, test is vacuous")
+    print("  ok   %-42s weights %s" % ("grid: two-orbit shell weighting",
+                                       weights.astype(int)))
+
     # --buffer-limit is in GB and can be lowered for this small buffer.
     run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
          "--buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
@@ -1234,6 +1359,17 @@ def main():
          "--dyn-q - without --chi4"),
         (["--dyn-q", "line:4,1,4,1,0,0", "--dt", "1", "--maxframes", "8"],
          "--dyn-q without --dyn"),
+        (["--dyn", "--dyn-q", "grid:0", "--dt", "1", "--maxframes", "8"],
+         "--dyn-q grid with a zero qmax"),
+        (["--dyn", "--dyn-q", "line:4,1,4,1,0,0", "--dyn-modes", "4",
+          "--dt", "1", "--maxframes", "8"],
+         "--dyn-modes with a q line"),
+        (["--dyn", "--dyn-q", "line:4,1,4,1,0,0", "--dyn-thin", "orbits",
+          "--dt", "1", "--maxframes", "8"],
+         "--dyn-thin with a q line"),
+        (["--dyn", "--dyn-q", "grid:1", "--dyn-thin", "diagonal",
+          "--dt", "1", "--maxframes", "8"],
+         "--dyn-thin with an unknown policy"),
         (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
         (["--method", "debye", "--s2-accum", "a.dat"],
          "--s2-accum without --pair-entropy"),

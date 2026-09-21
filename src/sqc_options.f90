@@ -11,7 +11,8 @@ module sqc_options
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
                             norm_self, norm_natom, method_dynamic
    use sqc_debye, only: debye_default_dr, debye_default_skin
-   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell
+   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
+   use sqc_modes, only: thin_none, thin_shells, thin_orbits
    use sqc_lebedev, only: lebedev_points, lebedev_order_from_name, &
                           lebedev_low, lebedev_medium, lebedev_high
    implicit none
@@ -87,6 +88,13 @@ module sqc_options
       !> shell: |q| radius and the order of the Lebedev rule it selects.
       real(rk) :: dyn_shell_q = 0.0_rk
       integer :: dyn_shell_order = 0
+      !> grid: the upper bound of |q|, the mode budget and the thinning policy.
+      real(rk) :: dyn_grid_qmax = 0.0_rk
+      integer :: dyn_modes = 0
+      integer :: dyn_thin = thin_none
+      logical :: dyn_modes_given = .false.
+      logical :: dyn_thin_given = .false.
+      logical :: dyn_keep_modes = .false.
       !> MD time step [time units] and the correlation window settings.
       real(rk) :: dt = 0.0_rk
       integer :: maxframes = 0
@@ -187,13 +195,17 @@ contains
                self%partials = .false.
                self%partials_given = .true.
                needs_value = .false.
+            case ('--dyn-keep-modes')
+               self%dyn_keep_modes = .true.
+               needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
                   '--device', '--gpu-id', '--precision', '--grid-format', &
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--pair-entropy', '--s2-accum', &
                   '--dyn-q', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
-                  '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride')
+                  '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride', &
+                  '--dyn-modes', '--dyn-thin')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -318,6 +330,26 @@ contains
                case ('--dyn-q')
                   call parse_dyn_q(self, trim(value), ierr, message)
                   if (ierr /= 0) return
+               case ('--dyn-modes')
+                  read (value, *, iostat=ierr) self%dyn_modes
+                  if (ierr /= 0 .or. self%dyn_modes < 0) then
+                     ierr = 1
+                     message = '--dyn-modes must be a non-negative integer'
+                     return
+                  end if
+                  self%dyn_modes_given = .true.
+               case ('--dyn-thin')
+                  select case (trim(value))
+                  case ('shells')
+                     self%dyn_thin = thin_shells
+                  case ('orbits')
+                     self%dyn_thin = thin_orbits
+                  case default
+                     ierr = 1
+                     message = '--dyn-thin wants "shells" or "orbits"'
+                     return
+                  end select
+                  self%dyn_thin_given = .true.
                case ('--dt')
                   read (value, *, iostat=ierr) self%dt
                   if (ierr /= 0 .or. self%dt <= 0.0_rk) then
@@ -535,6 +567,17 @@ contains
             message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4 or --fqt-self'
             return
          end if
+         if ((self%dyn_modes_given .or. self%dyn_thin_given) .and. &
+             self%dyn_q_mode /= dyn_q_grid) then
+            ierr = 1
+            message = '--dyn-modes and --dyn-thin need --dyn-q grid:QMAX'
+            return
+         end if
+         if (self%dyn_keep_modes .and. self%dyn_q_mode /= dyn_q_grid) then
+            ierr = 1
+            message = '--dyn-keep-modes needs --dyn-q grid:QMAX'
+            return
+         end if
       else if (self%dyn_q_given) then
          ierr = 1
          message = '--dyn-q belongs to --dyn; add --dyn to the command line'
@@ -547,10 +590,11 @@ contains
          return
       else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
                self%dyn_format_given .or. self%s4_cutoff_given .or. &
-               self%buffer_limit_given .or. self%stride_given) then
+               self%buffer_limit_given .or. self%stride_given .or. &
+               self%dyn_modes_given .or. self%dyn_thin_given .or. self%dyn_keep_modes) then
          ierr = 1
          message = '--dt, --maxframes, --lag, --dyn-format, --s4-cutoff, --buffer-limit '// &
-            'and --stride belong to --dyn'
+            'and --stride, --dyn-modes and --dyn-thin belong to --dyn'
          return
       end if
       if (self%method == method_debye) then
@@ -676,10 +720,13 @@ contains
       else if (starts_with(spec, 'shell:')) then
          call parse_dyn_shell(self, spec(7:), ierr, message)
          if (ierr /= 0) return
+      else if (starts_with(spec, 'grid:')) then
+         call parse_dyn_grid(self, spec(6:), ierr, message)
+         if (ierr /= 0) return
       else
          ierr = 1
          message = '--dyn-q wants "-", "line:NINT,S0,S1,DX,DY,DZ" or '// &
-            '"shell:Q,low|medium|high"'
+            '"shell:Q,low|medium|high" or "grid:QMAX"'
          return
       end if
       self%dyn_q_given = .true.
@@ -785,6 +832,38 @@ contains
       self%dyn_q_mode = dyn_q_shell
    end subroutine parse_dyn_shell
 
+   !> Parse "QMAX" of `--dyn-q grid`.
+   !!
+   !! QMAX is the upper bound of |q| in 1/A.  Every reciprocal-lattice vector
+   !! with 0 < |q| <= QMAX is sampled, together with the Gamma point.  Only
+   !! lattice vectors carry a density amplitude that is independent of how the
+   !! periodic images are chosen, so a grid is free of the box-form-factor
+   !! contamination of the off-lattice Lebedev shell; its mode count follows
+   !! from the cell and can be capped with `--dyn-modes`.
+   subroutine parse_dyn_grid(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk) :: qmax
+
+      ierr = 0
+      message = ''
+      read (spec, *, iostat=ierr) qmax
+      if (ierr /= 0) then
+         ierr = 1
+         message = 'cannot read "'//trim(spec)//'" as the qmax of --dyn-q grid'
+         return
+      end if
+      if (qmax <= 0.0_rk) then
+         ierr = 1
+         message = '--dyn-q grid needs a positive qmax'
+         return
+      end if
+      self%dyn_grid_qmax = qmax
+      self%dyn_q_mode = dyn_q_grid
+   end subroutine parse_dyn_grid
+
    !> Split a comma separated option value into at most `size(fields)` tokens.
    !!
    !! `n` is the number of tokens, so a caller that expects a fixed count also
@@ -876,7 +955,12 @@ contains
       write (unit, '(a,i0,a,i0,a,i0,a)') '                      (low, medium and high are the ', &
          lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
          lebedev_points(lebedev_high), ' point rules)'
+      write (unit, '(a)') '                      grid:QMAX  every reciprocal lattice vector |q| <= QMAX'
       write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (with --dyn)'
+      write (unit, '(a)') '      --dyn-modes N   mode budget of grid:QMAX, 0 = unlimited (default)'
+      write (unit, '(a)') '      --dyn-thin NAME order of the grid thinning: shells (default) or orbits'
+      write (unit, '(a)') '      --dyn-keep-modes  write the grid rows per lattice vector instead of'
+      write (unit, '(a)') '                      the |q| shell average (for diagnostics)'
       write (unit, '(a)') '      --maxframes N   correlation window in frames (with --dyn)'
       write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'
       write (unit, '(a)') '      --sqw FILE      S(q,w) spectra, one row per (q,w) (.h5 = HDF5)'

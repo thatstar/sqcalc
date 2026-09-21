@@ -131,7 +131,7 @@ contains
       if (ierr /= 0) return
       allocate (qd(method%nq), sd(method%nq), counts(method%nq))
       do s = 1, method%nq
-         qd(s) = real(method%qmin + (real(s, rk) - 0.5_rk)*method%shell_dq, real64)
+         qd(s) = real(method%q_of_shell(s), real64)
          sd(s) = real(method%shell_value(s), real64)
          counts(s) = method%shell_count(s)
       end do
@@ -213,8 +213,11 @@ contains
    !! dataset S) or "fqt" (axis tau, dataset F).
    subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
                                   nframes, frame_dt, maxframes, lag, weight, norm, overlap, &
-                                  stride, effective_maxframes, ierr, message)
+                                  stride, effective_maxframes, sampling, mode_budget, thinned, &
+                                  ierr, message)
       character(len=*), intent(in) :: path, group, axis_name, weight, norm
+      !> q sampling that produced the table: `line`, `shell` or `grid`.
+      character(len=*), intent(in) :: sampling
       real(rk), intent(in) :: q(:, :)          ! (nq, 4): qx qy qz |q|
       real(rk), intent(in) :: axis(0:)
       real(rk), intent(in) :: spec(:, 0:)
@@ -225,6 +228,9 @@ contains
       real(rk), intent(in) :: frame_dt
       real(rk), intent(in) :: overlap
       integer, intent(in) :: maxframes, lag, stride, effective_maxframes
+      !> Mode budget of the grid sampling (0 = unlimited) and whether it bit.
+      integer, intent(in) :: mode_budget
+      logical, intent(in) :: thinned
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id, subgroup_id
@@ -279,6 +285,13 @@ contains
       end if
       if (ierr == 0 .and. effective_maxframes > 0) then
          call write_int_attr(file_id, 'effective_maxframes', int(effective_maxframes, int64), ierr, message)
+      end if
+      if (ierr == 0) call write_string_attr(file_id, 'sampling', trim(sampling), ierr, message)
+      if (ierr == 0 .and. mode_budget > 0) then
+         call write_int_attr(file_id, 'mode_budget', int(mode_budget, int64), ierr, message)
+      end if
+      if (ierr == 0) then
+         call write_int_attr(file_id, 'thinned', merge(1_int64, 0_int64, thinned), ierr, message)
       end if
       if (ierr /= 0) then
          call h5fclose_f(file_id, idum)

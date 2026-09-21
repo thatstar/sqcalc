@@ -38,6 +38,7 @@ module sqc_dynamics
                                    sf_prepare_species, mode_denominator, norm_self, &
                                    norm_natom, no_unit
    use sqc_lebedev, only: lebedev_rule, lebedev_points
+   use sqc_modes, only: modes_t, modes_build, thin_none, thin_shells, thin_orbits
    use, intrinsic :: iso_c_binding, only: c_double_complex
    use, intrinsic :: iso_fortran_env, only: output_unit
    use omp_lib, only: omp_get_max_threads
@@ -48,12 +49,13 @@ module sqc_dynamics
    private
 
    public :: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
-             dyn_q_none, dyn_q_line, dyn_q_shell
+             dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid
 
    !> q sampling modes of a dynamic run (`--dyn-q`).
    integer, parameter :: dyn_q_none = 0
    integer, parameter :: dyn_q_line = 1
    integer, parameter :: dyn_q_shell = 2
+   integer, parameter :: dyn_q_grid = 3
 
    !> Output flavours of the two optional files.
    integer, parameter :: dyn_format_text = 0
@@ -82,6 +84,32 @@ module sqc_dynamics
       integer :: q_mode = dyn_q_none
       real(rk) :: shell_q = 0.0_rk
       integer :: shell_order = 0
+      !> Reciprocal-lattice grid sampling: qmax, mode budget, thinning policy,
+      !! and what the build actually produced (for the run summary).
+      real(rk) :: grid_qmax = 0.0_rk
+      integer :: grid_budget = 0
+      integer :: grid_thin = thin_none
+      integer :: grid_nops = 0
+      integer :: grid_nshell = 0
+      integer :: grid_nshell_kept = 0
+      logical :: grid_thinned = .false.
+      logical :: grid_budget_met = .true.
+      !> Lattice shell and orbit multiplicity of every mode (grid sampling).
+      integer, allocatable :: grid_shell(:), grid_orbit(:), orbit_mult(:)
+      !> Modes of the grid before the rows were collapsed onto the shells, and
+      !! whether the per-mode rows were kept instead.
+      integer :: grid_nmodes = 0
+      logical :: keep_modes = .false.
+      !> Isotropy probe of a grid run: at the lag of the chi4 peak, the S4
+      !! values of the modes that share the smallest lattice shell.  Their
+      !! expectation is equal for an equilibrium isotropic system, so their
+      !! spread is a cheap smoke test for the orbit reduction and for the
+      !! shell average.
+      logical :: probe_valid = .false.
+      real(rk) :: probe_tau = 0.0_rk
+      real(rk) :: probe_mean = 0.0_rk
+      real(rk) :: probe_spread = 0.0_rk
+      integer :: probe_modes = 0
       !> Quadrature weight of every q mode: 1 on a line, the Lebedev weights on
       !! a shell (the shell average is `sum_k w_k X_k / sum_k w_k`).
       real(rk), allocatable :: mode_weight(:)
@@ -176,6 +204,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk) :: u(3), norm_u, s_i
       integer :: i
+      type(modes_t) :: grid
 
       ierr = 0
       message = ''
@@ -238,6 +267,47 @@ contains
          self%shell_dq = 0.0_rk
          self%qmin = self%shell_q
          self%qmax = self%shell_q
+      case (dyn_q_grid)
+         ! Reciprocal-lattice sampling.  Only a lattice vector carries a
+         ! density amplitude that is independent of how the periodic images
+         ! are chosen, so this is the sampling the OZ fit of S4(q,t) needs;
+         ! the modes are one output row each, exactly like the q line.
+         call modes_build(grid, frame%cell, self%grid_qmax, .true., self%grid_budget, &
+                          self%grid_thin, ierr, message)
+         if (ierr /= 0) return
+         if (grid%nmodes < 1) then
+            ierr = 1
+            message = 'the reciprocal-lattice grid came out empty'
+            return
+         end if
+         self%nmodes = int(grid%nmodes, lk)
+         allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
+                   self%shell(self%nmodes), self%gidx(self%nmodes), &
+                   self%shell_radii(self%nmodes), self%orbit_mult(self%nmodes), &
+                   self%grid_shell(self%nmodes), self%grid_orbit(self%nmodes))
+         do i = 1, int(self%nmodes)
+            self%qvec(:, i) = grid%qvec(:, i)
+            self%qlen(i) = grid%qlen(i)
+            self%shell_radii(i) = grid%qlen(i)
+            self%shell(i) = i
+            self%gidx(i) = int(i, lk)
+            self%orbit_mult(i) = grid%orbit_mult(i)
+            self%grid_shell(i) = grid%shell(i)
+            self%grid_orbit(i) = grid%orbit(i)
+         end do
+         ! The lattice shells are not evenly spaced, so the rows carry their
+         ! own |q| instead of the qmin + (s-1/2) dq formula.
+         self%label_by_shell_radius = .true.
+         self%shell_dq = 0.0_rk
+         self%qmin = minval(self%qlen)
+         self%qmax = maxval(self%qlen)
+         self%grid_nops = grid%nops
+         self%grid_nshell = grid%nshell
+         self%grid_nshell_kept = grid%nshell_kept
+         self%grid_thinned = grid%thinned
+         self%grid_budget_met = grid%budget_met
+         self%grid_nmodes = int(self%nmodes)
+         call grid%finalize()
       case default
          ! No q points at all: the scalar overlap Q(t)/chi4(t) is all that is
          ! left, and it needs neither the density amplitudes nor a table.
@@ -805,7 +875,278 @@ contains
       ! A shell has one |q| and many directions, so its modes collapse into the
       ! single row that every writer expects.
       if (self%q_mode == dyn_q_shell) call dyn_shell_average(self)
+      if (self%q_mode == dyn_q_grid .and. self%s4_enabled) call dyn_isotropy_probe(self)
+      ! Every downstream use of a grid wants the isotropic average: the OZ fit
+      ! of S4(q,t), the powder average of F(q,t), the isotropic S(q,w).  A run
+      ! that needs the individual lattice vectors asks for them with
+      ! --dyn-keep-modes.
+      if (self%q_mode == dyn_q_grid .and. .not. self%keep_modes) call dyn_collapse_shells(self)
    end subroutine dyn_prepare_output
+
+   !> Collapse the grid tables onto one row per lattice shell.
+   !!
+   !! The rows are weighted by the orbit multiplicities divided by how many
+   !! members of the orbit survived the thinning.  That is what makes a shell
+   !! that holds several lattice orbits come out right: for `|n|^2 = 9` the
+   !! 6-fold `(3,0,0)` orbit has to count six times against the 24-fold
+   !! `(2,2,1)` one.  After the `+-` reduction every orbit keeps half of its
+   !! members, so the weights are uniform and the row is the plain mean; with
+   !! `--dyn-thin orbits` one representative per orbit survives and it carries
+   !! the full multiplicity of its orbit.  Either way the result estimates the
+   !! same isotropic shell average.
+   !!
+   !! This works on the assembled tables, so it costs no extra accumulation.
+   !! The Gamma point is a row of its own, with unit weight.
+   subroutine dyn_collapse_shells(self)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      real(rk), allocatable :: weight(:), wsum(:), row_q(:)
+      real(rk), allocatable :: r2a(:, :), r3a(:, :, :)
+      real(rk), allocatable :: r1a(:), r1b(:), v1(:)
+      real(rk), allocatable :: pnum(:, :, :)
+      integer, allocatable :: row_of(:)
+      integer(lk), allocatable :: cnt2(:, :)
+      integer :: nrow, im, r, prev, nkeep_o
+
+      if (.not. allocated(self%grid_shell)) return
+      if (self%nmodes <= 0) return
+
+      ! Row of every mode: the shells are contiguous and sorted by |q|, and the
+      ! Gamma point comes first with shell index 0.
+      allocate (row_of(self%nmodes), row_q(self%nmodes))
+      nrow = 0
+      prev = -1
+      do im = 1, int(self%nmodes)
+         if (self%grid_shell(im) /= prev) then
+            nrow = nrow + 1
+            prev = self%grid_shell(im)
+            row_q(nrow) = self%qlen(im)
+         end if
+         row_of(im) = nrow
+      end do
+      if (nrow >= int(self%nmodes)) then
+         deallocate (row_of, row_q)
+         return
+      end if
+
+      ! Weight of every mode: how many lattice vectors its orbit stands for.
+      allocate (weight(self%nmodes), wsum(nrow))
+      wsum = 0.0_rk
+      do im = 1, int(self%nmodes)
+         if (self%grid_shell(im) == 0) then
+            weight(im) = 1.0_rk
+         else
+            nkeep_o = count(self%grid_orbit == self%grid_orbit(im))
+            weight(im) = real(self%orbit_mult(im), rk)/real(max(nkeep_o, 1), rk)
+         end if
+         wsum(row_of(im)) = wsum(row_of(im)) + weight(im)
+      end do
+
+      ! Collapse every assembled table, then swap it back into the type.
+      if (allocated(self%s4)) then
+         call collapse_lag_table(self%s4, row_of, weight, wsum, r2a)
+         call move_alloc(r2a, self%s4)
+      end if
+      if (allocated(self%ftau)) then
+         call collapse_lag_table(self%ftau, row_of, weight, wsum, r2a)
+         call move_alloc(r2a, self%ftau)
+      end if
+      if (allocated(self%sqw)) then
+         call collapse_lag_table(self%sqw, row_of, weight, wsum, r2a)
+         call move_alloc(r2a, self%sqw)
+      end if
+      if (allocated(self%fqt_self_total)) then
+         call collapse_lag_table(self%fqt_self_total, row_of, weight, wsum, r2a)
+         call move_alloc(r2a, self%fqt_self_total)
+      end if
+      if (allocated(self%ftau_partial)) then
+         call collapse_lag_pair(self%ftau_partial, row_of, weight, wsum, r3a)
+         call move_alloc(r3a, self%ftau_partial)
+      end if
+      if (allocated(self%sqw_partial)) then
+         call collapse_lag_pair(self%sqw_partial, row_of, weight, wsum, r3a)
+         call move_alloc(r3a, self%sqw_partial)
+      end if
+      if (allocated(self%fqt_self_partial)) then
+         call collapse_lag_pair(self%fqt_self_partial, row_of, weight, wsum, r3a)
+         call move_alloc(r3a, self%fqt_self_partial)
+      end if
+
+      ! The static table: num is accumulated per mode and den is the single
+      ! frame normalization, so both take the same weights and their ratio is
+      ! the weighted shell average.
+      if (allocated(self%num) .and. allocated(self%den)) then
+         allocate (r1a(nrow), r1b(nrow))
+         r1a = 0.0_rk
+         r1b = 0.0_rk
+         do im = 1, int(self%nmodes)
+            r = row_of(im)
+            r1a(r) = r1a(r) + weight(im)*self%num(im)
+            r1b(r) = r1b(r) + weight(im)*self%den(im)
+         end do
+         call move_alloc(r1a, self%num)
+         call move_alloc(r1b, self%den)
+      end if
+      if (allocated(self%shell_count)) then
+         allocate (v1(nrow))
+         v1 = 0.0_rk
+         do im = 1, int(self%nmodes)
+            v1(row_of(im)) = v1(row_of(im)) + 1.0_rk
+         end do
+         deallocate (self%shell_count)
+         allocate (self%shell_count(nrow))
+         self%shell_count = int(v1, lk)
+         deallocate (v1)
+      end if
+      if (self%partials .and. allocated(self%partial_num)) then
+         allocate (pnum(self%ntypes, self%ntypes, nrow))
+         pnum = 0.0_rk
+         do im = 1, int(self%nmodes)
+            pnum(:, :, row_of(im)) = pnum(:, :, row_of(im)) + weight(im)*self%partial_num(:, :, im)
+         end do
+         call move_alloc(pnum, self%partial_num)
+      end if
+
+      ! Row labels and bookkeeping.
+      deallocate (self%qlen)
+      allocate (self%qlen(nrow))
+      self%qlen = row_q(1:nrow)
+      deallocate (row_q)
+      do r = 1, nrow
+         self%qvec(:, r) = [0.0_rk, 0.0_rk, self%qlen(r)]
+         self%shell(r) = r
+         self%gidx(r) = int(r, lk)
+      end do
+      if (allocated(self%shell_radii)) then
+         deallocate (self%shell_radii)
+         allocate (self%shell_radii(nrow))
+         self%shell_radii = self%qlen
+      end if
+      if (allocated(self%grid_shell)) deallocate (self%grid_shell)
+      if (allocated(self%grid_orbit)) deallocate (self%grid_orbit)
+      if (allocated(self%orbit_mult)) deallocate (self%orbit_mult)
+
+      ! The origin counts are the same for every mode of a run, but the HDF5
+      ! writer groups them per row, so they follow the rows down as well.
+      if (allocated(self%sample_cnt)) then
+         allocate (cnt2(nrow, 0:size(self%sample_cnt, 2) - 1))
+         do r = 1, nrow
+            cnt2(r, :) = self%sample_cnt(1, :)
+         end do
+         call move_alloc(cnt2, self%sample_cnt)
+      end if
+      if (allocated(self%ccnt)) then
+         allocate (cnt2(nrow, 0:size(self%ccnt, 2) - 1))
+         do r = 1, nrow
+            cnt2(r, :) = self%ccnt(1, :)
+         end do
+         call move_alloc(cnt2, self%ccnt)
+      end if
+      self%nmodes = nrow
+      self%nq = nrow
+      deallocate (row_of, weight, wsum)
+   end subroutine dyn_collapse_shells
+
+   !> Weighted row sum of a table with one lag axis.
+   subroutine collapse_lag_table(src, row_of, weight, wsum, dst)
+      real(rk), intent(in) :: src(:, 0:)
+      integer, intent(in) :: row_of(:)
+      real(rk), intent(in) :: weight(:), wsum(:)
+      real(rk), allocatable, intent(out) :: dst(:, :)
+      integer :: im, r, k
+
+      allocate (dst(size(wsum), 0:ubound(src, 2)))
+      dst = 0.0_rk
+      do im = 1, size(row_of)
+         r = row_of(im)
+         do k = 0, ubound(src, 2)
+            dst(r, k) = dst(r, k) + weight(im)*src(im, k)
+         end do
+      end do
+      do r = 1, size(wsum)
+         if (wsum(r) > 0.0_rk) dst(r, :) = dst(r, :)/wsum(r)
+      end do
+   end subroutine collapse_lag_table
+
+   !> Weighted row sum of a table with a lag axis and a pair/species axis.
+   subroutine collapse_lag_pair(src, row_of, weight, wsum, dst)
+      real(rk), intent(in) :: src(:, 0:, :)
+      integer, intent(in) :: row_of(:)
+      real(rk), intent(in) :: weight(:), wsum(:)
+      real(rk), allocatable, intent(out) :: dst(:, :, :)
+      integer :: im, r, k, p
+
+      allocate (dst(size(wsum), 0:ubound(src, 2), size(src, 3)))
+      dst = 0.0_rk
+      do im = 1, size(row_of)
+         r = row_of(im)
+         do p = 1, size(src, 3)
+            do k = 0, ubound(src, 2)
+               dst(r, k, p) = dst(r, k, p) + weight(im)*src(im, k, p)
+            end do
+         end do
+      end do
+      do r = 1, size(wsum)
+         if (wsum(r) > 0.0_rk) dst(r, :, :) = dst(r, :, :)/wsum(r)
+      end do
+   end subroutine collapse_lag_pair
+
+   !> Spread of S4 among the symmetry related modes of the first shell.
+   !!
+   !! The modes of one lattice shell are related by the point group of the
+   !! periodic box, so an equilibrium isotropic system has to give them the
+   !! same S4 in expectation.  This is the assumption behind both the orbit
+   !! reduction and the shell average, and it is cheap to check: the probe
+   !! reports their spread at the lag of the chi4 peak.
+   !!
+   !! The spread is not an error bar on its own.  It has to be compared with
+   !! the run-to-run scatter of a single mode (a second run with another
+   !! `--lag`, or the two halves of the trajectory), which is the recipe the
+   !! skill reference gives.  A spread that stays far above that scatter, and
+   !! that does not shrink with the system size, means the trajectory is not
+   !! equilibrated or the system is not isotropic, and then neither the orbit
+   !! reduction nor an isotropic correlation length may be trusted.
+   subroutine dyn_isotropy_probe(self)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      real(rk) :: value, best, vmin, vmax, vsum
+      integer :: im, j, jpeak, n, count
+
+      self%probe_valid = .false.
+      if (.not. allocated(self%grid_shell)) return
+      if (.not. allocated(self%s4)) return
+
+      ! The peak of the scalar overlap fluctuation sets the time scale the
+      ! four-point analysis is quoted at.
+      jpeak = 0
+      best = -huge(1.0_rk)
+      do j = 0, self%nsteps
+         n = int(self%sample_cnt(1, j))
+         if (n <= 1) cycle
+         value = (self%chi4_asum(j) - self%chi4_bsum(j)**2/real(n, rk))/real(n - 1, rk)
+         if (value > best) then
+            best = value
+            jpeak = j
+         end if
+      end do
+
+      vmin = huge(1.0_rk)
+      vmax = -huge(1.0_rk)
+      vsum = 0.0_rk
+      count = 0
+      do im = 1, int(self%nmodes)
+         if (self%grid_shell(im) /= 1) cycle
+         value = self%s4(im, jpeak)
+         vmin = min(vmin, value)
+         vmax = max(vmax, value)
+         vsum = vsum + value
+         count = count + 1
+      end do
+      if (count < 2 .or. vsum <= 0.0_rk) return
+      self%probe_valid = .true.
+      self%probe_modes = count
+      self%probe_tau = self%sample_tau(jpeak)
+      self%probe_mean = vsum/real(count, rk)
+      self%probe_spread = (vmax - vmin)/self%probe_mean
+   end subroutine dyn_isotropy_probe
 
    !> Collapse the per-mode shell results into one quadrature averaged row.
    !!
@@ -1394,6 +1735,23 @@ contains
             lebedev_points(self%shell_order), ' points)'
          return
       end if
+      if (self%q_mode == dyn_q_grid) then
+         if (self%keep_modes) then
+            write (unit, '(a,f10.6,a,i0,a,i0,a,i0,a)') '# q grid |q| <= ', self%grid_qmax, &
+               ' 1/A: one row per reciprocal lattice vector, ', self%nmodes, ' modes in ', &
+               self%grid_nshell_kept, ' shells, lattice point group of order ', self%grid_nops
+         else
+            write (unit, '(a,f10.6,a,i0,a,i0,a,i0,a)') '# q grid |q| <= ', self%grid_qmax, &
+               ' 1/A: isotropic average per lattice shell, ', self%nmodes, ' shells from ', &
+               self%grid_nmodes, ' lattice vectors, point group of order ', self%grid_nops
+            write (unit, '(a)') '# each row is the shell average over the reciprocal lattice '// &
+               'vectors of that |q|, weighted by their orbit multiplicities'
+         end if
+         if (self%grid_thinned) then
+            write (unit, '(a)') '# note: the mode budget thinned the grid, see the run summary'
+         end if
+         return
+      end if
       unorm = sqrt(sum(self%direction**2))
       write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
          ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
@@ -1414,6 +1772,7 @@ contains
       character(len=18), allocatable :: labels(:)
       character(len=:), allocatable :: group
       character(len=32) :: wlabel, nlabel
+      character(len=8) :: sampling
       real(rk) :: overlap
       integer(lk), allocatable :: count_use(:, :)
       integer :: im, p, t, u, npair, maxframes_use, stride_use, effective_maxframes_use
@@ -1421,6 +1780,14 @@ contains
       ierr = 0
       message = ''
       overlap = -1.0_rk
+      select case (self%q_mode)
+      case (dyn_q_grid)
+         sampling = 'grid'
+      case (dyn_q_shell)
+         sampling = 'shell'
+      case default
+         sampling = 'line'
+      end select
       maxframes_use = self%maxframes
       stride_use = -1
       effective_maxframes_use = -1
@@ -1467,7 +1834,8 @@ contains
       call hdf5_write_dynamics(path, group, axis_name, q4, axis, spec, part, labels, count_use, &
                                self%nframes, self%frame_dt, maxframes_use, self%lag_stride, &
                                trim(wlabel), trim(nlabel), overlap, stride_use, &
-                               effective_maxframes_use, ierr, message)
+                               effective_maxframes_use, trim(sampling), self%grid_budget, &
+                               self%grid_thinned, ierr, message)
       deallocate (q4, labels, count_use)
    end subroutine dyn_write_hdf5
 #endif

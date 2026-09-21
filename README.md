@@ -113,7 +113,10 @@ With `--dyn` these options select the $q$ sampling and the correlation window:
 | dynamic option                | meaning                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------- |
 | `--dyn`                     | keep the time axis: dynamic structure factor, S4 and overlap (see below) |
-| `--dyn-q SPEC`              | q sampling: `-` (default, no q points), `line:NINT,S0,S1,DX,DY,DZ` or `shell:Q,ACC` |
+| `--dyn-q SPEC`              | q sampling: `-` (default, no q points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC` or `grid:QMAX` |
+| `--dyn-modes N`             | mode budget of `--dyn-q grid` (0 = unlimited, the default)                  |
+| `--dyn-thin KIND`           | order of the grid thinning: `shells` (default) or `orbits`                  |
+| `--dyn-keep-modes`          | write the grid rows per lattice vector instead of the $\|q\|$ shell average  |
 | `--dt VALUE`                | time step of the trajectory (the LAMMPS`timestep`), required by `--dyn` |
 | `--maxframes L`             | correlation window in frames (largest lag kept), required by`--dyn`       |
 | `--lag N`                   | frames between consecutive time origins (default 1)                         |
@@ -252,6 +255,17 @@ reciprocal space sampling is a separate choice, `--dyn-q`:
 | `-` (default) | none | `--chi4`: the overlap $Q(t)$ and $\chi_4(t)$ |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
 | `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
+| `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
+
+With `grid:QMAX` the q points are the reciprocal-lattice vectors of the box with
+$|\mathbf q| \le Q_{\max}$, plus the $\Gamma$ point.  Only a lattice vector
+carries a density amplitude that does not depend on the choice of the periodic
+images, so this is the sampling an Ornstein-Zernike fit of $S_4(q,t)$ wants:
+the tables hold one row per lattice shell at $q = (0,0,|q|)$, averaged over the
+lattice vectors of that $|q|$ with their orbit multiplicities, the $\Gamma$ row
+is $\chi_4(t)$, and a run with `--s4` also reports the spread of the symmetry
+related modes of the smallest shell, which is the isotropy assumption behind
+the reduction.  Add `--dyn-keep-modes` for the per-vector rows.
 
 A run without q points computes no $S(q)$ at all: it takes no `OUTPUT` table,
 and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected, which leaves the

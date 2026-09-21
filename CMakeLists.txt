@@ -138,6 +138,7 @@ add_library(
   src/sqc_element_data.f90
   src/sqc_elements.f90
   src/sqc_cell.f90
+  src/sqc_modes.f90
   src/sqc_dump.f90
   src/sqc_neighbour_list.f90
   src/sqc_weights.f90
