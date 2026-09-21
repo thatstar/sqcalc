@@ -1409,6 +1409,58 @@ def main():
     else:
         print("  skip %-42s scipy is not installed" % "shell sampling vs reference")
 
+    # --- a q line long enough for the separable phase evaluation ----------
+    # The scale of a line steps by a constant, so its phase is a
+    # mode-independent start s0 times the n-th power of one factor table - the
+    # same identity the grid uses, but on a single axis.  A line switches to
+    # it from phase_min_modes = 16 points on, which is longer than every other
+    # line in this suite, so this is the only coverage of the line tables.
+    print("separable q line (--dyn-q line, 16 points or more)")
+    long_spec = "20,2,3,1,0,0"         # 21 q points from 2 to 3 along x
+    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "line:" + long_spec,
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_long.dat"), "--chi4", path("chi4_long.dat"),
+         "--fqt", path("fq_long.dat"), "--fqt-self", path("fs_long.dat"),
+         "--sqw", path("sqw_long.dat"), path("s4_long_sq.dat")])
+    # The references sum the line directly, so they pin the factor tables and
+    # the base term of the first axis independently of the recurrence.
+    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+         "--output-s4", path("s4_long_ref.dat")])
+    run([sys.executable, ref_self, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+         "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
+         "--output", path("fs_long_ref.dat")])
+    run([sys.executable, ref_dyn, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+         "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
+         "--norm", "mean", "--output-fqt", path("fq_long_ref.dat"),
+         "--output-sqw", path("sqw_long_ref.dat")])
+    compare(read_matrix(path("s4_long.dat")), read_matrix(path("s4_long_ref.dat")),
+            "separable line: S4(q,t) vs reference", rtol=1.0e-9)
+    compare(read_matrix(path("fs_long.dat")), read_matrix(path("fs_long_ref.dat")),
+            "separable line: F_s(q,t) vs reference", rtol=1.0e-9)
+    compare(read_matrix(path("fq_long.dat")), read_matrix(path("fq_long_ref.dat")),
+            "separable line: F(q,t) vs reference", rtol=1.0e-9)
+    compare(read_matrix(path("sqw_long.dat")), read_matrix(path("sqw_long_ref.dat")),
+            "separable line: S(q,w) vs reference", rtol=1.0e-9)
+    # The two ends of the long line are the two points of the short line the
+    # rest of the suite uses, and that one stays on the direct branch: the two
+    # evaluations have to meet there.
+    long_s4 = read_matrix(path("s4_long.dat"))
+    for q_value in (2.0, 3.0):
+        compare(rows_at(read_matrix(path("s4.dat")), [q_value, 0.0, 0.0])[:, 4].reshape(-1, 1),
+                rows_at(long_s4, [q_value, 0.0, 0.0])[:, 4].reshape(-1, 1),
+                "separable line: direct vs separable at |q| = %g" % q_value, rtol=1.0e-11)
+    # A line through Gamma turns the base term off; it has to agree too.
+    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "line:20,0,4,1,0,0",
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_long0.dat"), path("s4_long0_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:20,0,4,1,0,0",
+         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+         "--output-s4", path("s4_long0_ref.dat")])
+    compare(read_matrix(path("s4_long0.dat")), read_matrix(path("s4_long0_ref.dat")),
+            "separable line: s0 = 0 vs reference", rtol=1.0e-9)
+    print("  ok   %-42s 21 points, base on and off" % "separable q line")
+
     # option validation
     bad = [
         (dyn_line(dyn_spec) + ["--maxframes", "20"], "--dyn without --dt"),

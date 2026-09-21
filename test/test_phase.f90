@@ -23,13 +23,15 @@ program test_phase
    real(rk), parameter :: two_pi = 2.0_rk*acos(-1.0_rk)
    integer, parameter :: ntrial = 20000
    complex(c_double_complex) :: t(3, 0:width - 1), value, expected, wrapped
-   real(rk) :: phi(3), phase, r(3), worst, dev, worse
-   integer :: nm(3), n(3), i, j, nfail
+   complex(c_double_complex) :: base(3)
+   real(rk) :: phi(3), phase, r(3), worst, worse, basedev, g, s0, step
+   integer :: nm(3), n(3), i, j, k, nfail
 
    nfail = 0
    nm = nmax
    worst = 0.0_rk
    worse = 0.0_rk
+   basedev = 0.0_rk
    do i = 1, ntrial
       call random_number(phi)
       phi = two_pi*(phi - 0.5_rk)            ! projections may be negative
@@ -64,6 +66,36 @@ program test_phase
       nfail = nfail + 1
       write (error_unit, '(a)') 'FAIL: the n = 0 factor is not 1'
    end if
+
+   ! A q line adds a mode-independent start `s0` to the scale, which becomes
+   ! the base of the first table: the entry has to be
+   ! `exp(i (s0 + n step) g)` rather than `exp(i n phi)`.  The recurrence has
+   ! to build the negative half from that base too - conjugating the positive
+   ! half would be right only for a real base.
+   do i = 1, ntrial
+      call random_number(g)
+      g = two_pi*(g - 0.5_rk)
+      call random_number(s0)
+      s0 = 4.0_rk*(s0 - 0.5_rk)
+      call random_number(step)
+      step = 1.0_rk + step
+      base = (1.0_rk, 0.0_rk)
+      base(1) = cmplx(cos(s0*g), sin(s0*g), c_double_complex)
+      call phase_tables(t, [step*g, 0.0_rk, 0.0_rk], nm, base)
+      do k = -nmax, nmax
+         n(1) = k
+         phase = (s0 + real(k, rk)*step)*g
+         expected = cmplx(cos(phase), sin(phase), c_double_complex)
+         basedev = max(basedev, abs(t(1, k + nmax) - expected))
+         basedev = max(basedev, abs(phase_factor(t, nm, [k, 0, 0]) - expected))
+      end do
+   end do
+   if (basedev > 1.0e-14_rk) then
+      nfail = nfail + 1
+      write (error_unit, '(a,es12.3)') 'FAIL: the q-line base is not applied by the recurrence ', &
+         basedev
+   end if
+
    if (worst > 1.0e-14_rk) then
       nfail = nfail + 1
       write (error_unit, '(a,es12.3)') 'FAIL: factor deviates from the direct phase by ', worst

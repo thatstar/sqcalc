@@ -328,6 +328,14 @@ than transforming the $(q_{\max}L)^3$ grid.  Off-lattice $q$ requires
 unwrapped coordinates, which `--dyn` reconstructs while reading if the dump
 carries only wrapped `x y z` (preferring `xu yu zu` when available).
 
+Because the scale steps by a constant, a line is also separable: writing
+$q_i \cdot \mathbf r = S_0 (\hat u \cdot \mathbf r) + i\,\Delta s\,
+(\hat u \cdot \mathbf r)$, the phase of mode $i$ is a mode independent start
+times the $i$-th power of one factor, exactly as for a lattice mode.  A line of
+16 points or more is therefore evaluated with one factor table per atom, and a
+shorter one - where the table build would cost more than it saves - with a
+sine and cosine per (mode, atom) pair.
+
 With `--dyn-q shell:Q,ACC` the quantity is instead the isotropic average over
 the sphere of radius $Q$,
 

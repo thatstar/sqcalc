@@ -51,28 +51,54 @@ contains
 
    !> Fill the three factor tables of one atom.
    !!
-   !! `t(j, n + nmax(j))` receives `exp(i n phi_j)` for `n = -nmax(j) .. nmax(j)`.
-   !! The negative half is the conjugate of the positive half, so the table
-   !! costs `nmax(j)` complex multiplies per axis.  The table must be at least
-   !! `2*maxval(nmax)` wide, which lets the three axes share one array even
-   !! when their index ranges differ (a triclinic box).
-   subroutine phase_tables(t, phi, nmax)
+   !! `t(j, n + nmax(j))` receives `base_j * exp(i n phi_j)` for
+   !! `n = -nmax(j) .. nmax(j)`, built by a recurrence along each axis so that
+   !! the table costs `nmax(j)` complex multiplies.  The table must be at
+   !! least `2*maxval(nmax)` wide, which lets the three axes share one array
+   !! even when their index ranges differ (a triclinic box).
+   !!
+   !! `base` is the mode-independent part of the phase.  A reciprocal-lattice
+   !! mode needs none (every `base_j` is 1) because its phase is a pure sum of
+   !! index terms.  A q line starts its scale at a non-zero `s0`, a term that
+   !! carries no index, so its first axis takes that start as a base.  The
+   !! negative half is then a different series from the positive one and gets
+   !! its own recurrence; conjugating the positive half is only right while
+   !! the base is real, i.e. absent.
+   subroutine phase_tables(t, phi, nmax, base)
       complex(c_double_complex), intent(inout) :: t(:, 0:)
       real(rk), intent(in) :: phi(3)
       integer, intent(in) :: nmax(3)
+      complex(c_double_complex), intent(in), optional :: base(3)
       complex(c_double_complex) :: u, prod
+      complex(c_double_complex) :: c0(3)
       integer :: j, n, off
 
+      c0 = (1.0_rk, 0.0_rk)
+      if (present(base)) c0 = base
       do j = 1, 3
          off = max(nmax(j), 0)
          u = cmplx(cos(phi(j)), sin(phi(j)), c_double_complex)
-         t(j, off) = (1.0_rk, 0.0_rk)
-         prod = (1.0_rk, 0.0_rk)
+         t(j, off) = c0(j)
+         prod = c0(j)
          do n = 1, off
             prod = prod*u
             t(j, off + n) = prod
-            t(j, off - n) = conjg(prod)
          end do
+         if (present(base)) then
+            ! With a base the two halves are different series, so the
+            ! negative one needs its own recurrence.
+            prod = c0(j)
+            do n = 1, off
+               prod = prod*conjg(u)
+               t(j, off - n) = prod
+            end do
+         else
+            ! Without one (`c0_j` is exactly 1) the negative half is the
+            ! conjugate of the positive half, which costs no multiply.
+            do n = 1, off
+               t(j, off - n) = conjg(t(j, off + n))
+            end do
+         end if
       end do
    end subroutine phase_tables
 

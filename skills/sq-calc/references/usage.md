@@ -212,7 +212,9 @@ scale running from `S0` to `S1` in 1/A along the direction `(DX,DY,DZ)`; every
 line passes through the Gamma point.  `--dyn-q line:100,0.5,20,1,1,0` is
 therefore 101 q points from 0.5 to 20 1/A along (1,1,0).  Off-lattice $q$ is
 the point of the method: it is what an experiment at that $q$ measures, and
-the reciprocal grid methods cannot reach it.
+the reciprocal grid methods cannot reach it.  The constant scale step makes a
+long line separable, so from 16 points on it is evaluated with one phase factor
+table per atom, exactly like a lattice mode.
 
 #### A q shell
 

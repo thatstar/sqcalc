@@ -102,9 +102,19 @@ module sqc_dynamics
       !! lattice sampling, which is what allows the separable phase evaluation.
       integer, allocatable :: mode_index(:, :)
       integer :: index_max(3) = 0
-      !> Reciprocal basis of the box, and one phase-factor table per thread
-      !! plus the per-thread mode accumulators that go with them.
+      !> Phase gradients: the argument of the factor table of axis `j` is
+      !! `phi_j = recip(:, j) . r`, with `r` the position (rho) or the
+      !! displacement (F_s).  A reciprocal-lattice mode fills the columns
+      !! with the reciprocal basis `b_j`; a q line puts its step `dq*u` in
+      !! the first column and leaves the other two at zero.  One phase-factor
+      !! table per thread follows, plus the per-thread accumulators.
       real(rk) :: recip(3, 3) = 0.0_rk
+      !> Mode-independent start of a q line: the first mode's phase is
+      !! `phase_base_vec . r`, so the table of axis 1 has to be built from
+      !! `exp(i phase_base_vec.r)` rather than from 1.  Unset, and therefore
+      !! exactly 1, for a lattice sampling.
+      logical :: phase_base_on = .false.
+      real(rk) :: phase_base_vec(3) = 0.0_rk
       integer :: phase_threads = 1
       complex(c_double_complex), allocatable :: phase_pool(:, :, :)
       complex(c_double_complex), allocatable :: acc_thread(:, :)
@@ -259,6 +269,21 @@ contains
          self%shell_dq = (self%s1 - self%s0)/real(self%nintervals, rk)
          self%qmin = self%s0 - 0.5_rk*self%shell_dq
          self%qmax = self%s1 + 0.5_rk*self%shell_dq
+         ! Separable phases of the line.  The scale steps by a constant, so
+         ! q_i . r = s0*(u.r) + i*dq*(u.r): a mode-independent base times the
+         ! i-th power of one factor, i.e. one table on the first axis with the
+         ! other two held at index 0.  The gradient columns hold dq*u, and the
+         ! base carries the s0*u part, both from the Cartesian direction
+         ! because a line is not a lattice vector.
+         allocate (self%mode_index(3, self%nmodes))
+         do i = 1, int(self%nmodes)
+            self%mode_index(:, i) = [i - 1, 0, 0]
+         end do
+         self%index_max = [self%nintervals, 0, 0]
+         self%recip = 0.0_rk
+         self%recip(:, 1) = self%shell_dq*u
+         self%phase_base_on = abs(self%s0) > 0.0_rk
+         self%phase_base_vec = self%s0*u
       case (dyn_q_shell)
          ! Every direction of the shell |q| = Q, on a Lebedev rule.  The modes
          ! are averaged into a single output row once they are assembled.
@@ -548,7 +573,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       complex(c_double_complex) :: acc
-      real(rk) :: qx, qy, qz, phase, dx, dy, dz, phi(3)
+      real(rk) :: qx, qy, qz, phase, dx, dy, dz
       integer :: t_frame, slot, sample_slot, sample, l, j, oslot, im, isp, jsp, i, k, nover
       integer :: tid, nthread
 
@@ -580,17 +605,12 @@ contains
             ! Separable phases, as in the S4 branch: the atom loop is the
             ! parallel one, and every mode costs two complex multiplies.
             self%rho_thread = (0.0_rk, 0.0_rk)
-            !$omp parallel private(i, im, isp, tid, phi)
+            !$omp parallel private(i, im, isp, tid)
             tid = 1
             !$ tid = omp_get_thread_num() + 1
             !$omp do schedule(static)
             do i = 1, int(self%natoms)
-               do im = 1, 3
-                  phi(im) = self%recip(1, im)*frame%pos(1, i) &
-                          + self%recip(2, im)*frame%pos(2, i) &
-                          + self%recip(3, im)*frame%pos(3, i)
-               end do
-               call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+               call dyn_atom_phase(self, frame%pos(:, i), tid)
                isp = int(self%species_of(i))
                do im = 1, int(self%nmodes)
                   self%rho_thread(im, isp, tid) = self%rho_thread(im, isp, tid) &
@@ -706,17 +726,12 @@ contains
                   ! with phi_j = b_j . dr_i, so F_s costs two complex multiplies
                   ! per (mode, atom) as well.
                   self%fs_thread = (0.0_rk, 0.0_rk)
-                  !$omp parallel private(i, im, isp, tid, phi)
+                  !$omp parallel private(i, im, isp, tid)
                   tid = 1
                   !$ tid = omp_get_thread_num() + 1
                   !$omp do schedule(static)
                   do i = 1, int(self%natoms)
-                     do im = 1, 3
-                        phi(im) = self%recip(1, im)*self%disp_scratch(1, i) &
-                                + self%recip(2, im)*self%disp_scratch(2, i) &
-                                + self%recip(3, im)*self%disp_scratch(3, i)
-                     end do
-                     call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+                     call dyn_atom_phase(self, self%disp_scratch(:, i), tid)
                      isp = int(self%species_of(i))
                      do im = 1, int(self%nmodes)
                         self%fs_thread(im, isp, tid) = self%fs_thread(im, isp, tid) &
@@ -776,18 +791,13 @@ contains
                   ! thread order so the sum stays reproducible.
                   nthread = self%phase_threads
                   self%acc_thread = (0.0_rk, 0.0_rk)
-                  !$omp parallel private(k, i, im, tid, phi)
+                  !$omp parallel private(k, i, im, tid)
                   tid = 1
                   !$ tid = omp_get_thread_num() + 1
                   !$omp do schedule(static)
                   do k = 1, nover
                      i = int(self%over_list(k))
-                     do im = 1, 3
-                        phi(im) = self%recip(1, im)*self%pos_buffer(1, i, oslot) &
-                                + self%recip(2, im)*self%pos_buffer(2, i, oslot) &
-                                + self%recip(3, im)*self%pos_buffer(3, i, oslot)
-                     end do
-                     call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+                     call dyn_atom_phase(self, self%pos_buffer(:, i, oslot), tid)
                      do im = 1, int(self%nmodes)
                         self%acc_thread(im, tid) = self%acc_thread(im, tid) &
                            + phase_factor(self%phase_pool(:, :, tid), self%index_max, &
@@ -842,6 +852,37 @@ contains
 
       self%nframes = self%nframes + 1
    end subroutine dyn_accumulate
+
+   !> Fill the phase-factor tables of one atom's contribution.
+   !!
+   !! `r` is the position of the atom for the density amplitude and its
+   !! displacement for `F_s`; both enter only as the three projections
+   !! `phi_j = recip(:, j) . r` that the separable evaluation needs.  A q line
+   !! additionally carries the mode-independent start `s0` of its scale, which
+   !! becomes the base of the first table - no lattice sampling has one, so
+   !! the base-free build is the common case and stays a branch away.
+   subroutine dyn_atom_phase(self, r, tid)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      real(rk), intent(in) :: r(3)
+      integer, intent(in) :: tid
+      complex(c_double_complex) :: base(3)
+      real(rk) :: phi(3), d
+      integer :: im
+
+      do im = 1, 3
+         phi(im) = self%recip(1, im)*r(1) + self%recip(2, im)*r(2) &
+                 + self%recip(3, im)*r(3)
+      end do
+      if (self%phase_base_on) then
+         d = self%phase_base_vec(1)*r(1) + self%phase_base_vec(2)*r(2) &
+           + self%phase_base_vec(3)*r(3)
+         base = (1.0_rk, 0.0_rk)
+         base(1) = cmplx(cos(d), sin(d), c_double_complex)
+         call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max, base)
+      else
+         call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+      end if
+   end subroutine dyn_atom_phase
 
    !> Assemble the static table, F(q,tau) and the spectra.
    subroutine dyn_prepare_output(self, scheme, ierr, message)
