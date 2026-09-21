@@ -11,6 +11,9 @@ module sqc_options
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
                             norm_self, norm_natom, method_dynamic
    use sqc_debye, only: debye_default_dr, debye_default_skin
+   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell
+   use sqc_lebedev, only: lebedev_points, lebedev_order_from_name, &
+                          lebedev_low, lebedev_medium, lebedev_high
    implicit none
    private
 
@@ -72,13 +75,18 @@ module sqc_options
       logical :: quiet = .false.
       logical :: show_help = .false.
       logical :: show_version = .false.
-      !> Dynamic structure factor (--dyn and its parameters).
+      !> Dynamic run (--dyn) and the q sampling that feeds it (--dyn-q).
       logical :: dynamic = .false.
-      !> q line: NINT intervals, scale from S0 to S1 along (DX, DY, DZ).
+      integer :: dyn_q_mode = dyn_q_none
+      logical :: dyn_q_given = .false.
+      !> line: NINT intervals, scale from S0 to S1 along (DX, DY, DZ).
       integer :: dyn_intervals = 0
       real(rk) :: dyn_s0 = 0.0_rk
       real(rk) :: dyn_s1 = 0.0_rk
       real(rk) :: dyn_dir(3) = 0.0_rk
+      !> shell: |q| radius and the order of the Lebedev rule it selects.
+      real(rk) :: dyn_shell_q = 0.0_rk
+      integer :: dyn_shell_order = 0
       !> MD time step [time units] and the correlation window settings.
       real(rk) :: dt = 0.0_rk
       integer :: maxframes = 0
@@ -155,6 +163,15 @@ contains
             case ('-q', '--quiet')
                self%quiet = .true.
                needs_value = .false.
+            case ('--dyn')
+               if (has_inline) then
+                  ierr = 1
+                  message = '--dyn takes no value; pick the q sampling with --dyn-q, e.g. '// &
+                     '--dyn-q line:100,0.5,20,1,1,0'
+                  return
+               end if
+               self%dynamic = .true.
+               needs_value = .false.
             case ('--no-cutoff-correction')
                self%no_cutoff_correction = .true.
                needs_value = .false.
@@ -175,7 +192,7 @@ contains
                   '--device', '--gpu-id', '--precision', '--grid-format', &
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--pair-entropy', '--s2-accum', &
-                  '--dyn', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
+                  '--dyn-q', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
                   '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
@@ -298,8 +315,8 @@ contains
                   self%pair_entropy_output = trim(value)
                case ('--s2-accum')
                   self%s2_accum_output = trim(value)
-               case ('--dyn')
-                  call parse_dyn(self, trim(value), ierr, message)
+               case ('--dyn-q')
+                  call parse_dyn_q(self, trim(value), ierr, message)
                   if (ierr /= 0) return
                case ('--dt')
                   read (value, *, iostat=ierr) self%dt
@@ -430,17 +447,18 @@ contains
       end do
 
       if (self%show_help .or. self%show_version) return
-      if (npos < 1) then
-         ierr = 1
-         message = 'missing output argument (use - for stdout)'
-         return
+      ! A stray value after --dyn is the old command line, which carried the q
+      ! line itself; name the replacement instead of treating it as OUTPUT.
+      if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
+         do i = 1, npos
+            if (index(positional(i), ',') > 0) then
+               ierr = 1
+               message = '--dyn takes no value; pick the q sampling with --dyn-q, e.g. '// &
+                  '--dyn-q line:'//trim(positional(i))
+               return
+            end if
+         end do
       end if
-      if (npos > 1) then
-         ierr = 1
-         message = 'only one output argument is allowed'
-         return
-      end if
-      self%output = trim(positional(1))
       if (.not. allocated(self%input)) then
          ierr = 1
          message = 'missing input dump file (-i)'
@@ -485,7 +503,7 @@ contains
          end if
          if (self%want_grid) then
             ierr = 1
-            message = 'the dynamic method samples a q line; --grid is not available'
+            message = 'the dynamic method samples a q line or shell; --grid is not available'
             return
          end if
          if (self%device == device_gpu) then
@@ -517,6 +535,10 @@ contains
             message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4 or --fqt-self'
             return
          end if
+      else if (self%dyn_q_given) then
+         ierr = 1
+         message = '--dyn-q belongs to --dyn; add --dyn to the command line'
+         return
       else if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
                allocated(self%fqt_self_output) .or. allocated(self%s4_output) .or. &
                allocated(self%chi4_output)) then
@@ -557,6 +579,43 @@ contains
             return
          end if
       end if
+
+      ! The positional S(q) table is judged once the flags are consistent: a
+      ! run without q points has nothing to tabulate.
+      if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
+         if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
+             allocated(self%fqt_self_output) .or. allocated(self%s4_output)) then
+            ierr = 1
+            message = '--sqw, --fqt, --fqt-self and --s4 need a q sampling; add '// &
+               '--dyn-q line:... or --dyn-q shell:...'
+            return
+         end if
+         if (.not. allocated(self%chi4_output)) then
+            ierr = 1
+            message = '--dyn-q - computes only --chi4; add --chi4 FILE or a q sampling'
+            return
+         end if
+      end if
+      if (npos > 1) then
+         ierr = 1
+         message = 'only one output argument is allowed'
+         return
+      end if
+      if (npos == 0) then
+         ! Only a run without any q sampling can do without the S(q) table.
+         if (.not. (self%dynamic .and. self%dyn_q_mode == dyn_q_none)) then
+            ierr = 1
+            message = 'missing output argument (use - for stdout)'
+            return
+         end if
+      else
+         if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
+            ierr = 1
+            message = '--dyn-q - computes no S(q) table; drop the OUTPUT argument'
+            return
+         end if
+         self%output = trim(positional(1))
+      end if
       if (.not. self%want_grid) self%grid_output = ''
       ! Default the grid format from the file name.
       if (self%want_grid .and. .not. self%grid_format_given) then
@@ -594,51 +653,67 @@ contains
       end if
    end subroutine parse_options
 
-   !> Parse the packed `--dyn` specification "NINT,S0,S1,DX,DY,DZ".
+   !> Parse the q sampling of a dynamic run (`--dyn-q SPEC`).
+   !!
+   !! `-` keeps the time axis without sampling q at all, so only the scalar
+   !! overlap Q(t) and chi4(t) can be computed.  `line:NINT,S0,S1,DX,DY,DZ` is
+   !! the density amplitude along a line in reciprocal space through Gamma, and
+   !! `shell:Q,ACC` averages every direction of the shell |q| = Q on a Lebedev
+   !! grid of the requested accuracy.
+   subroutine parse_dyn_q(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+
+      ierr = 0
+      message = ''
+      if (trim(spec) == '-') then
+         self%dyn_q_mode = dyn_q_none
+      else if (starts_with(spec, 'line:')) then
+         call parse_dyn_line(self, spec(6:), ierr, message)
+         if (ierr /= 0) return
+      else if (starts_with(spec, 'shell:')) then
+         call parse_dyn_shell(self, spec(7:), ierr, message)
+         if (ierr /= 0) return
+      else
+         ierr = 1
+         message = '--dyn-q wants "-", "line:NINT,S0,S1,DX,DY,DZ" or '// &
+            '"shell:Q,low|medium|high"'
+         return
+      end if
+      self%dyn_q_given = .true.
+   end subroutine parse_dyn_q
+
+   !> Parse "NINT,S0,S1,DX,DY,DZ" of `--dyn-q line`.
    !!
    !! NINT is the number of intervals of the q line (so NINT+1 q points), S0/S1
    !! the range of its scale in 1/A, and DX,DY,DZ the (unnormalized) direction.
-   subroutine parse_dyn(self, spec, ierr, message)
+   subroutine parse_dyn_line(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       character(len=48) :: fields(6)
       real(rk) :: values(6)
-      integer :: i, j, n, start, last
-      logical :: at_end
+      integer :: j, n
 
       ierr = 0
       message = ''
       fields = ' '
       values = 0.0_rk
-      n = 0
-      start = 1
-      last = len_trim(spec)
-      do i = 1, last + 1
-         ! Fortran does not short-circuit .or., so the end of the string has to
-         ! be tested separately before spec(i:i) is evaluated.
-         at_end = i > last
-         if (.not. at_end) at_end = spec(i:i) == ','
-         if (at_end) then
-            if (i > start) then
-               n = n + 1
-               if (n > 6) exit
-               fields(n) = spec(start:i - 1)
-            end if
-            start = i + 1
-         end if
-      end do
+      call split_fields(spec, fields, n)
       if (n /= 6) then
          ierr = 1
-         message = '--dyn wants NINT,S0,S1,DX,DY,DZ, e.g. --dyn 100,0.5,20,1,1,0'
+         message = '--dyn-q line wants NINT,S0,S1,DX,DY,DZ, e.g. '// &
+            '--dyn-q line:100,0.5,20,1,1,0'
          return
       end if
       do j = 1, 6
          read (fields(j), *, iostat=ierr) values(j)
          if (ierr /= 0) then
             ierr = 1
-            message = 'cannot read "'//trim(fields(j))//'" as a number in --dyn'
+            message = 'cannot read "'//trim(fields(j))//'" as a number in --dyn-q line'
             return
          end if
       end do
@@ -648,21 +723,109 @@ contains
       self%dyn_dir = values(4:6)
       if (self%dyn_intervals < 1) then
          ierr = 1
-         message = '--dyn needs at least one interval on the q line'
+         message = '--dyn-q line needs at least one interval on the q line'
          return
       end if
       if (self%dyn_s1 <= self%dyn_s0 .or. self%dyn_s0 < 0.0_rk) then
          ierr = 1
-         message = '--dyn needs 0 <= S0 < S1 for the scale of the q line'
+         message = '--dyn-q line needs 0 <= S0 < S1 for the scale of the q line'
          return
       end if
       if (sum(self%dyn_dir**2) <= 0.0_rk) then
          ierr = 1
-         message = '--dyn needs a non-zero direction, e.g. 1,1,0'
+         message = '--dyn-q line needs a non-zero direction, e.g. 1,1,0'
          return
       end if
-      self%dynamic = .true.
-   end subroutine parse_dyn
+      self%dyn_q_mode = dyn_q_line
+   end subroutine parse_dyn_line
+
+   !> Parse "Q,ACC" of `--dyn-q shell`.
+   !!
+   !! Q is the radius of the shell in 1/A and ACC one of the accuracy names of
+   !! the Lebedev rules: low, medium or high.
+   subroutine parse_dyn_shell(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=48) :: fields(2)
+      real(rk) :: radius
+      integer :: order, n
+
+      ierr = 0
+      message = ''
+      fields = ' '
+      call split_fields(spec, fields, n)
+      if (n /= 2) then
+         ierr = 1
+         message = '--dyn-q shell wants Q,low|medium|high, e.g. '// &
+            '--dyn-q shell:2.5,medium'
+         return
+      end if
+      read (fields(1), *, iostat=ierr) radius
+      if (ierr /= 0) then
+         ierr = 1
+         message = 'cannot read "'//trim(fields(1))//'" as the |q| of --dyn-q shell'
+         return
+      end if
+      if (radius <= 0.0_rk) then
+         ierr = 1
+         message = '--dyn-q shell needs a positive |q| radius'
+         return
+      end if
+      order = lebedev_order_from_name(trim(fields(2)))
+      if (order < 0) then
+         ierr = 1
+         message = 'unknown --dyn-q shell accuracy "'//trim(fields(2))// &
+            '" (use low, medium or high)'
+         return
+      end if
+      self%dyn_shell_q = radius
+      self%dyn_shell_order = order
+      self%dyn_q_mode = dyn_q_shell
+   end subroutine parse_dyn_shell
+
+   !> Split a comma separated option value into at most `size(fields)` tokens.
+   !!
+   !! `n` is the number of tokens, so a caller that expects a fixed count also
+   !! rejects a value with too many fields (`n` becomes `size(fields) + 1`).
+   subroutine split_fields(text, fields, n)
+      character(len=*), intent(in) :: text
+      character(len=*), intent(out) :: fields(:)
+      integer, intent(out) :: n
+      integer :: i, start, last
+      logical :: at_end
+
+      fields = ' '
+      n = 0
+      start = 1
+      last = len_trim(text)
+      do i = 1, last + 1
+         ! Fortran does not short-circuit .or., so the end of the string has to
+         ! be tested separately before text(i:i) is evaluated.
+         at_end = i > last
+         if (.not. at_end) at_end = text(i:i) == ','
+         if (at_end) then
+            if (i > start) then
+               n = n + 1
+               if (n > size(fields)) exit
+               fields(n) = text(start:i - 1)
+            end if
+            start = i + 1
+         end if
+      end do
+   end subroutine split_fields
+
+   !> Case sensitive prefix test for the `--dyn-q` keywords.
+   pure logical function starts_with(text, prefix) result(found)
+      character(len=*), intent(in) :: text, prefix
+      integer :: n
+
+      n = len(prefix)
+      found = .false.
+      if (len(text) < n) return
+      found = text(1:n) == prefix
+   end function starts_with
 
    !> Case sensitive file suffix test used for the grid format default.
    pure logical function ends_with(text, suffix) result(found)
@@ -703,9 +866,16 @@ contains
       write (unit, '(a)') '      --pair-entropy FILE  total and partial pair entropy S2/kB'
       write (unit, '(a)') '      --s2-accum FILE  S2(r) accumulation curve for tail extrapolation'
       write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
-      write (unit, '(a)') '      --dyn SPEC      dynamic structure factor S(q,w) along a q line:'
-      write (unit, '(a)') '                      NINT,S0,S1,DX,DY,DZ, e.g. 100,0.5,20,1,1,0'
+      write (unit, '(a)') '      --dyn           keep the time axis: dynamic structure factor and'
+      write (unit, '(a)') '                      the four-point structure factor and overlap'
+      write (unit, '(a)') '      --dyn-q SPEC    q sampling of --dyn; default "-" (chi4 only):'
+      write (unit, '(a)') '                      -   no q points, only --chi4 is available'
+      write (unit, '(a)') '                      line:NINT,S0,S1,DX,DY,DZ  q line through Gamma,'
       write (unit, '(a)') '                      NINT intervals, scale S0..S1 [1/A], direction'
+      write (unit, '(a)') '                      shell:Q,low|medium|high  Lebedev average on |q| = Q'
+      write (unit, '(a,i0,a,i0,a,i0,a)') '                      (low, medium and high are the ', &
+         lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
+         lebedev_points(lebedev_high), ' point rules)'
       write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (with --dyn)'
       write (unit, '(a)') '      --maxframes N   correlation window in frames (with --dyn)'
       write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'

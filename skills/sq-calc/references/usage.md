@@ -5,8 +5,10 @@ sqcalc -i DUMP [options] OUTPUT
 ```
 
 `OUTPUT` is the shell averaged $S(q)$ table and `-` writes it to stdout.  `-i`
-is the only required option.  The table goes to `OUTPUT` and progress goes to
-stderr, so `-q`/`--quiet` keeps logs clean.
+is the only required option, and a `--dyn` run with `--dyn-q -` (the default
+there) takes no `OUTPUT` argument at all, because it computes no $S(q)$.  The
+table goes to `OUTPUT` and progress goes to stderr, so `-q`/`--quiet` keeps
+logs clean.
 
 ## Options
 
@@ -34,7 +36,8 @@ stderr, so `-q`/`--quiet` keeps logs clean.
 | `--pair-entropy FILE` | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$ |
 | `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
-| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor $S(q,\omega)$ along a $q$ line (see below) |
+| `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor and overlap (see below) |
+| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ` or `shell:Q,ACC` |
 | `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
 | `--maxframes L` | correlation window in frames (the largest lag kept), required by `--dyn` |
 | `--lag N` | frames between two consecutive time origins (default 1) |
@@ -179,25 +182,56 @@ asymptote and can be compared directly with the partials of other systems,
 while the default (OVITO) partials tend to the concentrations $x_a$ and hide
 the structure behind the composition.
 
-### Dynamic structure factor (`--dyn`)
+### The dynamic run (`--dyn`, `--dyn-q`)
 
 The other methods average the snapshots as an unordered ensemble and return
-$S(q)$; `--dyn` keeps the time axis and returns $S(q,\omega)$ along one line in
-reciprocal space.  The line is one comma separated argument,
+$S(q)$; `--dyn` keeps the time axis instead.  It is a plain flag: `--dt` and
+`--maxframes` set the time axis, and `--dyn-q SPEC` chooses how reciprocal
+space is sampled,
 
-```sh
---dyn NINT,S0,S1,DX,DY,DZ
-```
+| `--dyn-q` | q points | outputs |
+| --- | --- | --- |
+| `-` (default) | none | only `--chi4` ($Q(t)$ and $\chi_4(t)$) |
+| `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
+| `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
 
-`NINT` intervals (so `NINT+1` q points) with the scale running from `S0` to
-`S1` in 1/A along the direction `(DX,DY,DZ)`; every line passes through the
-Gamma point.  `--dyn 100,0.5,20,1,1,0` is therefore 101 q points from 0.5 to
-20 1/A along (1,1,0).  Off-lattice $q$ is the point of the method: it is what
-an experiment at that $q$ measures, and the reciprocal grid methods cannot
-reach it.
+Without q points there is no $S(q)$ at all: the run takes no `OUTPUT` table,
+and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the
+cheapest way to get $Q(t)$ and $\chi_4(t)$, which only need the overlap of the
+displaced positions.
+
+#### A q line
+
+`line:NINT,S0,S1,DX,DY,DZ` are `NINT` intervals (so `NINT+1` q points) with the
+scale running from `S0` to `S1` in 1/A along the direction `(DX,DY,DZ)`; every
+line passes through the Gamma point.  `--dyn-q line:100,0.5,20,1,1,0` is
+therefore 101 q points from 0.5 to 20 1/A along (1,1,0).  Off-lattice $q$ is
+the point of the method: it is what an experiment at that $q$ measures, and
+the reciprocal grid methods cannot reach it.
+
+#### A q shell
+
+`shell:Q,ACC` puts every direction of the sphere $|q| = Q$ on a Lebedev grid
+and averages the results,
+
+$$
+\bar X(Q) = \frac{\sum_k w_k X(q_k)}{\sum_k w_k},
+$$
+
+with the standard Lebedev weights $w_k$ (they sum to $4\pi$).  `ACC` selects
+the rule: `low` is the order 11 rule with 50 directions, `medium` order 17 with
+110, and `high` order 23 with 194.  That is enough to integrate a smooth
+$S(q,\omega)$ over the sphere to better than the statistical noise, and it
+gives the isotropic average that a powder or a simulation with no preferred
+direction actually measures.  The static table, $F(q,t)$, $S(q,\omega)$,
+$S_4(q,t)$ and $F_s(q,t)$ are all shell averages; each is written as a single
+row at $q = (0,0,Q)$, and the static table is labelled by $|q| = Q$.  The
+average is taken over the *normalized* $S(q)$ of every direction, which matters
+for `-w xray`, where the form factor and hence the denominator depend on $q$
+even at fixed $|q|$.
 
 The dynamics come from the same density amplitudes $\rho_a(q,t)$, evaluated by
-direct summation on the line and correlated in time with a multi-origin
+direct summation at the sampled $q$ and correlated in time with a multi-origin
 estimator over a ring buffer,
 
 $$C_{ab}(q,\tau) = \langle \rho_a(q,t+\tau)\rho_b^*(q,t)\rangle,$$
@@ -320,12 +354,23 @@ only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 static `OUTPUT` table is still written.  A run with only `--sqw`/`--fqt` does
 not allocate the S4 position buffer.  `--fqt-self` allocates that shared
-position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.
+position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.  With
+`--dyn-q -` there are no density amplitudes at all, so only `--chi4` is left
+and no `OUTPUT` table is taken.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
-sqcalc -i traj.dump -w unit --dyn 20,0.5,4,1,1,0 --dt 0.005 --maxframes 400 \
+sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
+       --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
+
+# the same overlap dynamics without any q points, and no S(q) table
+sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
+       --s4-cutoff 1.0 --chi4 chi4.dat
+
+# the isotropic average on one shell: 110 Lebedev directions at |q| = 2.5 1/A
+sqcalc -i traj.dump -w unit --dyn --dyn-q shell:2.5,medium \
+       --dt 0.005 --maxframes 400 --sqw S_qw.dat S_q.dat
 ```
 
 ### Self intermediate scattering function (`--fqt-self`)
@@ -458,7 +503,7 @@ sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
 # dynamic structure factor along (1,1,0), 101 q points, dumped every 10 steps
 # of dt = 0.005 (frame interval 0.05), window 400 frames
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
-       --dyn 100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --dyn --dyn-q line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
        --sqw S_qw.dat S_q.dat
 ```
 
@@ -485,9 +530,10 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
 * With `-w neutron`/`xray` a type missing from the mapping, or an element
   without tabulated data, is rejected with a clear message; `-w unit` needs no
   mapping and labels the partials by type id instead.
-* The shell table reports 0 for shells the box cannot sample.  Pick `--qmin`
-  and `--nq` with `scripts/choose_q.py` before trusting the low-$q$ end, and
-  read the Faber-Ziman partials (`-fz`) when comparing partials across
+* The `OUTPUT` table reports 0 for the grid shells the box cannot sample (the
+  `--dyn-q shell:` average is a single shell and is never empty).  Pick
+  `--qmin` and `--nq` with `scripts/choose_q.py` before trusting the low-$q$
+  end, and read the Faber-Ziman partials (`-fz`) when comparing partials across
   concentrations.
 * Grids above 4e8 points are refused (about 6 GB); `--grid` is written single
   threaded and does not affect the shell table.

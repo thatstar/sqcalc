@@ -8,13 +8,14 @@ CUDA GPU with cuFFT, which averages $|\rho(q)|^2$, and the real space Debye
 pair-histogram method.  The table also carries the partial structure factors
 $S_{ab}(q)$, one column per pair of LAMMPS types.
 
-With `--dyn` the time axis is kept instead of being averaged away, and the
-run writes the dynamic structure factor $S(q,\omega)$ along a line in
-reciprocal space, plus optionally the intermediate scattering function
-$F(q,t)$.  The same dynamic run can also write the four-point structure factor
-$S_4(q,t)$, the average overlap $Q(t)$ and the dynamic susceptibility
-$\chi_4(t)$ with `--s4` and `--chi4`.  That method correlates the density
-amplitudes (or the overlap field) in time rather than averaging their squares.
+With `--dyn` the time axis is kept instead of being averaged away.  `--dyn-q`
+chooses what is sampled in reciprocal space - a line, a single spherical shell,
+or nothing at all - and the run writes the dynamic structure factor
+$S(q,\omega)$, optionally with the intermediate scattering function $F(q,t)$.
+The same dynamic run can also write the four-point structure factor $S_4(q,t)$,
+the average overlap $Q(t)$ and the dynamic susceptibility $\chi_4(t)$ with
+`--s4` and `--chi4`.  That method correlates the density amplitudes (or the
+overlap field) in time rather than averaging their squares.
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -107,11 +108,12 @@ With `--method debye` these options select the pair histogram:
 | `--s2-accum FILE`        | the $S_2(r)$ accumulation curve for tail extrapolation                                                                                              |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic)                                       |
 
-With `--dyn` these options select the $q$ line and the correlation window:
+With `--dyn` these options select the $q$ sampling and the correlation window:
 
 | dynamic option                | meaning                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `--dyn NINT,S0,S1,DX,DY,DZ` | dynamic structure factor$S(q,\omega)$ along a $q$ line (see below)      |
+| `--dyn`                     | keep the time axis: dynamic structure factor, S4 and overlap (see below) |
+| `--dyn-q SPEC`              | q sampling: `-` (default, no q points), `line:NINT,S0,S1,DX,DY,DZ` or `shell:Q,ACC` |
 | `--dt VALUE`                | time step of the trajectory (the LAMMPS`timestep`), required by `--dyn` |
 | `--maxframes L`             | correlation window in frames (largest lag kept), required by`--dyn`       |
 | `--lag N`                   | frames between consecutive time origins (default 1)                         |
@@ -153,8 +155,17 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
 # dynamic structure factor along (1,1,0): 101 q points from 0.5 to 20 1/A,
 # frames every 10 steps of dt = 0.005, a 400 frame correlation window
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
-       --dyn 100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --dyn --dyn-q line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
        --sqw S_qw.dat S_q.dat
+
+# the same run averaged over a spherical shell of |q| = 2.5 1/A
+sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
+       --dyn --dyn-q shell:2.5,medium --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat S_q.dat
+
+# and the overlap dynamics alone: no q points, no S(q) table
+sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
+       --s4-cutoff 1.0 --chi4 chi4.dat
 ```
 
 ## Theoretical background
@@ -233,10 +244,23 @@ entropy; use the NUFFT/direct $S(q)$ for that.
 
 ### Dynamic structure factor
 
-`--dyn` follows the recipe used by the dynasor and MDANSE packages: pick a
-line in reciprocal space, evaluate the density amplitudes there, correlate
-them in time and Fourier transform the correlation.  With $q_i = s_i\,\hat{u}$
-and
+`--dyn` keeps the time axis instead of averaging the snapshots away.  The
+reciprocal space sampling is a separate choice, `--dyn-q`:
+
+| `--dyn-q` | q points | outputs |
+| --- | --- | --- |
+| `-` (default) | none | `--chi4`: the overlap $Q(t)$ and $\chi_4(t)$ |
+| `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
+| `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
+
+A run without q points computes no $S(q)$ at all: it takes no `OUTPUT` table,
+and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected, which leaves the
+cheapest route to $Q(t)$ and $\chi_4(t)$.
+
+With a q line, `--dyn` follows the recipe used by the dynasor and MDANSE
+packages: pick a line in reciprocal space, evaluate the density amplitudes
+there, correlate them in time and Fourier transform the correlation.  With
+$q_i = s_i\,\hat{u}$ and
 
 $$
 s_i = S_0 + i\,\frac{S_1 - S_0}{N_{\mathrm{int}}}
@@ -280,6 +304,20 @@ points of a line scan the direct sum costs $O(N\,n_q)$ per frame, far less
 than transforming the $(q_{\max}L)^3$ grid.  Off-lattice $q$ requires
 unwrapped coordinates, which `--dyn` reconstructs while reading if the dump
 carries only wrapped `x y z` (preferring `xu yu zu` when available).
+
+With `--dyn-q shell:Q,ACC` the quantity is instead the isotropic average over
+the sphere of radius $Q$,
+
+$$
+\bar X(Q) = \frac{\sum_k w_k X(q_k)}{\sum_k w_k},
+$$
+
+where the $q_k$ are the points of a Lebedev rule and the $w_k$ its weights
+(which sum to $4\pi$).  `ACC` selects the rule: `low` is order 11 with 50
+directions, `medium` order 17 with 110 and `high` order 23 with 194.  Every
+output becomes a single row at $q = (0,0,Q)$, and the average is taken over the
+normalized $S(q)$ of every direction, so that the $q$ dependent X-ray form
+factors are averaged correctly even at a fixed $|q|$.
 
 ### Four-point structure factor and dynamic susceptibility
 
@@ -406,10 +444,13 @@ multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 static `OUTPUT` table is still written.  Conversely, a run with only
 `--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`
 allocates that shared buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.
+With `--dyn-q -` there are no density amplitudes at all, so `--chi4` is the
+only output and no `OUTPUT` table is taken.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
-sqcalc -i traj.dump -w unit --dyn 20,0.5,4,1,1,0 --dt 0.005 --maxframes 400 \
+sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
+       --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
 ```
 

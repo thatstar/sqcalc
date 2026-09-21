@@ -13,11 +13,13 @@
 !!   h5read file.h5 rdf      -> "# r g(r) Si-Si Si-O ..." table
 !!   h5read file.h5 s4       -> "# qx qy qz tau S4(q,t)" table
 !!   h5read file.h5 chi4     -> "# tau Q(t) chi4(t)" table
+!!   h5read file.h5 count G  -> the per-lag origin counts of the dynamic group G
 program h5read
    use, intrinsic :: iso_fortran_env, only: int32, int64, real64, error_unit, output_unit
    use hdf5
    implicit none
    character(len=512) :: path, which
+   character(len=512) :: subject
    integer(hid_t) :: file_id, group_id, subgroup_id
    integer :: hdferr, i, j, n, npairs
    real(real64), allocatable :: q(:), s(:), qx(:), qy(:), qz(:)
@@ -26,12 +28,16 @@ program h5read
    real(real64), allocatable :: part3(:, :, :)
    real(real64), allocatable :: q2(:, :), spec(:, :), spec2(:, :), axis(:)
    character(len=18), allocatable :: dnames(:)
+   integer(int64), allocatable :: cnt(:, :)
+   integer :: ncount1, ncount2
    integer :: nq, ncol, naxis, naxis_check, nq_check, npairs2, kk
 
    call get_command_argument(1, path)
    call get_command_argument(2, which)
+   call get_command_argument(3, subject)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
-      write (error_unit, '(a)') 'usage: h5read FILE (grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum)'
+      write (error_unit, '(a)') 'usage: h5read FILE '// &
+         '(grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|count GROUP)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -260,6 +266,20 @@ program h5read
          write (output_unit, '(a)') ''
       end do
       call h5gclose_f(group_id, hdferr)
+   case ('count')
+      ! Origin count per (q, axis) sample of a dynamic group; the shell and
+      ! chi4 groups need it to judge how much a long lag is worth.
+      call h5gopen_f(file_id, trim(subject), group_id, hdferr)
+      if (hdferr /= 0) then
+         write (error_unit, '(a)') 'cannot open the group "'//trim(subject)//'"'
+         stop 4
+      end if
+      call read_int_grid(group_id, 'count', cnt, ncount1, ncount2)
+      write (output_unit, '(a,a,a)') '# ', trim(subject), '/count'
+      do j = 1, ncount1
+         write (output_unit, '(*(i0,1x))') (cnt(j, i), i = 1, ncount2)
+      end do
+      call h5gclose_f(group_id, hdferr)
    case default
       write (error_unit, '(a)') 'unknown table "'//trim(which)//'"'
       stop 3
@@ -319,6 +339,40 @@ contains
       call h5sclose_f(space_id, hdferr)
       call h5dclose_f(dset_id, hdferr)
    end subroutine read_real_1d
+
+   !> Read the 64 bit origin counts of a group as rows.
+   !!
+   !! The coherent and S4 groups store one row per q mode, while chi4 is a
+   !! scalar time series, so a 1D dataset is returned as a single row.
+   subroutine read_int_grid(group, name, values, n1, n2)
+      integer(hid_t), intent(in) :: group
+      character(len=*), intent(in) :: name
+      integer(int64), allocatable, intent(out) :: values(:, :)
+      integer, intent(out) :: n1, n2
+      integer(hid_t) :: dset_id, space_id
+      integer(hsize_t) :: dims(2), maxdims(2)
+      integer(hsize_t) :: dims1(1), maxdims1(1)
+      integer :: hdferr, rank
+
+      call h5dopen_f(group, trim(name), dset_id, hdferr)
+      call h5dget_space_f(dset_id, space_id, hdferr)
+      call h5sget_simple_extent_ndims_f(space_id, rank, hdferr)
+      if (rank == 1) then
+         call h5sget_simple_extent_dims_f(space_id, dims1, maxdims1, hdferr)
+         n1 = 1
+         n2 = int(dims1(1))
+         allocate (values(n1, n2))
+         call h5dread_f(dset_id, H5T_STD_I64LE, values(1, :), dims1, hdferr)
+      else
+         call h5sget_simple_extent_dims_f(space_id, dims, maxdims, hdferr)
+         n1 = int(dims(1))
+         n2 = int(dims(2))
+         allocate (values(n1, n2))
+         call h5dread_f(dset_id, H5T_STD_I64LE, values, dims, hdferr)
+      end if
+      call h5sclose_f(space_id, hdferr)
+      call h5dclose_f(dset_id, hdferr)
+   end subroutine read_int_grid
 
    !> Read a fixed length string dataset (1D).
    subroutine read_string_1d(group, name, values, n)

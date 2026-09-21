@@ -37,6 +37,7 @@ module sqc_dynamics
    use sqc_structure_factor, only: structure_factor_t, sf_shared_setup, sf_alloc_partials, &
                                    sf_prepare_species, mode_denominator, norm_self, &
                                    norm_natom, no_unit
+   use sqc_lebedev, only: lebedev_rule, lebedev_points
    use, intrinsic :: iso_c_binding, only: c_double_complex
    use, intrinsic :: iso_fortran_env, only: output_unit
    use omp_lib, only: omp_get_max_threads
@@ -46,7 +47,13 @@ module sqc_dynamics
    implicit none
    private
 
-   public :: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5
+   public :: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
+             dyn_q_none, dyn_q_line, dyn_q_shell
+
+   !> q sampling modes of a dynamic run (`--dyn-q`).
+   integer, parameter :: dyn_q_none = 0
+   integer, parameter :: dyn_q_line = 1
+   integer, parameter :: dyn_q_shell = 2
 
    !> Output flavours of the two optional files.
    integer, parameter :: dyn_format_text = 0
@@ -65,11 +72,19 @@ module sqc_dynamics
       integer :: maxframes = 0
       !> Frames between two consecutive time origins.
       integer :: lag_stride = 1
-      !> The q line: `nintervals` intervals from `s0` to `s1` [1/A] along
-      !! `direction` (unnormalized), through the Gamma point.
+   !> The q line: `nintervals` intervals from `s0` to `s1` [1/A] along
+   !! `direction` (unnormalized), through the Gamma point.
       integer :: nintervals = 0
       real(rk) :: s0 = 0.0_rk, s1 = 0.0_rk
       real(rk) :: direction(3) = 0.0_rk
+      !> q sampling (dyn_q_none, dyn_q_line or dyn_q_shell) and the shell
+      !! radius with the order of its Lebedev rule.
+      integer :: q_mode = dyn_q_none
+      real(rk) :: shell_q = 0.0_rk
+      integer :: shell_order = 0
+      !> Quadrature weight of every q mode: 1 on a line, the Lebedev weights on
+      !! a shell (the shell average is `sum_k w_k X_k / sum_k w_k`).
+      real(rk), allocatable :: mode_weight(:)
       !> Optional output files (empty = not written) and their format.
       character(len=:), allocatable :: sqw_path, fqt_path, fqt_self_path
       integer :: sqw_format = dyn_format_text
@@ -167,37 +182,70 @@ contains
       call sf_shared_setup(self, frame, scheme, ierr, message)
       if (ierr /= 0) return
 
-      if (self%nintervals < 1) then
-         ierr = 1
-         message = '--dyn needs at least one interval on the q line'
-         return
-      end if
-      norm_u = sqrt(sum(self%direction**2))
-      if (norm_u <= 0.0_rk) then
-         ierr = 1
-         message = '--dyn needs a non-zero direction, e.g. 1,1,0'
-         return
-      end if
-      u = self%direction/norm_u
+      select case (self%q_mode)
+      case (dyn_q_line)
+         if (self%nintervals < 1) then
+            ierr = 1
+            message = '--dyn-q line needs at least one interval on the q line'
+            return
+         end if
+         norm_u = sqrt(sum(self%direction**2))
+         if (norm_u <= 0.0_rk) then
+            ierr = 1
+            message = '--dyn-q line needs a non-zero direction, e.g. 1,1,0'
+            return
+         end if
+         u = self%direction/norm_u
 
-      ! q_i = s_i u, anchored at the Gamma point.
-      self%nmodes = int(self%nintervals + 1, lk)
+         ! q_i = s_i u, anchored at the Gamma point.
+         self%nmodes = int(self%nintervals + 1, lk)
+         allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
+                   self%shell(self%nmodes), self%gidx(self%nmodes))
+         do i = 1, int(self%nmodes)
+            s_i = self%s0 + real(i - 1, rk)*(self%s1 - self%s0)/real(self%nintervals, rk)
+            self%qvec(:, i) = s_i*u
+            self%qlen(i) = s_i
+            self%shell(i) = i
+            self%gidx(i) = int(i, lk)
+         end do
+         ! The shared writer prints qmin + (shell-1/2)*shell_dq, so these two
+         ! make it print the q line itself.
+         self%shell_dq = (self%s1 - self%s0)/real(self%nintervals, rk)
+         self%qmin = self%s0 - 0.5_rk*self%shell_dq
+         self%qmax = self%s1 + 0.5_rk*self%shell_dq
+      case (dyn_q_shell)
+         ! Every direction of the shell |q| = Q, on a Lebedev rule.  The modes
+         ! are averaged into a single output row once they are assembled.
+         self%nmodes = int(lebedev_points(self%shell_order), lk)
+         if (self%nmodes < 1) then
+            ierr = 1
+            write (message, '(a,i0,a)') 'unsupported Lebedev order ', self%shell_order, &
+               ' for --dyn-q shell (use low, medium or high)'
+            return
+         end if
+         allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
+                   self%shell(self%nmodes), self%gidx(self%nmodes))
+         allocate (self%mode_weight(self%nmodes))
+         call lebedev_rule(self%shell_order, self%qvec, self%mode_weight, ierr, message)
+         if (ierr /= 0) return
+         self%qvec = self%shell_q*self%qvec
+         self%qlen = self%shell_q
+         do i = 1, int(self%nmodes)
+            self%shell(i) = i
+            self%gidx(i) = int(i, lk)
+         end do
+         ! The shell collapses to one row at |q| = Q, so it has no width.
+         self%shell_dq = 0.0_rk
+         self%qmin = self%shell_q
+         self%qmax = self%shell_q
+      case default
+         ! No q points at all: the scalar overlap Q(t)/chi4(t) is all that is
+         ! left, and it needs neither the density amplitudes nor a table.
+         self%nmodes = 0
+         self%shell_dq = 0.0_rk
+      end select
+
       self%nq = int(self%nmodes)
-      allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
-                self%shell(self%nmodes), self%gidx(self%nmodes))
-      do i = 1, int(self%nmodes)
-         s_i = self%s0 + real(i - 1, rk)*(self%s1 - self%s0)/real(self%nintervals, rk)
-         self%qvec(:, i) = s_i*u
-         self%qlen(i) = s_i
-         self%shell(i) = i
-         self%gidx(i) = int(i, lk)
-      end do
-      ! The shared writer prints qmin + (shell-1/2)*shell_dq, so these two make
-      ! it print the q line itself.
-      self%shell_dq = (self%s1 - self%s0)/real(self%nintervals, rk)
-      self%qmin = self%s0 - 0.5_rk*self%shell_dq
-      self%qmax = self%s1 + 0.5_rk*self%shell_dq
-
       allocate (self%num(self%nq), self%den(self%nq), self%shell_count(self%nq))
       allocate (self%mode_values(self%nmodes))
       self%num = 0.0_rk
@@ -208,7 +256,7 @@ contains
          self%den(i) = mode_denominator(self%norm, scheme, self%natoms, self%type_counts, &
                                         self%qlen(i))
       end do
-      call sf_alloc_partials(self, scheme)
+      if (self%nmodes > 0) call sf_alloc_partials(self, scheme)
 
       call self%method_setup(frame, scheme, ierr, message)
    end subroutine dyn_configure
@@ -290,30 +338,34 @@ contains
 
       ! Weight of every species at every q, applied when the results are
       ! assembled (never inside the per frame sum).
-      allocate (self%amp(self%nmodes, self%nspecies))
-      if (self%q_dependent) then
-         self%amp = self%amp_table
-      else
-         do isp = 1, self%nspecies
-            self%amp(:, isp) = self%amp_const(isp)
-         end do
-      end if
+      ! A run without q points (--dyn-q -) has no c0sum and no rho at all.
+      if (self%nmodes > 0) then
+         allocate (self%amp(self%nmodes, self%nspecies))
+         if (self%q_dependent) then
+            self%amp = self%amp_table
+         else
+            do isp = 1, self%nspecies
+               self%amp(:, isp) = self%amp_const(isp)
+            end do
+         end if
 
-      if (self%coherent_enabled) then
-         allocate (self%rho(self%nmodes, self%nspecies, 0:self%maxframes))
-         self%rho = (0.0_rk, 0.0_rk)
-         allocate (self%csum(self%nmodes, 0:self%maxframes, self%nspecies, self%nspecies))
-         self%csum = (0.0_rk, 0.0_rk)
-      else
-         ! The static S(q) table only needs the current frame; the ring buffer
-         ! and the coherent multi-origin correlation belong to F(q,t)/S(q,w).
-         allocate (self%rho(self%nmodes, self%nspecies, 0:0))
-         self%rho = (0.0_rk, 0.0_rk)
+         if (self%coherent_enabled) then
+            allocate (self%rho(self%nmodes, self%nspecies, 0:self%maxframes))
+            self%rho = (0.0_rk, 0.0_rk)
+            allocate (self%csum(self%nmodes, 0:self%maxframes, self%nspecies, self%nspecies))
+            self%csum = (0.0_rk, 0.0_rk)
+         else
+            ! The static S(q) table only needs the current frame; the ring
+            ! buffer and the coherent multi-origin correlation belong to
+            ! F(q,t)/S(q,w).
+            allocate (self%rho(self%nmodes, self%nspecies, 0:0))
+            self%rho = (0.0_rk, 0.0_rk)
+         end if
+         allocate (self%c0sum(self%nmodes, self%nspecies, self%nspecies))
+         self%c0sum = (0.0_rk, 0.0_rk)
+         allocate (self%ccnt(self%nmodes, 0:self%maxframes))
+         self%ccnt = 0
       end if
-      allocate (self%c0sum(self%nmodes, self%nspecies, self%nspecies))
-      self%c0sum = (0.0_rk, 0.0_rk)
-      allocate (self%ccnt(self%nmodes, 0:self%maxframes))
-      self%ccnt = 0
 
       ! --- four point structure factor / overlap accumulators ---------------
       ! S4(q,t) and chi4(t) both need the positions of the frames that are
@@ -328,7 +380,9 @@ contains
             return
          end if
          self%pos_buffer = 0.0_rk
-         allocate (self%sample_cnt(self%nmodes, 0:self%nsteps))
+         ! The origin count is the same at every q mode, so one row is enough
+         ! for the writers; keep a row even without q points.
+         allocate (self%sample_cnt(max(int(self%nmodes), 1), 0:self%nsteps))
          self%sample_cnt = 0
       end if
       if (self%s4_enabled .or. self%chi4_enabled) then
@@ -386,55 +440,59 @@ contains
          slot = 0
       end if
 
-      ! --- rho_a(q,t) by direct summation over the q line -------------------
-      !$omp parallel do schedule(static) private(im, isp, i, acc, phase, qx, qy, qz)
-      do im = 1, int(self%nmodes)
-         qx = self%qvec(1, im)
-         qy = self%qvec(2, im)
-         qz = self%qvec(3, im)
-         do isp = 1, self%nspecies
-            acc = (0.0_rk, 0.0_rk)
-            do i = self%species_first(isp), self%species_first(isp + 1) - 1
-               phase = qx*frame%pos(1, self%atom_of(i)) + qy*frame%pos(2, self%atom_of(i)) &
-                       + qz*frame%pos(3, self%atom_of(i))
-               acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
-            end do
-            self%rho(im, isp, slot) = acc
-         end do
-      end do
-      !$omp end parallel do
-
-      ! --- zero lag sums over the whole trajectory --------------------------
-      do isp = 1, self%nspecies
-         do jsp = 1, self%nspecies
-            do im = 1, int(self%nmodes)
-               self%c0sum(im, isp, jsp) = self%c0sum(im, isp, jsp) &
-                  + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, slot))
-            end do
-         end do
-      end do
-
-      ! --- multi-origin correlation of the lags -----------------------------
-      if (self%coherent_enabled) then
-         !$omp parallel do schedule(static) private(l, oslot, im, isp, jsp)
-         do l = 0, min(t_frame, self%maxframes)
-            if (mod(t_frame - l, self%lag_stride) /= 0) cycle
-            oslot = mod(t_frame - l, self%maxframes + 1)
-            do im = 1, int(self%nmodes)
-               do isp = 1, self%nspecies
-                  do jsp = 1, self%nspecies
-                     self%csum(im, l, isp, jsp) = self%csum(im, l, isp, jsp) &
-                        + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, oslot))
-                  end do
+      ! Without q points there are no amplitudes and nothing to correlate; the
+      ! overlap accumulators below are the whole calculation.
+      if (self%nmodes > 0) then
+         ! --- rho_a(q,t) by direct summation over the q line ----------------
+         !$omp parallel do schedule(static) private(im, isp, i, acc, phase, qx, qy, qz)
+         do im = 1, int(self%nmodes)
+            qx = self%qvec(1, im)
+            qy = self%qvec(2, im)
+            qz = self%qvec(3, im)
+            do isp = 1, self%nspecies
+               acc = (0.0_rk, 0.0_rk)
+               do i = self%species_first(isp), self%species_first(isp + 1) - 1
+                  phase = qx*frame%pos(1, self%atom_of(i)) + qy*frame%pos(2, self%atom_of(i)) &
+                          + qz*frame%pos(3, self%atom_of(i))
+                  acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
                end do
+               self%rho(im, isp, slot) = acc
             end do
          end do
          !$omp end parallel do
+
+         ! --- zero lag sums over the whole trajectory -----------------------
+         do isp = 1, self%nspecies
+            do jsp = 1, self%nspecies
+               do im = 1, int(self%nmodes)
+                  self%c0sum(im, isp, jsp) = self%c0sum(im, isp, jsp) &
+                     + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, slot))
+               end do
+            end do
+         end do
+
+         ! --- multi-origin correlation of the lags --------------------------
+         if (self%coherent_enabled) then
+            !$omp parallel do schedule(static) private(l, oslot, im, isp, jsp)
+            do l = 0, min(t_frame, self%maxframes)
+               if (mod(t_frame - l, self%lag_stride) /= 0) cycle
+               oslot = mod(t_frame - l, self%maxframes + 1)
+               do im = 1, int(self%nmodes)
+                  do isp = 1, self%nspecies
+                     do jsp = 1, self%nspecies
+                        self%csum(im, l, isp, jsp) = self%csum(im, l, isp, jsp) &
+                           + self%rho(im, isp, slot)*conjg(self%rho(im, jsp, oslot))
+                     end do
+                  end do
+               end do
+            end do
+            !$omp end parallel do
+         end if
+         do l = 0, min(t_frame, self%maxframes)
+            if (mod(t_frame - l, self%lag_stride) /= 0) cycle
+            self%ccnt(:, l) = self%ccnt(:, l) + 1
+         end do
       end if
-      do l = 0, min(t_frame, self%maxframes)
-         if (mod(t_frame - l, self%lag_stride) /= 0) cycle
-         self%ccnt(:, l) = self%ccnt(:, l) + 1
-      end do
 
       ! --- self F_s(q,t) and the four-point structure factor ---------------
       ! The S4/chi4/F_s trajectory is subsampled by stride: only every
@@ -584,7 +642,9 @@ contains
          end do
          self%num(im) = value
       end do
-      if (self%partials) then
+      ! A run without q points has no partial columns (they are allocated with
+      ! the shells in dyn_configure).
+      if (self%partials .and. allocated(self%partial_num)) then
          self%partial_num = 0.0_rk
          do isp = 1, self%nspecies
             do jsp = 1, self%nspecies
@@ -738,10 +798,204 @@ contains
       if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled) then
          allocate (self%sample_tau(0:self%nsteps))
          do j = 0, self%nsteps
-            self%sample_tau(j) = real(j*self%stride, rk)*self%frame_dt
+           self%sample_tau(j) = real(j*self%stride, rk)*self%frame_dt
+        end do
+      end if
+
+      ! A shell has one |q| and many directions, so its modes collapse into the
+      ! single row that every writer expects.
+      if (self%q_mode == dyn_q_shell) call dyn_shell_average(self)
+   end subroutine dyn_prepare_output
+
+   !> Collapse the per-mode shell results into one quadrature averaged row.
+   !!
+   !! Every mode of the shell has the same |q|, so each output is the average
+   !! `sum_k w_k X(q_k) / sum_k w_k` over the Lebedev directions and the shell
+   !! can share the single-row layout of a one point q line.
+   !!
+   !! The static table is stored as the unnormalized `num(q)` over a per-mode
+   !! `den(q)`, but the average is taken over the *normalized* S(q) of every
+   !! mode: that is the definition of the shell average, and it is the quantity
+   !! F(q,0) and the zeroth moment of S(q,w) refer to.  It also stays correct
+   !! should a weight scheme ever make `den` vary within one shell - for the
+   !! unit, neutron and X-ray weights `den` depends only on |q|, so here it is
+   !! the same for every mode.  The other arrays (F(q,tau), S4 and F_s) are
+   !! already normalized per mode, and the spectra are transformed from the
+   !! averaged F(q,tau) so that `sum_n S(q,w_n) dw = F(q,0) = S(q)` still holds
+   !! exactly.
+   subroutine dyn_shell_average(self)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      real(rk), allocatable :: keep1(:), keep2(:, :), keep3(:, :, :)
+      integer(lk), allocatable :: kj1(:), kj2(:, :)
+      integer(ik), allocatable :: ki1(:)
+      real(rk) :: wsum, value
+      integer :: im, l, j, t, u, p, isp
+
+      wsum = sum(self%mode_weight)
+
+      ! Static table and its partial columns.
+      ! `num` is the sum over frames, so num(q)/den(q) is `frames` times S(q);
+      ! the writer divides by the frame count, which is therefore not repeated
+      ! here.
+      value = 0.0_rk
+      do im = 1, int(self%nmodes)
+         if (self%den(im) > 0.0_rk) value = value &
+            + self%mode_weight(im)*self%num(im)/self%den(im)
+      end do
+      self%num(1) = value/wsum
+      self%den(1) = 1.0_rk
+      self%shell_count(1) = 1
+      if (self%partials .and. allocated(self%partial_num)) then
+         do t = 1, self%ntypes
+            do u = t, self%ntypes
+               value = 0.0_rk
+               do im = 1, int(self%nmodes)
+                  value = value + self%mode_weight(im)*self%partial_num(t, u, im)
+               end do
+               self%partial_num(t, u, 1) = value/wsum
+            end do
          end do
       end if
-   end subroutine dyn_prepare_output
+
+      ! F(q,tau) and its partials, followed by the spectra of the average.
+      if (allocated(self%ftau)) then
+         do l = 0, self%maxframes
+            value = 0.0_rk
+            do im = 1, int(self%nmodes)
+               value = value + self%mode_weight(im)*self%ftau(im, l)
+            end do
+            self%ftau(1, l) = value/wsum
+         end do
+         call dyn_spectrum(self%ftau(1, :), self%frame_dt, self%sqw(1, :))
+      end if
+      if (allocated(self%ftau_partial)) then
+         do p = 1, size(self%ftau_partial, 3)
+            do l = 0, self%maxframes
+               value = 0.0_rk
+               do im = 1, int(self%nmodes)
+                  value = value + self%mode_weight(im)*self%ftau_partial(im, l, p)
+               end do
+               self%ftau_partial(1, l, p) = value/wsum
+            end do
+            call dyn_spectrum(self%ftau_partial(1, :, p), self%frame_dt, &
+                              self%sqw_partial(1, :, p))
+         end do
+      end if
+
+      ! S4(q,tau) and F_s(q,tau) need no normalization by hand.
+      if (allocated(self%s4)) then
+         do j = 0, self%nsteps
+            value = 0.0_rk
+            do im = 1, int(self%nmodes)
+               value = value + self%mode_weight(im)*self%s4(im, j)
+            end do
+            self%s4(1, j) = value/wsum
+         end do
+      end if
+      if (allocated(self%fqt_self_total)) then
+         do j = 0, self%nsteps
+            value = 0.0_rk
+            do im = 1, int(self%nmodes)
+               value = value + self%mode_weight(im)*self%fqt_self_total(im, j)
+            end do
+            self%fqt_self_total(1, j) = value/wsum
+            do isp = 1, self%nspecies
+               value = 0.0_rk
+               do im = 1, int(self%nmodes)
+                  value = value + self%mode_weight(im)*self%fqt_self_partial(im, j, isp)
+               end do
+               self%fqt_self_partial(1, j, isp) = value/wsum
+            end do
+         end do
+      end if
+
+      ! One row from here on.  The writers take the size of their tables from
+      ! nmodes (the HDF5 ones reshape the result arrays with it), so every
+      ! result has to shrink with the mode axis, not just be overwritten.
+      self%nmodes = 1
+      self%nq = 1
+      if (allocated(self%sample_cnt)) then
+         call move_alloc(self%sample_cnt, kj2)
+         allocate (self%sample_cnt(1, 0:self%nsteps))
+         self%sample_cnt(1, :) = kj2(1, :)
+      end if
+      if (allocated(self%ccnt)) then
+         call move_alloc(self%ccnt, kj2)
+         allocate (self%ccnt(1, 0:self%maxframes))
+         self%ccnt(1, :) = kj2(1, :)
+      end if
+      call move_alloc(self%num, keep1)
+      allocate (self%num(1))
+      self%num(1) = keep1(1)
+      call move_alloc(self%den, keep1)
+      allocate (self%den(1))
+      self%den(1) = keep1(1)
+      call move_alloc(self%qlen, keep1)
+      allocate (self%qlen(1))
+      self%qlen(1) = self%shell_q
+      call move_alloc(self%mode_values, keep1)
+      allocate (self%mode_values(1))
+      self%mode_values(1) = keep1(1)
+      call move_alloc(self%mode_weight, keep1)
+      allocate (self%mode_weight(1))
+      self%mode_weight(1) = keep1(1)
+      call move_alloc(self%shell_count, kj1)
+      allocate (self%shell_count(1))
+      self%shell_count(1) = 1
+      call move_alloc(self%gidx, kj1)
+      allocate (self%gidx(1))
+      self%gidx(1) = 1
+      call move_alloc(self%shell, ki1)
+      allocate (self%shell(1))
+      self%shell(1) = 1
+      call move_alloc(self%qvec, keep2)
+      allocate (self%qvec(3, 1))
+      self%qvec(:, 1) = [0.0_rk, 0.0_rk, self%shell_q]
+      if (allocated(self%ftau)) then
+         call move_alloc(self%ftau, keep2)
+         allocate (self%ftau(1, 0:self%maxframes))
+         self%ftau(1, :) = keep2(1, :)
+      end if
+      if (allocated(self%sqw)) then
+         call move_alloc(self%sqw, keep2)
+         allocate (self%sqw(1, 0:self%maxframes))
+         self%sqw(1, :) = keep2(1, :)
+      end if
+      if (allocated(self%s4)) then
+         call move_alloc(self%s4, keep2)
+         allocate (self%s4(1, 0:self%nsteps))
+         self%s4(1, :) = keep2(1, :)
+      end if
+      if (allocated(self%fqt_self_total)) then
+         call move_alloc(self%fqt_self_total, keep2)
+         allocate (self%fqt_self_total(1, 0:self%nsteps))
+         self%fqt_self_total(1, :) = keep2(1, :)
+      end if
+      if (allocated(self%partial_num)) then
+         call move_alloc(self%partial_num, keep3)
+         allocate (self%partial_num(self%ntypes, self%ntypes, 1))
+         self%partial_num(:, :, 1) = keep3(:, :, 1)
+      end if
+      if (allocated(self%ftau_partial)) then
+         p = size(self%ftau_partial, 3)
+         call move_alloc(self%ftau_partial, keep3)
+         allocate (self%ftau_partial(1, 0:self%maxframes, p))
+         ! The array is allocated with a zero pair axis when --no-partials
+         ! asks for no columns.
+         if (p > 0) self%ftau_partial(1, :, :) = keep3(1, :, :)
+      end if
+      if (allocated(self%sqw_partial)) then
+         p = size(self%sqw_partial, 3)
+         call move_alloc(self%sqw_partial, keep3)
+         allocate (self%sqw_partial(1, 0:self%maxframes, p))
+         if (p > 0) self%sqw_partial(1, :, :) = keep3(1, :, :)
+      end if
+      if (allocated(self%fqt_self_partial)) then
+         call move_alloc(self%fqt_self_partial, keep3)
+         allocate (self%fqt_self_partial(1, 0:self%nsteps, self%nspecies))
+         self%fqt_self_partial(1, :, :) = keep3(1, :, :)
+      end if
+   end subroutine dyn_shell_average
 
    !> One-sided spectrum of a real, even correlation function.
    !!
@@ -871,7 +1125,6 @@ contains
       real(rk), allocatable :: q4(:, :)
       character(len=18), allocatable :: labels(:)
       character(len=18) :: slabel
-      real(rk) :: unorm
       integer :: unit, im, j, isp
 
       ierr = 0
@@ -908,14 +1161,11 @@ contains
          end if
       end if
 
-      unorm = sqrt(sum(self%direction**2))
       write (unit, '(a)') '# sqcalc 0.1.0 self intermediate scattering function F_s(q,t)'
       write (unit, '(a)') '# input '//trim(input)//'  weight unit (self)  norm unit'
       write (unit, '(a,f12.6,a,i0,a,i0,a,i0)') '# frame_dt ', self%frame_dt, &
          '  maxframes ', self%maxframes, '  lag ', self%lag_stride, '  nframes ', self%nframes
-      write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
-         ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
-      write (unit, '(a,3(f12.8,1x))') '# direction ', self%direction/unorm
+      call dyn_write_sampling(self, unit)
       write (unit, '(a,i0,a,f0.6,a)') '# nlag ', self%nsteps + 1, &
          '  tau 0 .. ', real(self%effective_maxframes, rk)*self%frame_dt, ' (time unit of dt)'
       write (unit, '(a,i0,a,i0,a,i0,a)') '# stride ', self%stride, &
@@ -1065,11 +1315,9 @@ contains
       type(weight_scheme_t), intent(in) :: scheme
       character(len=*), intent(in) :: input, axis_name
       integer, intent(in) :: kind, unit
-      real(rk) :: unorm
       integer :: t, u
       character(len=24) :: label
 
-      unorm = sqrt(sum(self%direction**2))
       select case (kind)
       case (dyn_sqw)
          write (unit, '(a)') '# sqcalc 0.1.0 dynamic structure factor S(q,w)'
@@ -1089,9 +1337,7 @@ contains
       end if
       write (unit, '(a,f12.6,a,i0,a,i0,a,i0)') '# frame_dt ', self%frame_dt, &
          '  maxframes ', self%maxframes, '  lag ', self%lag_stride, '  nframes ', self%nframes
-      write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
-         ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
-      write (unit, '(a,3(f12.8,1x))') '# direction ', self%direction/unorm
+      call dyn_write_sampling(self, unit)
       select case (kind)
       case (dyn_sqw)
          write (unit, '(a,i0,a,f0.6,a,f0.6,a)') '# nomega ', self%maxframes + 1, &
@@ -1135,6 +1381,24 @@ contains
       end if
       write (unit, '(a)') ''
    end subroutine dyn_header
+
+   !> The q sampling preamble shared by the dynamic text tables.
+   subroutine dyn_write_sampling(self, unit)
+      class(dynamics_structure_factor_t), intent(in) :: self
+      integer, intent(in) :: unit
+      real(rk) :: unorm
+
+      if (self%q_mode == dyn_q_shell) then
+         write (unit, '(a,f12.6,a,i0,a,i0,a)') '# q shell |q| = ', self%shell_q, &
+            ' 1/A: Lebedev average over every direction (order ', self%shell_order, ', ', &
+            lebedev_points(self%shell_order), ' points)'
+         return
+      end if
+      unorm = sqrt(sum(self%direction**2))
+      write (unit, '(a,i0,a,f10.6,a,f10.6,a)') '# q line ', self%nintervals, &
+         ' intervals: |q| ', self%s0, ' .. ', self%s1, ' 1/A (through Gamma)'
+      write (unit, '(a,3(f12.8,1x))') '# direction ', self%direction/unorm
+   end subroutine dyn_write_sampling
 
 #ifdef SQC_HAVE_HDF5
    !> HDF5 flavour: one group per quantity, mirroring the shell/rdf writers.

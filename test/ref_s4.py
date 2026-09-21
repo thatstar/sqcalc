@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ref_sqw import read_dump, unwrap_frames  # noqa: E402  (sibling module)
+from ref_sqw import read_dump, unwrap_frames, parse_dyn_q, shell_average  # noqa: E402
 
 
 def four_point(frames, qvec, cutoff, maxframes, lag, stride):
@@ -97,7 +97,8 @@ def write_chi4(path, tau, overlap, chi4):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
-    parser.add_argument("--dyn", required=True, help="NINT,S0,S1,DX,DY,DZ")
+    parser.add_argument("--dyn-q", required=True, dest="dyn_q",
+                        help='"-", "line:NINT,S0,S1,DX,DY,DZ" or "shell:Q,low|medium|high"')
     parser.add_argument("--maxframes", type=int, required=True)
     parser.add_argument("--lag", type=int, default=1)
     parser.add_argument("--stride", type=int, default=1)
@@ -107,17 +108,15 @@ def main():
     parser.add_argument("--output-chi4", default=None)
     args = parser.parse_args()
 
-    nint, s0, s1, dx, dy, dz = [float(v) for v in args.dyn.split(",")]
-    nint = int(nint)
-    direction = np.array([dx, dy, dz], dtype=float)
-    direction /= np.linalg.norm(direction)
-    scale = s0 + np.arange(nint + 1) * (s1 - s0) / nint
-    qvec = scale[:, None] * direction[None, :]
+    qvec, weights, radius = parse_dyn_q(args.dyn_q)
 
     frames = unwrap_frames(list(read_dump(args.input)))
     nsteps = args.maxframes // args.stride
     s4, overlap, chi4, _ = four_point(frames, qvec, args.cutoff, args.maxframes, args.lag,
                                       args.stride)
+    if radius is not None:
+        s4 = shell_average(s4, weights)[None, :]
+        qvec = np.array([[0.0, 0.0, radius]])
     tau = np.arange(nsteps + 1) * args.stride * args.dt
     if args.output_s4:
         write_s4(args.output_s4, qvec, tau, s4)

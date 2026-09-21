@@ -12,7 +12,8 @@ program sqcalc
    use sqc_cell, only: cell_t
    use sqc_elements, only: element_table
    use sqc_structure_factor
-   use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5
+   use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
+                           dyn_q_none, dyn_q_line, dyn_q_shell
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
@@ -104,10 +105,13 @@ program sqcalc
       allocate (dynamics_structure_factor_t :: method)
       select type (method)
       type is (dynamics_structure_factor_t)
+         method%q_mode = opts%dyn_q_mode
          method%nintervals = opts%dyn_intervals
          method%s0 = opts%dyn_s0
          method%s1 = opts%dyn_s1
          method%direction = opts%dyn_dir
+         method%shell_q = opts%dyn_shell_q
+         method%shell_order = opts%dyn_shell_order
          method%maxframes = opts%maxframes
          method%lag_stride = opts%lag_stride
          method%sqw_format = dyn_format_text
@@ -290,10 +294,23 @@ program sqcalc
          stop 30
       end if
    end if
-   call open_output(opts%output, shell_unit, ierr, message)
-   if (ierr /= 0) then
-      write (error_unit, '(a)') 'sqcalc: '//trim(message)
-      stop 11
+   ! A run without any q sampling (--dyn-q -) has no S(q) table to write.
+   shell_unit = no_unit
+   if (allocated(opts%output)) then
+      call open_output(opts%output, shell_unit, ierr, message)
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 11
+      end if
+      ! A shell average is the single row at |q| = Q; label it before the
+      ! shared table header names the columns.
+      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_shell) then
+         select type (method)
+         type is (dynamics_structure_factor_t)
+            write (shell_unit, '(a,f12.6,a)') '# shell average over |q| = ', &
+               method%shell_q, ' 1/A (Lebedev quadrature, one row)'
+         end select
+      end if
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
@@ -365,7 +382,7 @@ program sqcalc
       end if
 #endif
    end if
-   if (shell_unit /= output_unit) close (shell_unit)
+   if (shell_unit /= no_unit .and. shell_unit /= output_unit) close (shell_unit)
    if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
 
    if (.not. opts%quiet) then
@@ -467,8 +484,16 @@ contains
       class(structure_factor_t), intent(in) :: m
       select type (m)
       type is (dynamics_structure_factor_t)
-         write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q line     : ', &
-            m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
+         select case (m%q_mode)
+         case (dyn_q_shell)
+            write (error_unit, '(a,f0.4,a,i0,a,i0,a)') '  q shell    : |q| = ', m%shell_q, &
+               ' 1/A, Lebedev order ', m%shell_order, ' (', m%nmodes, ' directions)'
+         case (dyn_q_none)
+            write (error_unit, '(a)') '  q sampling : none (only Q(t) and chi4(t))'
+         case default
+            write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q line     : ', &
+               m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
+         end select
          write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
             ' frames, origin lag ', m%lag_stride
          if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled) then
@@ -528,7 +553,14 @@ contains
       case (method_debye)
          text = 'Debye pair histograms'
       case (method_dynamic)
-         text = 'dynamic structure factor (direct summation on a q line)'
+         select case (opt%dyn_q_mode)
+         case (dyn_q_line)
+            text = 'dynamic structure factor (direct summation on a q line)'
+         case (dyn_q_shell)
+            text = 'dynamic structure factor (Lebedev average on a q shell)'
+         case default
+            text = 'overlap dynamics (average overlap and chi4)'
+         end select
       case default
          if (opt%device == device_gpu) then
             if (opt%precision == precision_single) then

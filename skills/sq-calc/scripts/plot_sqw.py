@@ -11,6 +11,9 @@ table written by ``--fqt``, or the ``tau S4(q,t)`` table written by ``--s4``)
 and draws the map of the quantity over $(|q|, \omega)$ next to a few selected
 spectra, or single curves with ``--mode spectra``.
 
+``sqcalc --dyn-q shell:...`` writes a single q row per time axis entry, so its
+tables plot as one curve (``--mode spectra``) rather than as a map.
+
 Usage:
     plot_sqw.py S_qw.dat                        # map and some spectra -> .png
     plot_sqw.py --mode spectra --q 1,4 S_qw.dat # only the spectra at |q| = 1, 4

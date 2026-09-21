@@ -118,10 +118,44 @@ def spectrum(f, dt):
     return out
 
 
+def parse_dyn_q(spec):
+    """q vectors of a --dyn-q specification, with their quadrature weights.
+
+    Returns (qvec, weights, radius): the weights are all 1 on a q line, and a
+    shell returns its Lebedev weights plus the radius it belongs to.  The
+    Lebedev grid comes from scipy, which is the reference the Fortran table
+    was generated from.
+    """
+    spec = spec.strip()
+    if spec.startswith("line:"):
+        nint, s0, s1, dx, dy, dz = [float(v) for v in spec[5:].split(",")]
+        nint = int(nint)
+        direction = np.array([dx, dy, dz], dtype=float)
+        direction /= np.linalg.norm(direction)
+        scale = s0 + np.arange(nint + 1) * (s1 - s0) / nint
+        return scale[:, None] * direction[None, :], np.ones(nint + 1), None
+    if spec.startswith("shell:"):
+        try:
+            from scipy.integrate import lebedev_rule
+        except ImportError as exc:  # pragma: no cover - depends on the host
+            raise SystemExit("--dyn-q shell needs scipy.integrate.lebedev_rule: %s" % exc)
+        radius, accuracy = spec[6:].split(",")
+        orders = {"low": 11, "medium": 17, "high": 23}
+        x, w = lebedev_rule(orders[accuracy.strip().lower()])
+        return float(radius) * x.T, w, float(radius)
+    raise SystemExit("unsupported --dyn-q specification %r" % spec)
+
+
+def shell_average(values, weights):
+    """Weighted average over the q modes of a shell (row 0 is the mode axis)."""
+    return np.tensordot(weights, values, axes=(0, 0)) / weights.sum()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
-    parser.add_argument("--dyn", required=True, help="NINT,S0,S1,DX,DY,DZ")
+    parser.add_argument("--dyn-q", required=True, dest="dyn_q",
+                        help='"-", "line:NINT,S0,S1,DX,DY,DZ" or "shell:Q,low|medium|high"')
     parser.add_argument("--maxframes", type=int, required=True)
     parser.add_argument("--lag", type=int, default=1)
     parser.add_argument("--dt", type=float, default=1.0)
@@ -132,12 +166,7 @@ def main():
     parser.add_argument("--output-sqw", required=True)
     args = parser.parse_args()
 
-    nint, s0, s1, dx, dy, dz = [float(v) for v in args.dyn.split(",")]
-    nint = int(nint)
-    direction = np.array([dx, dy, dz], dtype=float)
-    direction /= np.linalg.norm(direction)
-    scale = s0 + np.arange(nint + 1) * (s1 - s0) / nint
-    qvec = scale[:, None] * direction[None, :]
+    qvec, weights, radius = parse_dyn_q(args.dyn_q)
 
     frames = list(read_dump(args.input))
     frames = unwrap_frames(frames)
@@ -210,12 +239,22 @@ def main():
         for p in range(len(labels)):
             part_s[k, :, p] = spectrum(part_f[k, :, p], args.dt)
 
+    if radius is not None:
+        # A shell is written as the single quadrature averaged row at |q| = Q.
+        ftau = shell_average(ftau, weights)[None, :]
+        part_f = shell_average(part_f, weights)[None, :, :]
+        sqw = np.array([spectrum(ftau[0], args.dt)])
+        part_s = np.zeros((1, args.maxframes + 1, len(labels)))
+        for p in range(len(labels)):
+            part_s[0, :, p] = spectrum(part_f[0, :, p], args.dt)
+        qvec = np.array([[0.0, 0.0, radius]])
+
     def write(path, axis, axis_name, values, pvalues, total_name):
         with open(path, "w") as handle:
             handle.write("# %s\n" % total_name)
             handle.write("# qx qy qz %s %s %s\n"
                          % (axis_name, total_name, " ".join(labels)))
-            for k in range(len(qlen)):
+            for k in range(len(qvec)):
                 for l in range(args.maxframes + 1):
                     handle.write("%14.8f  %14.8f  %14.8f  %16.8f  %20.12e"
                                  % (qvec[k, 0], qvec[k, 1], qvec[k, 2], axis[l], values[k, l]))

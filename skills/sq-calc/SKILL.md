@@ -13,13 +13,16 @@ type pair as a `# q S(q)` table.  Two independent routes are available: a
 reciprocal space non-uniform FFT (FINUFFT on the CPU, cufinufft/cuFFT on a GPU)
 and a real space Debye pair histogram, which can also write $g(r)$.
 
-With `--dyn` it instead keeps the time axis and writes the dynamic structure
-factor $S(q,\omega)$ along a line in reciprocal space (`--sqw`), optionally
-with the coherent intermediate scattering function $F(q,t)$ (`--fqt`) and the
-self/incoherent $F_s(q,t)$ (`--fqt-self`).  The same run can write the total
-four-point structure factor $S_4(q,t)$ (`--s4`) and the average overlap and
-dynamic susceptibility $Q(t)$, $\chi_4(t)$ (`--chi4`); both need the overlap
-cutoff `--s4-cutoff`.
+With `--dyn` it instead keeps the time axis, and `--dyn-q` chooses the
+reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
+`shell:Q,low|medium|high` for the isotropic average over the sphere $|q| = Q$,
+or `-` (the default) for no q points.  A line or a shell supports the dynamic
+structure factor $S(q,\omega)$ (`--sqw`), the coherent intermediate scattering
+function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
+the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q
+points computes only the average overlap and dynamic susceptibility $Q(t)$,
+$\chi_4(t)$ (`--chi4`), and takes no `OUTPUT` table.  `--s4` and `--chi4` need
+the overlap cutoff `--s4-cutoff`.
 
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
@@ -110,6 +113,10 @@ and `--dr` instead of the box sets the usable q range.
   and the work.  A run with only `--s4`/`--chi4` skips the coherent
   $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
   always includes every atom and never applies `--s4-cutoff`.
+* `--dyn-q -` (the default) samples no q at all, so `--chi4` is the only output
+  it accepts, no `OUTPUT` table is written, and `--s4` needs a line or a shell.
+  A shell costs `nmodes` = 50, 110 or 194 directions per frame, comparable to a
+  line scan, and is written as a single row at `q = (0,0,Q)`.
 * The Debye method can also write the pair entropy (`--pair-entropy`) and its
   accumulation curve (`--s2-accum`).  The raw integral is a finite-$r_{\max}$
   estimate; `scripts/s2_analysis.py` does the optional GCV smoothing, the
