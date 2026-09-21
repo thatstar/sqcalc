@@ -964,6 +964,28 @@ def main():
     print("  ok   %-42s %d modes, thinned to %d"
           % ("grid modes and the mode budget", modes.shape[0], thin_modes.shape[0]))
 
+    # The coherent and self amplitudes use the same separable evaluation, so
+    # compare them against a q line, which still uses the direct loop.  One
+    # vector per axis count: at (1,0,0) only the first factor matters, at
+    # (1,1,0) the first two do.
+    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
+         "--fqt", path("fq_grid.dat"), "--fqt-self", path("fs_grid.dat"),
+         path("fq_grid_sq.dat")])
+    for direction, qvec in (("1,0,0", [q1, 0.0, 0.0]), ("1,1,0", [q1, q1, 0.0])):
+        run([exe, "-i", diff_dump, "-w", "unit",
+             *dyn_line("1,0,%.12f,%s" % (math.sqrt(sum(v*v for v in qvec)), direction)),
+             "--dt", "1", "--maxframes", "8", "--lag", "1", "--fqt", path("fq_line.dat"),
+             "--fqt-self", path("fs_line.dat"), path("fq_line_sq.dat")])
+        for table, label in (("fq", "F(q,t)"), ("fs", "F_s(q,t)")):
+            # The two evaluations differ only in the order the atoms are
+            # summed, which the 13 significant digits of the table cannot
+            # resolve; a wrong phase or a wrong atom set would be orders of
+            # magnitude larger than this.
+            compare(rows_at(read_matrix(path("%s_grid.dat" % table)), qvec)[:, 4].reshape(-1, 1),
+                    rows_at(read_matrix(path("%s_line.dat" % table)), qvec)[:, 4].reshape(-1, 1),
+                    "grid: %s matches the line at (%s)" % (label, direction), rtol=1.0e-11)
+    print("  ok   %-42s F and F_s, one and two axes" % "grid: separable rho and F_s")
+
     # A budget that only the orbit route can meet must be met, not reported as
     # impossible: three modes are the Gamma point plus two shell
     # representatives, while one whole shell already costs four.
@@ -1016,8 +1038,10 @@ def main():
         raise SystemExit("FAIL grid: unexpected orbit multiplicities %s" % weights)
     weighted = (weights[:, None]*curves).sum(axis=0)/weights.sum()
     collapsed = rows_at_q(read_matrix(path("s4_orbit_avg.dat")), 3.0*q1)[:, 4]
+    # Same reason as above: the identity is exact in arithmetic, so what is
+    # left is the print resolution of the tables.
     compare(collapsed.reshape(-1, 1), weighted.reshape(-1, 1),
-            "grid: the shell row is the multiplicity weighted mean", rtol=1.0e-12)
+            "grid: the shell row is the multiplicity weighted mean", rtol=1.0e-11)
     if np.allclose(collapsed, curves.mean(axis=0), rtol=1.0e-9):
         raise SystemExit("FAIL grid: the weighted and plain means coincide, test is vacuous")
     print("  ok   %-42s weights %s" % ("grid: two-orbit shell weighting",

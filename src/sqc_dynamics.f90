@@ -106,7 +106,9 @@ module sqc_dynamics
       !! plus the per-thread mode accumulators that go with them.
       real(rk) :: recip(3, 3) = 0.0_rk
       integer :: phase_threads = 1
-      complex(c_double_complex), allocatable :: phase_pool(:, :, :), acc_thread(:, :)
+      complex(c_double_complex), allocatable :: phase_pool(:, :, :)
+      complex(c_double_complex), allocatable :: acc_thread(:, :)
+      complex(c_double_complex), allocatable :: fs_thread(:, :, :), rho_thread(:, :, :)
       !> Single lattice vector sampling (`--dyn-q single`): the Miller indices
       !! and the q vector they build.
       integer :: single_index(3) = 0
@@ -507,14 +509,25 @@ contains
          self%s4_asum = 0.0_rk
          self%s4_bsum = (0.0_rk, 0.0_rk)
          self%w_scratch = (0.0_rk, 0.0_rk)
-         ! One phase-factor table and one mode accumulator per thread; the
-         ! thread count is the one the driver pinned before configure.
-         if (allocated(self%mode_index)) then
-            self%phase_threads = max(omp_get_max_threads(), 1)
-            allocate (self%phase_pool(3, 0:2*maxval(self%index_max), self%phase_threads))
+      end if
+      ! Separable phase evaluation: one factor table per thread plus the
+      ! accumulators of the sums that use it.  The thread count is the one the
+      ! driver pinned before configure.
+      if (allocated(self%mode_index)) then
+         self%phase_threads = max(omp_get_max_threads(), 1)
+         allocate (self%phase_pool(3, 0:2*maxval(self%index_max), self%phase_threads))
+         self%phase_pool = (0.0_rk, 0.0_rk)
+         if (self%s4_enabled) then
             allocate (self%acc_thread(self%nmodes, self%phase_threads))
-            self%phase_pool = (0.0_rk, 0.0_rk)
             self%acc_thread = (0.0_rk, 0.0_rk)
+         end if
+         if (self%fqt_self_enabled) then
+            allocate (self%fs_thread(self%nmodes, self%nspecies, self%phase_threads))
+            self%fs_thread = (0.0_rk, 0.0_rk)
+         end if
+         if (self%coherent_enabled) then
+            allocate (self%rho_thread(self%nmodes, self%nspecies, self%phase_threads))
+            self%rho_thread = (0.0_rk, 0.0_rk)
          end if
       end if
       if (self%fqt_self_enabled) then
@@ -563,6 +576,44 @@ contains
       ! overlap accumulators below are the whole calculation.
       if (self%nmodes > 0) then
          ! --- rho_a(q,t) by direct summation over the q line ----------------
+         if (allocated(self%rho_thread) .and. self%nmodes >= phase_min_modes) then
+            ! Separable phases, as in the S4 branch: the atom loop is the
+            ! parallel one, and every mode costs two complex multiplies.
+            self%rho_thread = (0.0_rk, 0.0_rk)
+            !$omp parallel private(i, im, isp, tid, phi)
+            tid = 1
+            !$ tid = omp_get_thread_num() + 1
+            !$omp do schedule(static)
+            do i = 1, int(self%natoms)
+               do im = 1, 3
+                  phi(im) = self%recip(1, im)*frame%pos(1, i) &
+                          + self%recip(2, im)*frame%pos(2, i) &
+                          + self%recip(3, im)*frame%pos(3, i)
+               end do
+               call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+               isp = int(self%species_of(i))
+               do im = 1, int(self%nmodes)
+                  self%rho_thread(im, isp, tid) = self%rho_thread(im, isp, tid) &
+                     + phase_factor(self%phase_pool(:, :, tid), self%index_max, &
+                                    self%mode_index(:, im))
+               end do
+            end do
+            !$omp end do
+            !$omp end parallel
+            do tid = 2, self%phase_threads
+               do isp = 1, self%nspecies
+                  do im = 1, int(self%nmodes)
+                     self%rho_thread(im, isp, 1) = self%rho_thread(im, isp, 1) &
+                        + self%rho_thread(im, isp, tid)
+                  end do
+               end do
+            end do
+            do isp = 1, self%nspecies
+               do im = 1, int(self%nmodes)
+                  self%rho(im, isp, slot) = self%rho_thread(im, isp, 1)
+               end do
+            end do
+         else
          !$omp parallel do schedule(static) private(im, isp, i, acc, phase, qx, qy, qz)
          do im = 1, int(self%nmodes)
             qx = self%qvec(1, im)
@@ -579,6 +630,7 @@ contains
             end do
          end do
          !$omp end parallel do
+         end if
 
          ! --- zero lag sums over the whole trajectory -----------------------
          do isp = 1, self%nspecies
@@ -649,6 +701,45 @@ contains
             end do
 
             if (self%fqt_self_enabled) then
+               if (allocated(self%fs_thread) .and. self%nmodes >= phase_min_modes) then
+                  ! Separable phases of the *displacement*: the same identity
+                  ! with phi_j = b_j . dr_i, so F_s costs two complex multiplies
+                  ! per (mode, atom) as well.
+                  self%fs_thread = (0.0_rk, 0.0_rk)
+                  !$omp parallel private(i, im, isp, tid, phi)
+                  tid = 1
+                  !$ tid = omp_get_thread_num() + 1
+                  !$omp do schedule(static)
+                  do i = 1, int(self%natoms)
+                     do im = 1, 3
+                        phi(im) = self%recip(1, im)*self%disp_scratch(1, i) &
+                                + self%recip(2, im)*self%disp_scratch(2, i) &
+                                + self%recip(3, im)*self%disp_scratch(3, i)
+                     end do
+                     call phase_tables(self%phase_pool(:, :, tid), phi, self%index_max)
+                     isp = int(self%species_of(i))
+                     do im = 1, int(self%nmodes)
+                        self%fs_thread(im, isp, tid) = self%fs_thread(im, isp, tid) &
+                           + phase_factor(self%phase_pool(:, :, tid), self%index_max, &
+                                          self%mode_index(:, im))
+                     end do
+                  end do
+                  !$omp end do
+                  !$omp end parallel
+                  do tid = 2, self%phase_threads
+                     do isp = 1, self%nspecies
+                        do im = 1, int(self%nmodes)
+                           self%fs_thread(im, isp, 1) = self%fs_thread(im, isp, 1) &
+                              + self%fs_thread(im, isp, tid)
+                        end do
+                     end do
+                  end do
+                  do isp = 1, self%nspecies
+                     do im = 1, int(self%nmodes)
+                        self%fs_scratch(im, isp) = self%fs_thread(im, isp, 1)
+                     end do
+                  end do
+               else
                !$omp parallel do schedule(static) private(im, isp, k, i, qx, qy, qz, phase, acc)
                do im = 1, int(self%nmodes)
                   qx = self%qvec(1, im)
@@ -667,6 +758,7 @@ contains
                   end do
                end do
                !$omp end parallel do
+               end if
                do isp = 1, self%nspecies
                   do im = 1, int(self%nmodes)
                      self%fs_sum(im, j, isp) = self%fs_sum(im, j, isp) + self%fs_scratch(im, isp)
