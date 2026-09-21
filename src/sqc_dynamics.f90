@@ -238,6 +238,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk) :: u(3), norm_u, s_i
       real(rk), allocatable :: kept_q(:, :), kept_w(:)
+      integer(lk) :: npts
       integer :: i
       type(modes_t) :: grid
 
@@ -295,16 +296,15 @@ contains
       case (dyn_q_shell)
          ! Every direction of the shell |q| = Q, on a Lebedev rule.  The modes
          ! are averaged into a single output row once they are assembled.
-         self%nmodes = int(lebedev_points(self%shell_order), lk)
-         if (self%nmodes < 1) then
+         npts = int(lebedev_points(self%shell_order), lk)
+         if (npts < 1) then
             ierr = 1
             write (message, '(a,i0,a)') 'unsupported Lebedev order ', self%shell_order, &
                ' for --dyn-q shell (use low, medium or high)'
             return
          end if
-         allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
-                   self%shell(self%nmodes), self%gidx(self%nmodes))
-         allocate (self%mode_weight(self%nmodes))
+         self%nmodes = npts
+         allocate (self%qvec(3, npts), self%mode_weight(npts))
          call lebedev_rule(self%shell_order, self%qvec, self%mode_weight, ierr, message)
          if (ierr /= 0) return
          ! The rule is symmetric under q -> -q with equal weights and every
@@ -312,14 +312,16 @@ contains
          ! carries the pair with twice the weight; the average is unchanged
          ! and the shell costs half the modes.
          call lebedev_reduce_pairs(self%qvec, self%mode_weight, self%nmodes)
-         ! The rule arrays are sized for the full rule, so shrink them to the
-         ! directions that survived: the shell average sums the weight array,
-         ! and the entries past nmodes would otherwise be summed as well.
+         ! The rule filled arrays sized for the full rule, so build the ones
+         ! the run keeps at the reduced length: the shell average sums the
+         ! weight array, and entries past nmodes would otherwise be summed as
+         ! well.
          allocate (kept_q(3, self%nmodes), kept_w(self%nmodes))
          kept_q = self%qvec(:, 1:self%nmodes)
          kept_w = self%mode_weight(1:self%nmodes)
          call move_alloc(kept_q, self%qvec)
          call move_alloc(kept_w, self%mode_weight)
+         allocate (self%qlen(self%nmodes), self%shell(self%nmodes), self%gidx(self%nmodes))
          self%qvec = self%shell_q*self%qvec
          self%qlen = self%shell_q
          do i = 1, int(self%nmodes)
