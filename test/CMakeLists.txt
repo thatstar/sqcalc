@@ -16,11 +16,16 @@ add_executable(test_neighbour_list test_neighbour_list.f90)
 target_link_libraries(test_neighbour_list PRIVATE sqcalc_lib)
 add_test(NAME neighbour_list COMMAND test_neighbour_list)
 
+# Lebedev rules: geometry, weights and exactness on the unit sphere.
+add_executable(test_lebedev test_lebedev.f90)
+target_link_libraries(test_lebedev PRIVATE sqcalc_lib)
+add_test(NAME lebedev COMMAND test_lebedev)
+
 # Same runtime checks as the library and the driver (see the top level
 # CMakeLists.txt): the test helpers are exercised by the suite, so they should
 # not be the one place where an out of bounds access stays silent.
 if(SQC_ENABLE_RUNTIME_CHECKS)
-  foreach(_sqc_checked h5read test_finufft_opts test_neighbour_list)
+  foreach(_sqc_checked h5read test_finufft_opts test_neighbour_list test_lebedev)
     if(TARGET ${_sqc_checked})
       target_compile_options(
         ${_sqc_checked} PRIVATE $<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<NOT:$<CONFIG:Debug>>>:-fcheck=bounds;-fbacktrace>

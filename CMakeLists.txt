@@ -143,6 +143,7 @@ add_library(
   src/sqc_weights.f90
   src/sqc_finufft.f90
   src/sqc_structure_factor.f90
+  src/sqc_lebedev.f90
   src/sqc_dynamics.f90
   src/sqc_debye.f90
   src/sqc_options.f90
