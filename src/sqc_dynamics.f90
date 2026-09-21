@@ -37,7 +37,7 @@ module sqc_dynamics
    use sqc_structure_factor, only: structure_factor_t, sf_shared_setup, sf_alloc_partials, &
                                    sf_prepare_species, mode_denominator, norm_self, &
                                    norm_natom, no_unit
-   use sqc_lebedev, only: lebedev_rule, lebedev_points
+   use sqc_lebedev, only: lebedev_rule, lebedev_points, lebedev_reduce_pairs
    use sqc_modes, only: modes_t, modes_build, thin_none, thin_shells, thin_orbits
    use sqc_phase, only: phase_tables, phase_factor, phase_min_modes
    use, intrinsic :: iso_c_binding, only: c_double_complex
@@ -230,6 +230,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: u(3), norm_u, s_i
+      real(rk), allocatable :: kept_q(:, :), kept_w(:)
       integer :: i
       type(modes_t) :: grid
 
@@ -299,6 +300,19 @@ contains
          allocate (self%mode_weight(self%nmodes))
          call lebedev_rule(self%shell_order, self%qvec, self%mode_weight, ierr, message)
          if (ierr /= 0) return
+         ! The rule is symmetric under q -> -q with equal weights and every
+         ! quantity averaged here is even in q, so one vector of each pair
+         ! carries the pair with twice the weight; the average is unchanged
+         ! and the shell costs half the modes.
+         call lebedev_reduce_pairs(self%qvec, self%mode_weight, self%nmodes)
+         ! The rule arrays are sized for the full rule, so shrink them to the
+         ! directions that survived: the shell average sums the weight array,
+         ! and the entries past nmodes would otherwise be summed as well.
+         allocate (kept_q(3, self%nmodes), kept_w(self%nmodes))
+         kept_q = self%qvec(:, 1:self%nmodes)
+         kept_w = self%mode_weight(1:self%nmodes)
+         call move_alloc(kept_q, self%qvec)
+         call move_alloc(kept_w, self%mode_weight)
          self%qvec = self%shell_q*self%qvec
          self%qlen = self%shell_q
          do i = 1, int(self%nmodes)
@@ -1954,9 +1968,10 @@ contains
       real(rk) :: unorm
 
       if (self%q_mode == dyn_q_shell) then
-         write (unit, '(a,f12.6,a,i0,a,i0,a)') '# q shell |q| = ', self%shell_q, &
+         write (unit, '(a,f12.6,a,i0,a,i0,a,i0,a)') '# q shell |q| = ', self%shell_q, &
             ' 1/A: Lebedev average over every direction (order ', self%shell_order, ', ', &
-            lebedev_points(self%shell_order), ' points)'
+            lebedev_points(self%shell_order), ' points, ', self%nmodes, &
+            ' after the +- reduction)'
          return
       end if
       if (self%q_mode == dyn_q_grid) then

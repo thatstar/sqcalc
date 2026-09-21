@@ -23,7 +23,8 @@ module sqc_lebedev
    private
 
    public :: lebedev_rule, lebedev_points, lebedev_order_from_name, &
-             lebedev_low, lebedev_medium, lebedev_high, lebedev_max_points
+             lebedev_low, lebedev_medium, lebedev_high, lebedev_max_points, &
+             lebedev_reduce_pairs
 
    !> Accuracy names of `--dyn-q shell:Q,ACC` and the order they select.
    integer, parameter :: lebedev_low = 11
@@ -165,5 +166,49 @@ contains
             ' expanded to ', n, ' points instead of ', want, '; the table is corrupt'
       end if
    end subroutine lebedev_rule
+
+   !> Merge every `+-` pair of a rule into one vector of twice the weight.
+   !!
+   !! A Lebedev rule is built from orbits of the octahedral group, which
+   !! contains the inversion, so the antipode of every point is itself a point
+   !! of the rule with the very same weight.  Every quantity the shell average
+   !! is applied to is even in `q` - `S_4` and `F_s` are squared amplitudes
+   !! and `F`, `S` are read through their real parts - so one vector of a pair
+   !! can carry both.  Halving the rule therefore leaves the average unchanged
+   !! (to rounding) while halving the modes the shell run accumulates.
+   !!
+   !! The representative is the one whose first non-zero component is
+   !! positive, the same convention `modes_canonical` uses for the lattice
+   !! `+-` reduction.  The points and weights are compacted in place and `n`
+   !! is set to the number of survivors.
+   subroutine lebedev_reduce_pairs(points, weights, n)
+      real(rk), intent(inout) :: points(:, :)
+      real(rk), intent(inout) :: weights(:)
+      integer(lk), intent(inout) :: n
+      integer(lk) :: i, keep
+
+      keep = 0
+      do i = 1, n
+         if (.not. lebedev_pair_head(points(:, i))) cycle
+         keep = keep + 1
+         points(:, keep) = points(:, i)
+         weights(keep) = 2.0_rk*weights(i)
+      end do
+      n = keep
+   end subroutine lebedev_reduce_pairs
+
+   !> True for the member of a `+-` pair that `lebedev_reduce_pairs` keeps.
+   pure logical function lebedev_pair_head(point) result(head)
+      real(rk), intent(in) :: point(3)
+      integer :: k
+
+      do k = 1, 3
+         if (abs(point(k)) > 0.0_rk) then
+            head = point(k) > 0.0_rk
+            return
+         end if
+      end do
+      head = .false.
+   end function lebedev_pair_head
 
 end module sqc_lebedev

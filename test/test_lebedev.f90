@@ -22,7 +22,9 @@ program test_lebedev
    real(rk) :: points(3, lebedev_max_points), weights(lebedev_max_points)
    real(rk) :: sum_w, quadrature, exact, worst
    integer :: i, j, iorder, n, a, b, c, ierr
+   integer(lk) :: nred
    character(len=256) :: message
+   logical :: paired
 
    worst = 0.0_rk
    do iorder = 1, 3
@@ -89,9 +91,67 @@ program test_lebedev
             end do
          end do
       end do
+
+      ! Every point has its antipode in the rule with the same weight, which is
+      ! what lets a shell run keep one vector of each pair.  The reduced rule
+      ! has to stay a quadrature for the even functions the shell averages
+      ! (S4 and F_s are squared amplitudes, F and S are read through their
+      ! real parts), so check the weight sum and every even monomial again.
+      do i = 1, n
+         paired = .false.
+         do j = 1, n
+            if (all(points(:, j) == -points(:, i))) then
+               paired = .true.
+               if (weights(j) /= weights(i)) then
+                  write (error_unit, '(a,i0,a,i0,a)') 'FAIL: order ', orders(iorder), &
+                     ' points ', i, ' and its antipode carry different weights'
+                  stop 1
+               end if
+               exit
+            end if
+         end do
+         if (.not. paired) then
+            write (error_unit, '(a,i0,a,i0,a)') 'FAIL: order ', orders(iorder), &
+               ' point ', i, ' has no antipode in the rule'
+            stop 1
+         end if
+      end do
+
+      nred = n
+      call lebedev_reduce_pairs(points, weights, nred)
+      if (nred /= n/2) then
+         write (error_unit, '(a,i0,a,i0,a,i0)') 'FAIL: order ', orders(iorder), &
+            ' reduced to ', nred, ' of ', n, ' directions'
+         stop 1
+      end if
+      sum_w = sum(weights(1:nred))
+      if (abs(sum_w - 4.0_rk*pi) > 1.0e-12_rk) then
+         write (error_unit, '(a,i0,a,es14.6)') 'FAIL: the reduced order ', orders(iorder), &
+            ' weights sum to ', sum_w
+         stop 1
+      end if
+      do a = 0, orders(iorder), 2
+         do b = 0, orders(iorder) - a, 2
+            do c = 0, orders(iorder) - a - b, 2
+               quadrature = 0.0_rk
+               do i = 1, nred
+                  quadrature = quadrature + weights(i) &
+                     *points(1, i)**a*points(2, i)**b*points(3, i)**c
+               end do
+               exact = sphere_moment(a, b, c)
+               if (abs(quadrature - exact) > 1.0e-12_rk*max(abs(exact), 1.0_rk)) then
+                  write (error_unit, '(a,i0,a,i0,a,i0,a,i0,a,es12.4,a,es12.4)') &
+                     'FAIL: reduced order ', orders(iorder), ' x^', a, ' y^', b, ' z^', c, &
+                     ' gives ', quadrature, ' instead of ', exact
+                  stop 1
+               end if
+            end do
+         end do
+      end do
    end do
 
-   write (output_unit, '(a,es10.2)') 'PASS: Lebedev rules are exact on the sphere, worst ', worst
+   write (output_unit, '(a,es10.2)') 'PASS: Lebedev rules and their +- halves are exact, worst ', &
+      worst
 
 contains
 

@@ -526,7 +526,8 @@ contains
          select case (m%q_mode)
          case (dyn_q_shell)
             write (error_unit, '(a,f0.4,a,i0,a,i0,a)') '  q shell    : |q| = ', m%shell_q, &
-               ' 1/A, Lebedev order ', m%shell_order, ' (', m%nmodes, ' directions)'
+               ' 1/A, Lebedev order ', m%shell_order, ' (', m%nmodes, &
+               ' directions, +- pairs merged)'
          case (dyn_q_grid)
             if (m%grid_nshell_kept < m%grid_nshell) then
                write (error_unit, '(a,f0.4,a,i0,a,i0,a,i0,a,i0,a)') '  q grid     : |q| <= ', &

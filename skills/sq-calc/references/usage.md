@@ -235,7 +235,10 @@ $S_4(q,t)$ and $F_s(q,t)$ are all shell averages; each is written as a single
 row at $q = (0,0,Q)$, and the static table is labelled by $|q| = Q$.  The
 average is taken over the *normalized* $S(q)$ of every direction, which matters
 for `-w xray`, where the form factor and hence the denominator depend on $q$
-even at fixed $|q|$.
+even at fixed $|q|$.  The rule is invariant under $q \to -q$ with the same
+weights and every averaged quantity is even in $q$, so one vector of each
+$\pm$ pair is accumulated with twice its weight: a shell run costs half the
+modes (25, 55 or 97) and the run summary says so.
 
 #### A reciprocal-lattice grid
 

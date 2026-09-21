@@ -350,6 +350,12 @@ output becomes a single row at $q = (0,0,Q)$, and the average is taken over the
 normalized $S(q)$ of every direction, so that the $q$ dependent X-ray form
 factors are averaged correctly even at a fixed $|q|$.
 
+The rule is invariant under $q \to -q$ with the same weights, and every
+quantity averaged on the shell is even in $q$ ($S_4$ and $F_s$ are squared
+amplitudes, $F$ and $S$ enter through their real parts), so one vector of each
+$\pm$ pair carries both with twice the weight.  A shell therefore accumulates
+half of the rule's directions - 25, 55 or 97 - while its average is unchanged.
+
 ### Four-point structure factor and dynamic susceptibility
 
 `--s4` and `--chi4` extend the same dynamic run to the four-point quantities
