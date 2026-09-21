@@ -30,8 +30,10 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def run(cmd):
-    result = subprocess.run(cmd, capture_output=True, text=True)
+def run(cmd, env=None):
+    if env is not None:
+        env = dict(os.environ, **env)
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         raise SystemExit("command failed (%d): %s\n%s\n%s"
                          % (result.returncode, " ".join(cmd), result.stdout, result.stderr))
@@ -858,6 +860,16 @@ def main():
         raise SystemExit("FAIL Q(0)=1 and chi4(0)=0")
     print("  ok   %-42s Q(0)=%.6f chi4(0)=%.1e"
           % ("Q(0) and chi4(0)", chi4[0, 1], chi4[0, 2]))
+
+    # The overlap scan compacts one block of atoms per thread and joins the
+    # segments in thread order, so an S4 run cannot depend on the thread
+    # count.  The two tables have to be identical, not merely close.
+    for threads in ("1", "2"):
+        run([exe, "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
+             "--s4-cutoff", s4_cutoff, "--s4", path("s4_scan_t%s.dat" % threads),
+             path("s4_scan_t%s_sq.dat" % threads)], env={"OMP_NUM_THREADS": threads})
+    compare(read_matrix(path("s4_scan_t1.dat")), read_matrix(path("s4_scan_t2.dat")),
+            "S4 is independent of the thread count", rtol=0.0)
 
     # The q = 0 row of the S4 table is the scalar chi4(t).
     s4_q0 = ["--dyn", "--dyn-q", "line:2,0,2,1,0,0", "--dt", "1", "--maxframes", "8",
