@@ -210,8 +210,10 @@ module sqc_structure_factor
       real(rk), allocatable :: amp_const(:)
       !> Per-atom strengths and transform scratch space.
       complex(c_double_complex), allocatable :: strengths(:), fk(:), total(:)
-      !> Per-species amplitudes on the flat grid (only with --partials).
-      complex(c_double_complex), allocatable :: rho_species(:, :)
+      !> Per-species amplitudes on the flat grid (only with --partials): one
+      !! contiguous block of `gridpoints` per species, which is the layout the
+      !! CPU transform and the GPU download both produce.
+      complex(c_double_complex), allocatable :: rho_species(:)
    contains
       procedure :: method_setup => nufft_setup
       procedure :: accumulate_frame => nufft_accumulate
@@ -465,15 +467,17 @@ contains
 
    !> Accumulate the unweighted partial sums Re(rho_a rho_b*) of one frame.
    !!
-   !! `rho_species(g, a)` holds the amplitude of species `a` on the flat
-   !! reciprocal grid (the same layout as `accumulate_modes` expects).  The
-   !! partials are stored unweighted so that the same numbers serve for every
-   !! weighting scheme and normalization.  `species_type(a)` is the LAMMPS
-   !! type id of species `a`, so the sums land in the type indexed columns
-   !! even when a type id has no atoms at all.
-   subroutine sf_accumulate_partials(self, rho_species, species_type)
+   !! `rho_species` holds the amplitudes of every species as contiguous blocks
+   !! of `nstride` values: species `a` sits at `(a - 1)*nstride + g`.  That is
+   !! the layout the CPU transform and the GPU download both produce, so
+   !! neither has to copy or reshape.  The partials are stored unweighted so
+   !! that the same numbers serve for every weighting scheme and normalization.
+   !! `species_type(a)` is the LAMMPS type id of species `a`, so the sums land
+   !! in the type indexed columns even when a type id has no atoms at all.
+   subroutine sf_accumulate_partials(self, rho_species, nstride, species_type)
       class(structure_factor_t), intent(inout) :: self
-      complex(c_double_complex), intent(in) :: rho_species(:, :)
+      complex(c_double_complex), intent(in) :: rho_species(:)
+      integer(lk), intent(in) :: nstride
       integer(ik), intent(in) :: species_type(:)
       integer :: ia, ib, im, ia_max
       integer(lk) :: g, s
@@ -485,14 +489,16 @@ contains
       real(rk), allocatable :: local_partial(:, :, :)
 
       if (.not. self%partials) return
-      ia_max = size(rho_species, 2)
+      if (nstride <= 0) return
+      ia_max = min(size(species_type), int(size(rho_species)/nstride))
       allocate (local_partial(self%ntypes, self%ntypes, self%nq))
       local_partial = 0.0_rk
       do ia = 1, ia_max
          do ib = ia, ia_max
             do im = 1, int(self%nmodes)
                g = self%gidx(im)
-               value = real(rho_species(g, ia)*conjg(rho_species(g, ib)), rk)
+               value = real(rho_species((int(ia, lk) - 1)*nstride + g) &
+                            *conjg(rho_species((int(ib, lk) - 1)*nstride + g)), rk)
                s = self%shell(im)
                local_partial(int(species_type(ia)), int(species_type(ib)), s) = &
                   local_partial(int(species_type(ia)), int(species_type(ib)), s) + value
@@ -518,10 +524,11 @@ contains
    !! `amp_const` the constant ones (unit, neutron); exactly one of the two is
    !! allocated.  The state is allocated by the first frame that reaches here,
    !! so a method that does not accumulate pair columns simply writes none.
-   subroutine sf_accumulate_xrd_partials(self, rho_species, species_type, &
+   subroutine sf_accumulate_xrd_partials(self, rho_species, nstride, species_type, &
                                          amp_table, amp_const)
       class(structure_factor_t), intent(inout) :: self
-      complex(c_double_complex), intent(in) :: rho_species(:, :)
+      complex(c_double_complex), intent(in) :: rho_species(:)
+      integer(lk), intent(in) :: nstride
       integer(ik), intent(in) :: species_type(:)
       real(rk), intent(in) :: amp_table(:, :), amp_const(:)
       real(rk), allocatable :: local(:, :, :)
@@ -531,7 +538,8 @@ contains
 
       if (.not. self%xrd_enabled) return
       if (.not. self%partials) return
-      nspecies = size(rho_species, 2)
+      if (nstride <= 0) return
+      nspecies = min(size(species_type), int(size(rho_species)/nstride))
       if (nspecies < 1) return
       if (.not. allocated(self%xrd_partial_num)) then
          allocate (self%xrd_partial_num(self%ntypes, self%ntypes, self%xrd_bins))
@@ -556,7 +564,8 @@ contains
                   wa = amp_table(im, isp)
                   wb = amp_table(im, jsp)
                end if
-               product = real(rho_species(g, isp)*conjg(rho_species(g, jsp)), rk)
+               product = real(rho_species((int(isp, lk) - 1)*nstride + g) &
+                              *conjg(rho_species((int(jsp, lk) - 1)*nstride + g)), rk)
                local(ia, ib, self%xrd_bin(im)) = local(ia, ib, self%xrd_bin(im)) &
                                                  + wa*wb*product*self%xrd_weight(im)
             end do
@@ -1036,7 +1045,7 @@ contains
          self%total = (0.0_rk, 0.0_rk)
       end if
       if (self%partials) then
-         allocate (self%rho_species(self%gridpoints, size(self%species_type)))
+         allocate (self%rho_species(self%gridpoints*int(size(self%species_type), lk)))
          if (.not. allocated(self%total)) then
             allocate (self%total(self%gridpoints))
             self%total = (0.0_rk, 0.0_rk)
@@ -1165,11 +1174,14 @@ contains
                   write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
                   return
                end if
-               self%rho_species(:, isp) = self%fk
+               self%rho_species((int(isp, lk) - 1)*self%gridpoints + 1:int(isp, lk) &
+                                *self%gridpoints) = self%fk
             end do
-            call self%accumulate_partials(self%rho_species, self%species_type)
-            call self%accumulate_xrd_partials(self%rho_species, self%species_type, &
-                                              self%amp_table, self%amp_const)
+            call self%accumulate_partials(self%rho_species, self%gridpoints, &
+                                          self%species_type)
+            call self%accumulate_xrd_partials(self%rho_species, self%gridpoints, &
+                                              self%species_type, self%amp_table, &
+                                              self%amp_const)
             !$omp parallel do schedule(static) private(im, isp, g)
             do im = 1, int(self%nmodes)
                g = self%gidx(im)
@@ -1177,7 +1189,7 @@ contains
                do isp = 1, size(self%species_type)
                   self%total(g) = self%total(g) &
                                   + cmplx(self%amp_table(im, isp), 0.0_rk, c_double_complex) &
-                                    *self%rho_species(g, isp)
+                                    *self%rho_species((int(isp, lk) - 1)*self%gridpoints + g)
                end do
             end do
             !$omp end parallel do
@@ -1229,11 +1241,14 @@ contains
                   write (message, '(a,i0)') 'FINUFFT execute failed (ier = ', ier
                   return
                end if
-               self%rho_species(:, isp) = self%fk
+               self%rho_species((int(isp, lk) - 1)*self%gridpoints + 1:int(isp, lk) &
+                                *self%gridpoints) = self%fk
             end do
-            call self%accumulate_partials(self%rho_species, self%species_type)
-            call self%accumulate_xrd_partials(self%rho_species, self%species_type, &
-                                              self%amp_table, self%amp_const)
+            call self%accumulate_partials(self%rho_species, self%gridpoints, &
+                                          self%species_type)
+            call self%accumulate_xrd_partials(self%rho_species, self%gridpoints, &
+                                              self%species_type, self%amp_table, &
+                                              self%amp_const)
             !$omp parallel do schedule(static) private(im, isp, g)
             do im = 1, int(self%nmodes)
                g = self%gidx(im)
@@ -1241,7 +1256,7 @@ contains
                do isp = 1, size(self%species_type)
                   self%total(g) = self%total(g) &
                                   + cmplx(self%amp_const(isp), 0.0_rk, c_double_complex) &
-                                    *self%rho_species(g, isp)
+                                    *self%rho_species((int(isp, lk) - 1)*self%gridpoints + g)
                end do
             end do
             !$omp end parallel do

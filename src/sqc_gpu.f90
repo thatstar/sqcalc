@@ -87,7 +87,7 @@ contains
    !> Number of strength values transferred per frame.
    pure integer(lk) function upload_count(self) result(n)
       class(cufinufft_structure_factor_t), intent(in) :: self
-      if (self%q_dependent) then
+      if (self%q_dependent .or. self%partials) then
          n = int(self%nspecies, lk)*int(self%natoms, lk)
       else
          n = int(self%natoms, lk)
@@ -97,7 +97,7 @@ contains
    !> Number of transform values downloaded per frame.
    pure integer(lk) function download_count(self) result(n)
       class(cufinufft_structure_factor_t), intent(in) :: self
-      if (self%q_dependent) then
+      if (self%q_dependent .or. self%partials) then
          n = int(self%nspecies, lk)*self%gridpoints
       else
          n = self%gridpoints
@@ -184,9 +184,10 @@ contains
       self%opts%gpu_device_id = int(self%device, c_int)
       n_modes = int(self%modes, c_int64_t)
       ! With q independent weights (unit/neutron) the per-atom amplitudes are
-      ! folded into a single transform; only X-ray form factors need one
-      ! transform per species.
-      if (self%q_dependent) then
+      ! folded into a single transform; X-ray form factors need one transform
+      ! per species, and so do the pair columns, which are sums of products of
+      ! two species amplitudes.
+      if (self%q_dependent .or. self%partials) then
          ntrans = int(self%nspecies, c_int)
       else
          ntrans = 1_c_int
@@ -261,9 +262,10 @@ contains
          return
       end if
 
-      ! Strengths.  With q independent weights the per-atom amplitudes go into a
-      ! single transform; X-ray form factors need one block per species.
-      if (self%q_dependent) then
+      ! Strengths.  With q independent weights and no pair columns the per-atom
+      ! amplitudes go into a single transform; X-ray form factors and the pair
+      ! columns need one unit block per species.
+      if (self%q_dependent .or. self%partials) then
          host_c = (0.0_rk, 0.0_rk)
          do isp = 1, self%nspecies
             base = int(isp - 1, ik)*frame%natoms
@@ -320,15 +322,29 @@ contains
          return
       end if
 
-      if (self%q_dependent) then
-         ! Combine the species with their q dependent amplitudes (each mode
-         ! needs its own species sum, but nothing is shared) then accumulate.
+      ! The pair columns (shell and XRD) are sums of products of two species
+      ! amplitudes, and the download left exactly those blocks in host_fk.
+      if (self%partials) then
+         call self%accumulate_partials(host_fk, self%gridpoints, self%species_type)
+         call self%accumulate_xrd_partials(host_fk, self%gridpoints, self%species_type, &
+                                           self%amp_table, self%amp_const)
+      end if
+
+      if (self%q_dependent .or. self%partials) then
+         ! Combine the species amplitudes into the mode intensities.  With
+         ! q dependent form factors each mode needs its own species sum; with
+         ! pair columns the per species blocks are what the total is built
+         ! from anyway.
          !$omp parallel do schedule(static) private(im, isp, g, amp, total)
          do im = 1, int(self%nmodes)
             g = self%gidx(im)
             total = (0.0_rk, 0.0_rk)
             do isp = 1, self%nspecies
-               amp = self%amp_table(im, isp)
+               if (self%q_dependent) then
+                  amp = self%amp_table(im, isp)
+               else
+                  amp = self%amp_const(isp)
+               end if
                total = total + cmplx(amp, 0.0_rk, c_double_complex) &
                                *host_fk(int(isp - 1, lk)*self%gridpoints + g)
             end do

@@ -323,19 +323,44 @@ def main():
             print("  ok   %-42s max deviation %.2e"
                   % ("GPU vs CPU (reciprocal grid)", worst))
 
+            # Pair columns come from the per species amplitudes on the host
+            # side of the download, so the S(q) partials have to match the CPU
+            # run column by column.
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", *gpu_common,
+                 path("cpu_p.dat")])
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
+                 *gpu_common, path("gpu_p.dat")])
+            cpu_part = read_matrix(path("cpu_p.dat"))
+            gpu_part = read_matrix(path("gpu_p.dat"))
+            if cpu_part.shape != gpu_part.shape:
+                raise SystemExit("FAIL gpu partials shape %s vs %s"
+                                 % (gpu_part.shape, cpu_part.shape))
+            worst = float(np.max(np.abs(gpu_part[:, 1:] - cpu_part[:, 1:])
+                                 / np.maximum(np.abs(cpu_part[:, 1:]), 1.0)))
+            if worst > 1.0e-6:
+                raise SystemExit("FAIL gpu vs cpu partials: %.3e" % worst)
+            print("  ok   %-42s max deviation %.2e" % ("GPU vs CPU (S(q) partials)", worst))
+
             # The powder XRD pattern accumulates through the shared per-mode
-            # reduction, so the GPU has to reproduce the CPU pattern.  The
-            # pair columns are not accumulated on the GPU (yet): the run says
-            # so, and only the total column is compared here.
+            # reduction and carries the pair columns as well, so every column
+            # has to match.
             xrd_gpu = ["--xrd-lambda", "1.5406", "--xrd-range", "10", "60",
                        "--xrd-step", "1"]
             run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd",
                  path("cpu.xrd"), *xrd_gpu, *gpu_common, path("cpu_xrd_sq.dat")])
             run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
                  "--xrd", path("gpu.xrd"), *xrd_gpu, *gpu_common, path("gpu_xrd_sq.dat")])
-            _, cpu_xrd = read_table(path("cpu.xrd"))
-            _, gpu_xrd = read_table(path("gpu.xrd"))
-            compare(cpu_xrd, gpu_xrd, "GPU vs CPU (powder XRD)")
+            cpu_xrd = read_matrix(path("cpu.xrd"))
+            gpu_xrd = read_matrix(path("gpu.xrd"))
+            if cpu_xrd.shape != gpu_xrd.shape:
+                raise SystemExit("FAIL gpu xrd shape %s vs %s"
+                                 % (gpu_xrd.shape, cpu_xrd.shape))
+            worst = float(np.max(np.abs(gpu_xrd[:, 1:] - cpu_xrd[:, 1:])
+                                 / np.maximum(np.abs(cpu_xrd[:, 1:]), 1.0)))
+            if worst > 1.0e-6:
+                raise SystemExit("FAIL gpu vs cpu powder XRD: %.3e" % worst)
+            print("  ok   %-42s max deviation %.2e"
+                  % ("GPU vs CPU (powder XRD, pair columns)", worst))
 
     # --- 8. Debye method --------------------------------------------------
     print("debye method")

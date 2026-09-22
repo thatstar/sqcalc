@@ -199,7 +199,7 @@ program sqcalc
    if (opts%partials .and. .not. allocated(method%partial_num) .and. &
        .not. opts%quiet) then
       write (error_unit, '(a)') '  note       : this method does not accumulate partials; '// &
-         'the CPU nufft path writes the pair columns'
+         'the nufft and debye paths write the pair columns'
    end if
    if (.not. opts%quiet) call report_grid(method)
 
