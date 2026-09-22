@@ -718,7 +718,13 @@ contains
          ! the lag that owns it: it is a streaming pass over memory that came
          ! out no faster when it was split across threads on its own, so it is
          ! not split separately.
-         !$omp parallel do schedule(dynamic, 1) &
+         !
+         ! The lags are only spread when they carry a mode sum to pay for it.
+         ! A chi4-only lag is nothing but the scan, and spreading a streaming
+         ! pass over memory cost a third of its time on the machines this was
+         ! timed on, so that case runs the loop on one thread.
+         !$omp parallel do if(self%s4_enabled .or. self%fqt_self_enabled) &
+         !$omp& schedule(dynamic, 1) &
          !$omp& private(oslot, nover, k, i, im, isp, tid, dx, dy, dz, rr, &
          !$omp&         qx, qy, qz, phase, acc)
          do j = 0, min(sample, self%nsteps)
