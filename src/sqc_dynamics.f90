@@ -117,6 +117,8 @@ module sqc_dynamics
       real(rk) :: phase_base_vec(3) = 0.0_rk
       integer :: phase_threads = 1
       complex(c_double_complex), allocatable :: phase_pool(:, :, :)
+      !> One workspace per thread: every worker owns a whole lag at a time, so
+      !! the mode sums of a lag never share a partial result with another lag.
       complex(c_double_complex), allocatable :: acc_thread(:, :)
       complex(c_double_complex), allocatable :: fs_thread(:, :, :), rho_thread(:, :, :)
       !> Single lattice vector sampling (`--dyn-q single`): the Miller indices
@@ -165,25 +167,19 @@ module sqc_dynamics
       integer :: nsteps = 0
       !> Effective S4 window, nsteps*stride (<= maxframes).
       integer :: effective_maxframes = 0
-      !> Ring buffer of the last frames' positions for the overlap function.
+      !> Ring buffer of the last frames' positions for the overlap function,
+      !! `(3, atom, lag)`.  The lag is the last index on purpose: the first
+      !! index varies fastest, so the scan of one lag walks the atoms
+      !! contiguously and streams instead of fetching a cache line per atom.
       real(rk), allocatable :: pos_buffer(:, :, :)
-      !> Atoms inside the overlap cutoff for the current lag.
-      integer(ik), allocatable :: over_list(:)
-      !> The scan that builds `over_list` runs one contiguous atom block per
-      !! thread and compacts each block into its own segment; the segments are
-      !! concatenated in thread order, which keeps the list in ascending atom
-      !! order - and the results bit for bit the same - whatever the schedule.
-      integer :: scan_threads = 1
-      integer :: scan_block = 0
-      integer(ik), allocatable :: over_seg(:, :), over_cnt(:)
+      !> Atoms inside the overlap cutoff, one list per thread: a worker builds
+      !! the list of the lag it owns and no other thread can touch it.
+      integer(ik), allocatable :: over_seg(:, :)
       !> S4 accumulators: sum |W|^2 and sum W per (mode, lag).
       real(rk), allocatable :: s4_asum(:, :)
       complex(c_double_complex), allocatable :: s4_bsum(:, :)
-      complex(c_double_complex), allocatable :: w_scratch(:)
       !> Self-function accumulators: sum exp(i q.dr) per (mode, lag, species).
       complex(c_double_complex), allocatable :: fs_sum(:, :, :)
-      complex(c_double_complex), allocatable :: fs_scratch(:, :)
-      real(rk), allocatable :: disp_scratch(:, :)
       !> chi4 accumulators over the scalar overlap W0.
       real(rk), allocatable :: chi4_asum(:), chi4_bsum(:)
       !> Time origins per S4 lag and the S4 time axis.
@@ -544,57 +540,39 @@ contains
          allocate (self%sample_cnt(max(int(self%nmodes), 1), 0:self%nsteps))
          self%sample_cnt = 0
       end if
+      ! Every worker owns a whole lag at a time, so the overlap list it builds
+      ! belongs to it alone and needs no merge afterwards.  The thread count is
+      ! the one the driver pinned before configure.
+      self%phase_threads = max(omp_get_max_threads(), 1)
       if (self%s4_enabled .or. self%chi4_enabled) then
-         allocate (self%over_list(int(self%natoms)))
+         allocate (self%over_seg(int(self%natoms), self%phase_threads))
          allocate (self%chi4_asum(0:self%nsteps), self%chi4_bsum(0:self%nsteps))
          self%chi4_asum = 0.0_rk
          self%chi4_bsum = 0.0_rk
       end if
       if (self%s4_enabled) then
-         ! The threaded scan needs one segment per thread, long enough for the
-         ! largest static block.  It is set up for S4 only, which is when the
-         ! mode sum that follows shares the parallel region (see
-         ! dyn_accumulate).  A chunk of `ceil(natoms/threads)` splits the atoms
-         ! into at most one chunk per thread, so no thread can outgrow its
-         ! segment.
-         self%scan_threads = max(omp_get_max_threads(), 1)
-         self%scan_block = (int(self%natoms) + self%scan_threads - 1)/self%scan_threads
-         allocate (self%over_seg(max(self%scan_block, 1), self%scan_threads))
-         allocate (self%over_cnt(self%scan_threads))
+         allocate (self%acc_thread(self%nmodes, self%phase_threads))
+         self%acc_thread = (0.0_rk, 0.0_rk)
          allocate (self%s4_asum(self%nmodes, 0:self%nsteps))
          allocate (self%s4_bsum(self%nmodes, 0:self%nsteps))
-         allocate (self%w_scratch(self%nmodes))
          self%s4_asum = 0.0_rk
          self%s4_bsum = (0.0_rk, 0.0_rk)
-         self%w_scratch = (0.0_rk, 0.0_rk)
       end if
-      ! Separable phase evaluation: one factor table per thread plus the
-      ! accumulators of the sums that use it.  The thread count is the one the
-      ! driver pinned before configure.
+      if (self%fqt_self_enabled) then
+         allocate (self%fs_thread(self%nmodes, self%nspecies, self%phase_threads))
+         self%fs_thread = (0.0_rk, 0.0_rk)
+         allocate (self%fs_sum(self%nmodes, 0:self%nsteps, self%nspecies))
+         self%fs_sum = (0.0_rk, 0.0_rk)
+      end if
+      ! Separable phase evaluation: one factor table per thread, filled and
+      ! used by the worker that owns the lag or the frame being summed.
       if (allocated(self%mode_index)) then
-         self%phase_threads = max(omp_get_max_threads(), 1)
          allocate (self%phase_pool(3, 0:2*maxval(self%index_max), self%phase_threads))
          self%phase_pool = (0.0_rk, 0.0_rk)
-         if (self%s4_enabled) then
-            allocate (self%acc_thread(self%nmodes, self%phase_threads))
-            self%acc_thread = (0.0_rk, 0.0_rk)
-         end if
-         if (self%fqt_self_enabled) then
-            allocate (self%fs_thread(self%nmodes, self%nspecies, self%phase_threads))
-            self%fs_thread = (0.0_rk, 0.0_rk)
-         end if
          if (self%coherent_enabled) then
             allocate (self%rho_thread(self%nmodes, self%nspecies, self%phase_threads))
             self%rho_thread = (0.0_rk, 0.0_rk)
          end if
-      end if
-      if (self%fqt_self_enabled) then
-         allocate (self%fs_sum(self%nmodes, 0:self%nsteps, self%nspecies))
-         allocate (self%fs_scratch(self%nmodes, self%nspecies))
-         allocate (self%disp_scratch(3, int(self%natoms)))
-         self%fs_sum = (0.0_rk, 0.0_rk)
-         self%fs_scratch = (0.0_rk, 0.0_rk)
-         self%disp_scratch = 0.0_rk
       end if
    end subroutine dyn_setup
 
@@ -606,9 +584,9 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       complex(c_double_complex) :: acc
-      real(rk) :: qx, qy, qz, phase, dx, dy, dz
+      real(rk) :: qx, qy, qz, phase, dx, dy, dz, rr(3)
       integer :: t_frame, slot, sample_slot, sample, l, j, oslot, im, isp, jsp, i, k, nover
-      integer :: tid, nthread
+      integer :: tid
 
       ierr = 0
       message = ''
@@ -729,97 +707,53 @@ contains
          sample = t_frame/self%stride
          sample_slot = mod(sample, self%nsteps + 1)
          self%pos_buffer(:, :, sample_slot) = frame%pos
+         ! One lag per thread.  Every lag is an independent sum into its own
+         ! row of the accumulators, so two workers never share a partial
+         ! result and none of them has to wait for another: the schedule
+         ! cannot change an answer, a lag is summed in the same order it would
+         ! be alone, and the region is entered once per frame instead of once
+         ! per lag.  `dynamic` spreads the uneven work - a lag that still
+         ! overlaps every atom against one that overlaps few - without
+         ! touching the result.  The scan of the overlap list rides along with
+         ! the lag that owns it: it is a streaming pass over memory that came
+         ! out no faster when it was split across threads on its own, so it is
+         ! not split separately.
+         !$omp parallel do schedule(dynamic, 1) &
+         !$omp& private(oslot, nover, k, i, im, isp, tid, dx, dy, dz, rr, &
+         !$omp&         qx, qy, qz, phase, acc)
          do j = 0, min(sample, self%nsteps)
             if (mod(t_frame - j*self%stride, self%lag_stride) /= 0) cycle
             oslot = mod(sample - j, self%nsteps + 1)
+            tid = 1
+            !$ tid = omp_get_thread_num() + 1
 
             ! Displacement of every atom.  S4/chi4 additionally build the
             ! overlap list, while F_s needs the displacement phase of every
             ! atom; the cutoff never enters F_s.
-            !
-            ! This scan is not a mode sum, so it does not scale with the mode
-            ! loop; where it is threaded, each thread scans one contiguous
-            ! block of atoms.  A thread must not append to a shared counter,
-            ! because then the order of the list - and with it the summation
-            ! order and the last digits of every result - would depend on the
-            ! schedule; instead each thread compacts its block into a private
-            ! segment and the segments are joined in thread order.
-            ! `schedule(static)` hands the chunks out in thread order, so the
-            ! joined list is in ascending atom order whatever the thread
-            ! count.
-            !
-            ! The split is only worth it when the S4 mode sum follows in the
-            ! same lag and shares the parallel region.  On the Kob-Andersen
-            ! melt (8000 atoms, 1001 frames, 201 lags) the scan is 9.4 s of a
-            ! 64 s S4 run and splitting it takes the eight-thread run from
-            ! 34.0 s to 31.3 s, but the fork/join of a scan that stands alone
-            ! costs a chi4-only run 3.4 s - more than the scan itself saves -
-            ! so a chi4-only run, and a run with a single thread, keeps the
-            ! plain loop.
             nover = 0
-            nthread = max(omp_get_max_threads(), 1)
-            if (self%s4_enabled .and. nthread > 1) then
-               ! A team shorter than the maximum (dynamic adjustment, say)
-               ! leaves segments unwritten; an empty count keeps them out.
-               self%over_cnt = 0
-               !$omp parallel private(i, tid, k, dx, dy, dz)
-               tid = 1
-               !$ tid = omp_get_thread_num() + 1
-               k = 0
-               !$omp do schedule(static, max(self%scan_block, 1))
+            if (self%s4_enabled .or. self%chi4_enabled) then
                do i = 1, int(self%natoms)
                   dx = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
                   dy = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
                   dz = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
-                  if (self%fqt_self_enabled) then
-                     self%disp_scratch(1, i) = dx
-                     self%disp_scratch(2, i) = dy
-                     self%disp_scratch(3, i) = dz
-                  end if
                   if (dx*dx + dy*dy + dz*dz <= self%s4_cutoff2) then
-                     k = k + 1
-                     self%over_seg(k, tid) = int(i, ik)
-                  end if
-               end do
-               !$omp end do
-               !$ self%over_cnt(tid) = int(k, ik)
-               !$omp end parallel
-               do tid = 1, nthread
-                  do k = 1, int(self%over_cnt(tid))
                      nover = nover + 1
-                     self%over_list(nover) = self%over_seg(k, tid)
-                  end do
-               end do
-            else
-               do i = 1, int(self%natoms)
-                  dx = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
-                  dy = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
-                  dz = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
-                  if (self%fqt_self_enabled) then
-                     self%disp_scratch(1, i) = dx
-                     self%disp_scratch(2, i) = dy
-                     self%disp_scratch(3, i) = dz
-                  end if
-                  if ((self%s4_enabled .or. self%chi4_enabled) .and. &
-                      dx*dx + dy*dy + dz*dz <= self%s4_cutoff2) then
-                     nover = nover + 1
-                     self%over_list(nover) = int(i, ik)
+                     self%over_seg(nover, tid) = int(i, ik)
                   end if
                end do
             end if
 
             if (self%fqt_self_enabled) then
-               if (allocated(self%fs_thread) .and. self%nmodes >= phase_min_modes) then
+               if (allocated(self%phase_pool) .and. self%nmodes >= phase_min_modes) then
                   ! Separable phases of the *displacement*: the same identity
                   ! with phi_j = b_j . dr_i, so F_s costs two complex multiplies
                   ! per (mode, atom) as well.
-                  self%fs_thread = (0.0_rk, 0.0_rk)
-                  !$omp parallel private(i, im, isp, tid)
-                  tid = 1
-                  !$ tid = omp_get_thread_num() + 1
-                  !$omp do schedule(static)
+                  self%fs_thread(:, :, tid) = (0.0_rk, 0.0_rk)
                   do i = 1, int(self%natoms)
-                     call dyn_atom_phase(self, self%disp_scratch(:, i), tid)
+                     rr(1) = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
+                     rr(2) = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
+                     rr(3) = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
+                     call dyn_atom_phase(self, rr, tid)
                      isp = int(self%species_of(i))
                      do im = 1, int(self%nmodes)
                         self%fs_thread(im, isp, tid) = self%fs_thread(im, isp, tid) &
@@ -827,64 +761,47 @@ contains
                                           self%mode_index(:, im))
                      end do
                   end do
-                  !$omp end do
-                  !$omp end parallel
-                  do tid = 2, self%phase_threads
+                  do isp = 1, self%nspecies
+                     do im = 1, int(self%nmodes)
+                        self%fs_sum(im, j, isp) = self%fs_sum(im, j, isp) &
+                           + self%fs_thread(im, isp, tid)
+                     end do
+                  end do
+               else
+                  do im = 1, int(self%nmodes)
+                     qx = self%qvec(1, im)
+                     qy = self%qvec(2, im)
+                     qz = self%qvec(3, im)
                      do isp = 1, self%nspecies
-                        do im = 1, int(self%nmodes)
-                           self%fs_thread(im, isp, 1) = self%fs_thread(im, isp, 1) &
-                              + self%fs_thread(im, isp, tid)
+                        acc = (0.0_rk, 0.0_rk)
+                        do k = self%species_first(isp), self%species_first(isp + 1) - 1
+                           i = int(self%atom_of(k))
+                           phase = qx*(frame%pos(1, i) - self%pos_buffer(1, i, oslot)) &
+                                   + qy*(frame%pos(2, i) - self%pos_buffer(2, i, oslot)) &
+                                   + qz*(frame%pos(3, i) - self%pos_buffer(3, i, oslot))
+                           acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
                         end do
+                        self%fs_thread(im, isp, tid) = acc
                      end do
                   end do
                   do isp = 1, self%nspecies
                      do im = 1, int(self%nmodes)
-                        self%fs_scratch(im, isp) = self%fs_thread(im, isp, 1)
+                        self%fs_sum(im, j, isp) = self%fs_sum(im, j, isp) &
+                           + self%fs_thread(im, isp, tid)
                      end do
                   end do
-               else
-               !$omp parallel do schedule(static) private(im, isp, k, i, qx, qy, qz, phase, acc)
-               do im = 1, int(self%nmodes)
-                  qx = self%qvec(1, im)
-                  qy = self%qvec(2, im)
-                  qz = self%qvec(3, im)
-                  do isp = 1, self%nspecies
-                     acc = (0.0_rk, 0.0_rk)
-                     do k = self%species_first(isp), self%species_first(isp + 1) - 1
-                        i = int(self%atom_of(k))
-                        phase = qx*self%disp_scratch(1, i) &
-                                + qy*self%disp_scratch(2, i) &
-                                + qz*self%disp_scratch(3, i)
-                        acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
-                     end do
-                     self%fs_scratch(im, isp) = acc
-                  end do
-               end do
-               !$omp end parallel do
                end if
-               do isp = 1, self%nspecies
-                  do im = 1, int(self%nmodes)
-                     self%fs_sum(im, j, isp) = self%fs_sum(im, j, isp) + self%fs_scratch(im, isp)
-                  end do
-               end do
             end if
 
             if (self%s4_enabled) then
                if (nover > 0 .and. allocated(self%mode_index) .and. &
                    self%nmodes >= phase_min_modes) then
                   ! Separable phases: one factor table per atom replaces the
-                  ! sine and cosine of every (mode, atom) pair, and the atom
-                  ! loop becomes the parallel one.  Each thread owns a table
-                  ! and an accumulator; the accumulators are combined in
-                  ! thread order so the sum stays reproducible.
-                  nthread = self%phase_threads
-                  self%acc_thread = (0.0_rk, 0.0_rk)
-                  !$omp parallel private(k, i, im, tid)
-                  tid = 1
-                  !$ tid = omp_get_thread_num() + 1
-                  !$omp do schedule(static)
+                  ! sine and cosine of every (mode, atom) pair, and every mode
+                  ! costs two complex multiplies.
+                  self%acc_thread(:, tid) = (0.0_rk, 0.0_rk)
                   do k = 1, nover
-                     i = int(self%over_list(k))
+                     i = int(self%over_seg(k, tid))
                      call dyn_atom_phase(self, self%pos_buffer(:, i, oslot), tid)
                      do im = 1, int(self%nmodes)
                         self%acc_thread(im, tid) = self%acc_thread(im, tid) &
@@ -892,41 +809,29 @@ contains
                                           self%mode_index(:, im))
                      end do
                   end do
-                  !$omp end do
-                  !$omp end parallel
-                  do tid = 2, nthread
-                     do im = 1, int(self%nmodes)
-                        self%acc_thread(im, 1) = self%acc_thread(im, 1) &
-                           + self%acc_thread(im, tid)
-                     end do
-                  end do
-                  do im = 1, int(self%nmodes)
-                     self%w_scratch(im) = self%acc_thread(im, 1)
-                  end do
                else if (nover > 0) then
-                  !$omp parallel do schedule(static) private(im, k, i, qx, qy, qz, phase, acc)
                   do im = 1, int(self%nmodes)
                      qx = self%qvec(1, im)
                      qy = self%qvec(2, im)
                      qz = self%qvec(3, im)
                      acc = (0.0_rk, 0.0_rk)
                      do k = 1, nover
-                        i = int(self%over_list(k))
+                        i = int(self%over_seg(k, tid))
                         phase = qx*self%pos_buffer(1, i, oslot) &
                                 + qy*self%pos_buffer(2, i, oslot) &
                                 + qz*self%pos_buffer(3, i, oslot)
                         acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
                      end do
-                     self%w_scratch(im) = acc
+                     self%acc_thread(im, tid) = acc
                   end do
-                  !$omp end parallel do
                else
-                  self%w_scratch = (0.0_rk, 0.0_rk)
+                  self%acc_thread(:, tid) = (0.0_rk, 0.0_rk)
                end if
                do im = 1, int(self%nmodes)
-                  self%s4_bsum(im, j) = self%s4_bsum(im, j) + self%w_scratch(im)
+                  self%s4_bsum(im, j) = self%s4_bsum(im, j) + self%acc_thread(im, tid)
                   self%s4_asum(im, j) = self%s4_asum(im, j) &
-                     + real(self%w_scratch(im), rk)**2 + aimag(self%w_scratch(im))**2
+                     + real(self%acc_thread(im, tid), rk)**2 &
+                     + aimag(self%acc_thread(im, tid))**2
                end do
             end if
 
@@ -936,6 +841,7 @@ contains
             end if
             self%sample_cnt(:, j) = self%sample_cnt(:, j) + 1
          end do
+         !$omp end parallel do
       end if
 
       self%nframes = self%nframes + 1
