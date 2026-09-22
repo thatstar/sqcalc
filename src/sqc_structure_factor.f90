@@ -136,6 +136,9 @@ module sqc_structure_factor
       !> Accumulated intensity per bin, and the reciprocal lattice points in it.
       real(rk), allocatable :: xrd_num(:)
       integer(lk), allocatable :: xrd_count(:)
+      !> Accumulated XRD intensity per type pair and bin (allocated by the
+      !! first frame that accumulates pair columns).
+      real(rk), allocatable :: xrd_partial_num(:, :, :)
       !> Frame bookkeeping.
       integer(ik) :: natoms = 0
       integer(ik) :: ntypes = 0
@@ -148,6 +151,7 @@ module sqc_structure_factor
       procedure :: accumulate_modes => sf_accumulate_modes
       procedure :: accumulate_values => sf_accumulate_values
       procedure :: accumulate_partials => sf_accumulate_partials
+      procedure :: accumulate_xrd_partials => sf_accumulate_xrd_partials
       procedure :: prepare_output => sf_prepare_output
       procedure :: shell_value => sf_shell_value
       procedure :: q_of_shell => sf_shell_q
@@ -155,6 +159,7 @@ module sqc_structure_factor
       procedure :: partial_column => sf_partial_column
       procedure :: grid_value => sf_grid_value
       procedure :: write_xrd => sf_write_xrd
+      procedure :: xrd_partial_value => sf_xrd_partial_value
       procedure(sf_setup_iface), deferred :: method_setup
       procedure(sf_accumulate_iface), deferred :: accumulate_frame
    end type structure_factor_t
@@ -388,7 +393,6 @@ contains
       end do
       allocate (self%num(self%nq), self%den(self%nq), self%shell_count(self%nq))
       allocate (self%mode_values(self%nmodes))
-      call sf_alloc_partials(self, scheme)
       self%num = 0.0_rk
       self%den = 0.0_rk
       self%shell_count = 0
@@ -464,10 +468,13 @@ contains
    !! `rho_species(g, a)` holds the amplitude of species `a` on the flat
    !! reciprocal grid (the same layout as `accumulate_modes` expects).  The
    !! partials are stored unweighted so that the same numbers serve for every
-   !! weighting scheme and normalization.
-   subroutine sf_accumulate_partials(self, rho_species)
+   !! weighting scheme and normalization.  `species_type(a)` is the LAMMPS
+   !! type id of species `a`, so the sums land in the type indexed columns
+   !! even when a type id has no atoms at all.
+   subroutine sf_accumulate_partials(self, rho_species, species_type)
       class(structure_factor_t), intent(inout) :: self
       complex(c_double_complex), intent(in) :: rho_species(:, :)
+      integer(ik), intent(in) :: species_type(:)
       integer :: ia, ib, im, ia_max
       integer(lk) :: g, s
       real(rk) :: value, contribution
@@ -487,13 +494,78 @@ contains
                g = self%gidx(im)
                value = real(rho_species(g, ia)*conjg(rho_species(g, ib)), rk)
                s = self%shell(im)
-               local_partial(ia, ib, s) = local_partial(ia, ib, s) + value
+               local_partial(int(species_type(ia)), int(species_type(ib)), s) = &
+                  local_partial(int(species_type(ia)), int(species_type(ib)), s) + value
             end do
          end do
       end do
       self%partial_num = self%partial_num + local_partial
       deallocate (local_partial)
    end subroutine sf_accumulate_partials
+
+   !> Accumulate the XRD intensity of every type pair, one frame.
+   !!
+   !! `I_ab` is the `f_a(q) f_b(q) Re(rho_a rho_b*)` sum over the reciprocal
+   !! lattice points of each two-theta bin, times the Lorentz-polarization
+   !! factor of the mode, so the pair columns are exactly the decomposition of
+   !! the total pattern,
+   !!
+   !!   I(2theta) = sum_a I_aa(2theta) + 2 sum_{a<b} I_ab(2theta).
+   !!
+   !! They show which pair of elements carries a feature - the simulation side
+   !! of what isotope substitution or anomalous scattering provides in an
+   !! experiment.  `amp_table` holds the q dependent amplitudes (x-ray) and
+   !! `amp_const` the constant ones (unit, neutron); exactly one of the two is
+   !! allocated.  The state is allocated by the first frame that reaches here,
+   !! so a method that does not accumulate pair columns simply writes none.
+   subroutine sf_accumulate_xrd_partials(self, rho_species, species_type, &
+                                         amp_table, amp_const)
+      class(structure_factor_t), intent(inout) :: self
+      complex(c_double_complex), intent(in) :: rho_species(:, :)
+      integer(ik), intent(in) :: species_type(:)
+      real(rk), intent(in) :: amp_table(:, :), amp_const(:)
+      real(rk), allocatable :: local(:, :, :)
+      real(rk) :: wa, wb, product
+      integer :: isp, jsp, ia, ib, im, nspecies
+      integer(lk) :: g
+
+      if (.not. self%xrd_enabled) return
+      if (.not. self%partials) return
+      nspecies = size(rho_species, 2)
+      if (nspecies < 1) return
+      if (.not. allocated(self%xrd_partial_num)) then
+         allocate (self%xrd_partial_num(self%ntypes, self%ntypes, self%xrd_bins))
+         self%xrd_partial_num = 0.0_rk
+      end if
+      allocate (local(self%ntypes, self%ntypes, self%xrd_bins))
+      local = 0.0_rk
+
+      ! One pass per pair, in series: the shells of a big grid make the pair
+      ! count times the mode count the cost, but a shared accumulator would
+      ! need a thread private copy of it (as the shell reduction does).
+      do isp = 1, nspecies
+         ia = int(species_type(isp))
+         do jsp = isp, nspecies
+            ib = int(species_type(jsp))
+            do im = 1, int(self%nmodes)
+               g = self%gidx(im)
+               if (size(amp_const) > 0) then
+                  wa = amp_const(isp)
+                  wb = amp_const(jsp)
+               else
+                  wa = amp_table(im, isp)
+                  wb = amp_table(im, jsp)
+               end if
+               product = real(rho_species(g, isp)*conjg(rho_species(g, jsp)), rk)
+               local(ia, ib, self%xrd_bin(im)) = local(ia, ib, self%xrd_bin(im)) &
+                                                 + wa*wb*product*self%xrd_weight(im)
+            end do
+         end do
+      end do
+
+      self%xrd_partial_num = self%xrd_partial_num + local
+      deallocate (local)
+   end subroutine sf_accumulate_xrd_partials
 
    !> Add |rho|^2 values of the kept modes to the shell and grid accumulators.
    !!
@@ -834,6 +906,27 @@ contains
       end do
    end function sf_xrd_empty_bins
 
+   !> Intensity of one type pair in one two-theta bin, per atom and per frame.
+   !!
+   !! The pair sums are the f weighted analogue of the partial structure
+   !! factors, so `I = sum_a I_aa + 2 sum_{a<b} I_ab` holds for the table.
+   pure real(rk) function sf_xrd_partial_value(self, ia, ib, bin) result(value)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: ia, ib, bin
+      real(rk) :: frames
+
+      value = 0.0_rk
+      if (.not. allocated(self%xrd_partial_num)) return
+      if (ia < 1 .or. ib < 1) return
+      if (ia > size(self%xrd_partial_num, 1)) return
+      if (ib > size(self%xrd_partial_num, 2)) return
+      if (bin < 1 .or. bin > size(self%xrd_partial_num, 3)) return
+      frames = real(max(self%nframes, 1_lk), rk)
+      if (self%natoms > 0) then
+         value = self%xrd_partial_num(ia, ib, bin)/(frames*real(self%natoms, rk))
+      end if
+   end function sf_xrd_partial_value
+
    !> Write the powder XRD pattern: two-theta [deg] and I(2theta).
    !!
    !! `xrd_num` accumulates the intensity of every frame; the table is the
@@ -845,7 +938,8 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: frames, tth, value
-      integer :: b
+      integer :: b, t, u
+      logical :: has_pairs
 
       ierr = 0
       message = ''
@@ -853,6 +947,7 @@ contains
       if (unit == no_unit) return
 
       frames = real(max(self%nframes, 1_lk), rk)
+      has_pairs = allocated(self%xrd_partial_num) .and. allocated(self%pair_label)
       if (self%nframes == 1) then
          write (unit, '(a,f0.6,a,f0.4,a,f0.4,a,f0.5,a,i0,a)') '# xrd: lambda ', &
             self%xrd_lambda, ' A, 2theta ', self%xrd_2theta_min, ' to ', &
@@ -871,12 +966,37 @@ contains
          write (unit, '(a)') '# I(2theta) = sum over the reciprocal lattice points in each '// &
             'bin of |rho(q)|^2, without the Lorentz-polarization factor, per atom'
       end if
-      write (unit, '(a)') '# 2theta[deg] I'
+      if (has_pairs) then
+         write (unit, '(a)') '# the pair columns add up to the total: '// &
+            'I = sum_a I(a-a) + 2 sum_{a<b} I(a-b)'
+      end if
+      write (unit, '(a)', advance='no') '# 2theta[deg] I'
+      if (has_pairs) then
+         do t = 1, self%ntypes
+            do u = t, self%ntypes
+               if (sf_count_type_of(self, t) == 0) cycle
+               if (sf_count_type_of(self, u) == 0) cycle
+               write (unit, '(a)', advance='no') ' I('//trim(self%pair_label(t, u))//')'
+            end do
+         end do
+      end if
+      write (unit, '(a)') ''
       do b = 1, self%xrd_bins
          tth = self%xrd_2theta_min + (real(b, rk) - 0.5_rk)*self%xrd_step
          value = 0.0_rk
          if (self%natoms > 0) value = self%xrd_num(b)/(frames*real(self%natoms, rk))
-         write (unit, '(f12.4,2x,es20.12)') tth, value
+         write (unit, '(f12.4,2x,es20.12)', advance='no') tth, value
+         if (has_pairs) then
+            do t = 1, self%ntypes
+               do u = t, self%ntypes
+                  if (sf_count_type_of(self, t) == 0) cycle
+                  if (sf_count_type_of(self, u) == 0) cycle
+                  write (unit, '(2x,es20.12)', advance='no') &
+                     self%xrd_partial_value(t, u, b)
+               end do
+            end do
+         end if
+         write (unit, '(a)') ''
       end do
    end subroutine sf_write_xrd
 
@@ -899,6 +1019,10 @@ contains
       call sf_prepare_species(self, frame, scheme, self%species_of, self%species_type, &
                               self%amp_const, self%amp_table, self%q_dependent, ierr, message)
       if (ierr /= 0) return
+      ! The pair columns are allocated here, not in the shared setup: a method
+      ! that does not accumulate them (direct, the CUDA path) then writes no
+      ! pair columns at all instead of zero filled ones.
+      call sf_alloc_partials(self, scheme)
 
       ! Allocate work arrays and build the FINUFFT plan.
       allocate (self%xa(frame%natoms), self%ya(frame%natoms), self%za(frame%natoms))
@@ -1043,7 +1167,9 @@ contains
                end if
                self%rho_species(:, isp) = self%fk
             end do
-            call self%accumulate_partials(self%rho_species)
+            call self%accumulate_partials(self%rho_species, self%species_type)
+            call self%accumulate_xrd_partials(self%rho_species, self%species_type, &
+                                              self%amp_table, self%amp_const)
             !$omp parallel do schedule(static) private(im, isp, g)
             do im = 1, int(self%nmodes)
                g = self%gidx(im)
@@ -1105,7 +1231,9 @@ contains
                end if
                self%rho_species(:, isp) = self%fk
             end do
-            call self%accumulate_partials(self%rho_species)
+            call self%accumulate_partials(self%rho_species, self%species_type)
+            call self%accumulate_xrd_partials(self%rho_species, self%species_type, &
+                                              self%amp_table, self%amp_const)
             !$omp parallel do schedule(static) private(im, isp, g)
             do im = 1, int(self%nmodes)
                g = self%gidx(im)

@@ -527,6 +527,9 @@ labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with element
 symbols and is required for the weighted schemes.  Report them with `-fz`:
 every Faber-Ziman pair tends to 1, so the curves can be read and compared
 across concentrations, which the OVITO pairs (tending to $x_a$) do not allow.
+The columns are accumulated by the `nufft` and `debye` methods; `direct` and
+the CUDA path compute the total only, and a run says so instead of writing
+zero filled pair columns.
 
 A few limits are worth keeping in mind:
 
@@ -576,6 +579,30 @@ step is allowed and then shows the individual reciprocal lattice points of the
 box (the run reports how many bins hold none), and a coarser step merges
 neighbouring lines.  The lines are as sharp as the box permits: that is the
 size broadening of the periodic model, not an instrument profile.
+
+With `--partials` (the default) the pattern carries one column per type pair.
+The pair intensity is the same cross term the $S(q)$ partials use, weighted by
+the form factors of the pair:
+
+$$
+I_{ab}(2\theta_b) = \frac{1}{N\,n_{\text{frames}}}
+\sum_{q \in b} f_a(q) f_b(q)\, \mathrm{Re}\left[\rho_a(q) \rho_b^*(q)\right]
+\mathrm{LP}(2\theta_q),
+$$
+
+so the columns are a decomposition of the total:
+
+$$
+I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a<b} I_{ab}(2\theta).
+$$
+
+They are labelled `I(Si-Si)`, `I(Si-O)`, ... from `-m`, or `I(1-1)`, ... when
+no mapping was given; the self term sits in the diagonal ones and `-fz` does
+not apply, because the table is in intensity units.  This is the simulation
+side of what isotope substitution or anomalous scattering provides in an
+experiment - in a two component pattern the pair columns say which sub-lattice
+a feature comes from.  The pair columns are accumulated by the `nufft` method;
+`--no-partials` drops them, as it does in the $S(q)$ table.
 
 `--method debye` evaluates a different quantity - the orientation average
 $\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q r_{ij})$, which carries no multiplicity -

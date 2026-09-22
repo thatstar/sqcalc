@@ -612,6 +612,41 @@ def main():
         raise SystemExit("FAIL unmapped partial g(r) columns: %s"
                          % " ".join(rdf_header))
 
+    # A sparse type id: an analysed group can leave one type without atoms, so
+    # the pair sums have to be indexed by type id, not by the position of the
+    # species in the list of types that are present.  Rewriting the type column
+    # of the two component gas (2 -> 3) has to leave every number unchanged.
+    with open(dump) as handle:
+        lines = handle.readlines()
+    rewritten, in_atoms = [], False
+    for line in lines:
+        if line.startswith("ITEM: ATOMS"):
+            in_atoms = True
+        elif line.startswith("ITEM"):
+            in_atoms = False
+        elif in_atoms and line.strip():
+            fields = line.split()
+            fields[1] = "3" if fields[1] == "2" else fields[1]
+            line = " ".join(fields) + "\n"
+        rewritten.append(line)
+    with open(path("sparse.dump"), "w") as handle:
+        handle.writelines(rewritten)
+    sqcalc(dump, "dense_ids.dat", "-w", "unit", "--qmax", "6", "--nq", "30")
+    run([exe, "-i", path("sparse.dump"), "-m", "1:Si,3:O", "-w", "unit",
+         "--qmax", "6", "--nq", "30", path("sparse_ids.dat")])
+    dense = read_matrix(path("dense_ids.dat"))
+    sparse = read_matrix(path("sparse_ids.dat"))
+    if sparse.shape != dense.shape:
+        raise SystemExit("FAIL sparse type ids: %s columns vs %s"
+                         % (sparse.shape, dense.shape))
+    worst = float(np.max(np.abs(sparse - dense)))
+    if worst != 0.0:
+        raise SystemExit("FAIL sparse type ids: columns differ by %.3e" % worst)
+    if float(np.max(np.abs(sparse[:, 3]))) <= 0.0:
+        raise SystemExit("FAIL sparse type ids: the cross column is empty")
+    print("  ok   %-42s columns identical, cross term %.3f"
+          % ("sparse type ids (1 and 3 of 3)", float(np.max(np.abs(sparse[:, 3])))))
+
     # --- 9c. partials are accumulated exactly ------------------------------
     # The partial sums are real numbers; they used to be accumulated in an
     # integer array, which truncated every shell sum to a whole number and
@@ -681,15 +716,21 @@ def main():
     run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.xrd"),
          *ni_opts, "--xrd-step", "0.2"])
     xrd = read_matrix(path("ni.xrd"))
-    if xrd.shape != (200, 2):
+    if xrd.shape != (200, 3):
         raise SystemExit("FAIL xrd: got a %s table for 40-80 deg at 0.2 deg"
                          % (xrd.shape,))
     with open(path("ni.xrd")) as handle:
-        header = [handle.readline() for _ in range(3)]
+        header = [handle.readline() for _ in range(4)]
     if not all(line.startswith("#") for line in header) or "lambda" not in header[0]:
         raise SystemExit("FAIL xrd: the header does not describe the run")
     if "Lorentz-polarization" not in header[1]:
         raise SystemExit("FAIL xrd: the header does not mention the LP factor")
+    if header[3].split() != ["#", "2theta[deg]", "I", "I(Ni-Ni)"]:
+        raise SystemExit("FAIL xrd: unexpected columns %r" % header[3])
+    # one species: the pair column is the total, since every pair is Ni-Ni
+    worst = float(np.max(np.abs(xrd[:, 1] - xrd[:, 2])/np.maximum(np.abs(xrd[:, 1]), 1.0)))
+    if worst > 1.0e-9:
+        raise SystemExit("FAIL xrd: I(Ni-Ni) differs from the total by %.3e" % worst)
 
     # IT92 form factor of Ni, the row src/sqc_element_data.f90 carries.
     ni_a = [12.8376, 7.2920, 4.4438, 2.3800]
@@ -730,6 +771,34 @@ def main():
         raise SystemExit("FAIL xrd: a fourth line holds %.3e of the peak" % (fourth/peak))
     print("  ok   %-42s 1 : %.4f : %.4f" % ("fcc Ni, Cu Ka, 40-80 deg",
                                             ratios[1], ratios[2]))
+
+    # Two species: the pair columns have to add up to the total, which is what
+    # makes them a decomposition rather than three unrelated curves.
+    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd", path("mix.xrd"),
+         "--xrd-lambda", "1.5418", "--xrd-range", "5", "60", "--xrd-step", "0.5"])
+    mix = read_matrix(path("mix.xrd"))
+    if mix.shape[1] != 5:
+        raise SystemExit("FAIL xrd: expected 5 columns for two types, got %d"
+                         % mix.shape[1])
+    with open(path("mix.xrd")) as handle:
+        for line in handle:
+            if line.startswith("# 2theta"):
+                columns = line.split()
+                break
+    if columns != ["#", "2theta[deg]", "I", "I(Si-Si)", "I(Si-O)", "I(O-O)"]:
+        raise SystemExit("FAIL xrd: unexpected columns %s" % " ".join(columns))
+    total = mix[:, 1]
+    pair_sum = mix[:, 2] + 2.0*mix[:, 3] + mix[:, 4]
+    worst = float(np.max(np.abs(total - pair_sum)/np.maximum(np.abs(total), 1.0)))
+    if worst > 1.0e-9:
+        raise SystemExit("FAIL xrd: pair columns are off the total by %.3e" % worst)
+    # --no-partials drops them, like it does in the S(q) table
+    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--no-partials", "--xrd",
+         path("mix_nopart.xrd"), "--xrd-lambda", "1.5418", "--xrd-range", "5", "60",
+         "--xrd-step", "0.5"])
+    if read_matrix(path("mix_nopart.xrd")).shape[1] != 2:
+        raise SystemExit("FAIL xrd: --no-partials left pair columns in the table")
+    print("  ok   %-42s off the total by %.1e" % ("Si-O pair columns and sum rule", worst))
 
     # Unit weights remove the form factor, so the bins are multiplicity times
     # LP alone - a second, independent check of the binning, and of the bin

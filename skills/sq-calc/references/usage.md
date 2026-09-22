@@ -167,6 +167,21 @@ bins hold none - and a coarser step merges neighbouring lines.  The lines are
 as sharp as the box allows: that is the size broadening of the periodic model,
 not an instrument profile.
 
+With `--partials` (the default) the pattern gets one column per type pair, the
+$f_a(q) f_b(q)$ weighted cross term of the same species amplitudes the $S(q)$
+partials use, so the columns decompose the total:
+
+$$
+I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a<b} I_{ab}(2\theta).
+$$
+
+They are labelled `I(Si-Si)`, `I(Si-O)`, ... from `-m` (or `I(1-1)`, ... when
+no mapping was given), carry the self term in the diagonal columns, and are
+dropped by `--no-partials`.  `-fz` is not applied: the table is in intensity
+units, not a structure factor.  The pair columns come from the `nufft` method
+and are what makes a multi component pattern readable - they are the simulation
+equivalent of isotope substitution or anomalous scattering.
+
 `--xrd` needs the reciprocal methods and refuses `--method debye`, whose
 intensity is the orientation average $\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q
 r_{ij})$ with no multiplicity.  The pattern of the reciprocal methods and the
@@ -233,7 +248,9 @@ in the repository `README.md`.  **Prefer `-fz` when reporting partials**: the
 Faber-Ziman form tends to 1 for every pair, so the curves share a common
 asymptote and can be compared directly with the partials of other systems,
 while the default (OVITO) partials tend to the concentrations $x_a$ and hide
-the structure behind the composition.
+the structure behind the composition.  The columns are accumulated by the
+`nufft` and `debye` methods; `direct` and the CUDA path compute the total only
+and say so, instead of writing zero filled columns.
 
 ### The dynamic run (`--dyn`, `--dyn-q`)
 

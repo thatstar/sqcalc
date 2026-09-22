@@ -117,6 +117,11 @@ and `--dr` instead of the box sets the usable q range.
   smooth line.  `--method debye` is refused: its pattern is the orientation
   average, which carries no multiplicity and would need the density of states
   to be comparable.
+* The XRD table follows `--partials`: with it (the default) every type pair
+  gets an `I(Si-O)` style column, weighted by `f_a(q) f_b(q)`, and the columns
+  add up to the total (`I = sum_a I(a-a) + 2 sum_{a<b} I(a-b)`).  That is what
+  makes a multi component pattern readable - which sub-lattice a feature comes
+  from - so keep them on unless the extra columns get in the way.
 * `--s4` and `--chi4` are total overlap quantities and use unit weights, so
   `-w`/`--norm` and `--partials` do not change them.  They need a physically
   meaningful `--s4-cutoff` (a fraction of the particle diameter), and the

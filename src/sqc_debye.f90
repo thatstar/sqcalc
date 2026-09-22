@@ -26,8 +26,8 @@ module sqc_debye
    use sqc_dump, only: frame_t
    use sqc_weights, only: weight_scheme_t
    use sqc_neighbour_list, only: neighbour_list_t
-   use sqc_structure_factor, only: structure_factor_t, mode_denominator, norm_natom, &
-                            norm_mean, norm_self
+   use sqc_structure_factor, only: structure_factor_t, sf_alloc_partials, mode_denominator, &
+                            norm_natom, norm_mean, norm_self
    use omp_lib, only: omp_get_max_threads, omp_get_thread_num
 #ifdef SQC_HAVE_HDF5
    use sqc_hdf5, only: hdf5_write_rdf, hdf5_write_pair_entropy
@@ -98,6 +98,8 @@ contains
       self%ntypes = max(scheme%mapped_types(), maxval(frame%type_id))
       self%pbc = frame%pbc
       self%volume = frame%cell%volume
+      ! The pair columns this method fills in prepare_output.
+      call sf_alloc_partials(self, scheme)
 
       allocate (self%type_of(frame%natoms), self%count_type(self%ntypes))
       self%type_of = frame%type_id

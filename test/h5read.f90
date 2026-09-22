@@ -72,13 +72,33 @@ program h5read
       end do
       call h5gclose_f(group_id, hdferr)
    case ('xrd')
-      ! powder XRD pattern of the static methods
+      ! powder XRD pattern of the static methods, with the pair columns when
+      ! the run accumulated them
       call h5gopen_f(file_id, 'xrd', group_id, hdferr)
       call read_real_1d(group_id, 'two_theta', q, n)
       call read_real_1d(group_id, 'I', s, n)
-      write (output_unit, '(a)') '# 2theta[deg] I'
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      write (output_unit, '(a)', advance='no') '# 2theta[deg] I'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' I('//trim(dnames(i))//')'
+      end do
+      write (output_unit, '(a)') ''
+      if (npairs > 0) then
+         allocate (part(n, npairs))
+         call h5gopen_f(group_id, 'I_partial', subgroup_id, hdferr)
+         do i = 1, npairs
+            call read_real_1d(subgroup_id, trim(dnames(i)), pv, n)
+            part(:, i) = pv
+            deallocate (pv)
+         end do
+         call h5gclose_f(subgroup_id, hdferr)
+      end if
       do i = 1, n
-         write (output_unit, '(f12.4,2x,es20.12)') q(i), s(i)
+         write (output_unit, '(f12.4,2x,es20.12)', advance='no') q(i), s(i)
+         do j = 1, npairs
+            write (output_unit, '(2x,es20.12)', advance='no') part(i, j)
+         end do
+         write (output_unit, '(a)') ''
       end do
       call h5gclose_f(group_id, hdferr)
    case ('partials')
