@@ -323,6 +323,20 @@ def main():
             print("  ok   %-42s max deviation %.2e"
                   % ("GPU vs CPU (reciprocal grid)", worst))
 
+            # The powder XRD pattern accumulates through the shared per-mode
+            # reduction, so the GPU has to reproduce the CPU pattern.  The
+            # pair columns are not accumulated on the GPU (yet): the run says
+            # so, and only the total column is compared here.
+            xrd_gpu = ["--xrd-lambda", "1.5406", "--xrd-range", "10", "60",
+                       "--xrd-step", "1"]
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd",
+                 path("cpu.xrd"), *xrd_gpu, *gpu_common, path("cpu_xrd_sq.dat")])
+            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
+                 "--xrd", path("gpu.xrd"), *xrd_gpu, *gpu_common, path("gpu_xrd_sq.dat")])
+            _, cpu_xrd = read_table(path("cpu.xrd"))
+            _, gpu_xrd = read_table(path("gpu.xrd"))
+            compare(cpu_xrd, gpu_xrd, "GPU vs CPU (powder XRD)")
+
     # --- 8. Debye method --------------------------------------------------
     print("debye method")
     ref_debye = os.path.join(HERE, "debye_ref.py")
