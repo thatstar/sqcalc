@@ -54,6 +54,25 @@ def fcc(natoms, length, rng, jitter):
     return pos
 
 
+def b2(natoms, length, rng, jitter):
+    """CsCl type (B2) crystal: 2 * side^3 atoms, a = length / side.
+
+    The first sublattice sits at the cell corners and the second at the cell
+    centres; `main` types them 1 and 2, so `-m 1:Ni,2:Al` describes the B2
+    phase of NiAl.
+    """
+    side = int(round((natoms / 2.0) ** (1.0 / 3.0)))
+    if 2 * side ** 3 != natoms:
+        raise SystemExit("--mode b2 needs 2 * side^3 atoms")
+    basis = np.array([[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]])
+    cells = np.array([[i, j, k] for i in range(side) for j in range(side)
+                      for k in range(side)], dtype=float)
+    pos = (cells[:, None, :] + basis[None, :, :]).reshape(-1, 3) * (length / side)
+    if jitter > 0:
+        pos = pos + (rng.random(pos.shape) - 0.5) * jitter
+    return pos
+
+
 def ballistic(natoms, length, rng, nframes, temperature):
     """Free particles with Maxwell-Boltzmann velocities: an ideal gas in the
     ballistic regime.  The ensemble averaged coherent F(q,t) is
@@ -133,7 +152,7 @@ def main():
     parser.add_argument("--frames", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--mode",
-                        choices=["random", "lattice", "fcc", "ballistic", "diffusive"],
+                        choices=["random", "lattice", "fcc", "b2", "ballistic", "diffusive"],
                         default="random")
     parser.add_argument("--fractions", default="0.5,0.5")
     parser.add_argument("--jitter", type=float, default=0.0)
@@ -153,6 +172,10 @@ def main():
     rng = np.random.default_rng(args.seed)
     fractions = [float(x) for x in args.fractions.split(",")]
     types = type_assignment(args.natoms, fractions, rng)
+    if args.mode == "b2":
+        # corner atom and centre atom of each cell alternate, so the two
+        # sublattices are type 1 and type 2
+        types = np.tile([1, 2], args.natoms // 2)
 
     if args.mode == "ballistic":
         frames = ballistic(args.natoms, args.length, rng, args.frames, args.temperature)
@@ -165,6 +188,8 @@ def main():
                 frames.append(lattice(args.natoms, args.length, rng, args.jitter))
             elif args.mode == "fcc":
                 frames.append(fcc(args.natoms, args.length, rng, args.jitter))
+            elif args.mode == "b2":
+                frames.append(b2(args.natoms, args.length, rng, args.jitter))
             else:
                 frames.append(ideal_gas(args.natoms, args.length, rng))
     write_dump(args.output, frames, types, args.length, args.tilt, args.columns,

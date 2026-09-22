@@ -978,7 +978,105 @@ def main():
                   "--xrd-range", "40", "80"], "phase evaluations")
     print("  ok   %-42s 7 refusals" % "debye, qmin, lambda, range, stray flags")
 
-    # --- 9e. q sampling helper --------------------------------------------
+    # --- 9e. B2 NiAl: the pair columns of a superlattice -------------------
+    # B2 (CsCl type) puts Ni on the cell corners and Al in the cell centres.
+    # With h + k + l odd the two sublattices scatter in antiphase, so the Ni-Al
+    # cross term is negative there and - with equal sublattice populations and
+    # unit weights - the total cancels to zero while both diagonal terms stay
+    # large.  That is a pair signature no gas or single species test can show:
+    # a missing or sign-flipped cross term leaves the total at N/2 instead of 0.
+    print("B2 NiAl superlattice")
+    b2_side, b2_a = 8, 2.88
+    b2_natoms = 2*b2_side**3
+    b2 = generate("b2.dump", natoms=b2_natoms, length=b2_side*b2_a, frames=1,
+                  mode="b2", seed=3)
+    q_100 = 2.0*np.pi/b2_a
+    q_110 = q_100*np.sqrt(2.0)
+
+    def b2_shell(name, q, weight):
+        # a window of +-5e-5 1/A holds the six (or twelve) lattice vectors of
+        # one family and nothing else, so the shell average is the family mean
+        run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", weight, "--norm", "mean",
+             "--qmin", "%.6f" % (q - 5.0e-5), "--qmax", "%.6f" % (q + 5.0e-5),
+             "--nq", "1", path(name)])
+        return read_matrix(path(name))[0]
+
+    # IT92 rows of the element table, for the analytic contrast below.
+    it92 = {"Ni": ([12.8376, 7.2920, 4.4438, 2.3800],
+                   [3.8785, 0.2565, 12.1763, 66.3421], 1.0341),
+            "Al": ([6.4202, 1.9002, 1.5936, 1.9646],
+                   [3.0387, 0.7426, 31.5472, 85.0886], 1.1151)}
+
+    def form_factor(symbol, q):
+        a, b, c = it92[symbol]
+        return c + sum(ai*np.exp(-bi*(q/(4.0*np.pi))**2) for ai, bi in zip(a, b))
+
+    shell_aa = b2_natoms/4.0
+    shells = {}
+    for label, q, cross in (("odd", q_100, -shell_aa), ("even", q_110, shell_aa)):
+        row = b2_shell("b2_%s.dat" % label, q, "unit")
+        shells[label] = row
+        if abs(row[2] - shell_aa) > 1.0e-6*shell_aa or abs(row[4] - shell_aa) > 1.0e-6*shell_aa:
+            raise SystemExit("FAIL B2 %s: diagonal pairs are %.6g and %.6g, expected %.6g"
+                             % (label, row[2], row[4], shell_aa))
+        if abs(row[3] - cross) > 1.0e-6*shell_aa:
+            raise SystemExit("FAIL B2 %s: cross term %.6g, expected %.6g"
+                             % (label, row[3], cross))
+        worst = abs(row[1] - (row[2] + 2.0*row[3] + row[4]))/max(abs(row[1]), 1.0)
+        if worst > 1.0e-12:
+            raise SystemExit("FAIL B2 %s: sum rule off by %.3e" % (label, worst))
+    odd_total = shells["odd"][1]
+    even_total = shells["even"][1]
+    if abs(odd_total) > 1.0e-6*shell_aa:
+        raise SystemExit("FAIL B2: the antiphase total is %.6g, expected 0" % odd_total)
+    if abs(even_total - b2_natoms) > 1.0e-6*b2_natoms:
+        raise SystemExit("FAIL B2: the in-phase total is %.6g, expected N = %d"
+                         % (even_total, b2_natoms))
+    print("  ok   %-42s total 0 vs N, pairs +-%.0f" % ("antiphase (100) vs (110)", shell_aa))
+
+    # Chemical weighting: the superlattice intensity is the contrast factor of
+    # the two form factors, relative to the in-phase line which is 1 (up to the
+    # N of a coherent crystal).
+    contrast = ((form_factor("Ni", q_100) - form_factor("Al", q_100))
+                / (form_factor("Ni", q_100) + form_factor("Al", q_100)))**2
+    odd_x = b2_shell("b2_odd_x.dat", q_100, "xray")
+    if abs(odd_x[1] - b2_natoms*contrast) > 1.0e-6*b2_natoms*contrast:
+        raise SystemExit("FAIL B2: xray superlattice is %.6g, contrast predicts %.6g"
+                         % (odd_x[1], b2_natoms*contrast))
+    print("  ok   %-42s S(100) = N (f_Ni-f_Al)^2/(f_Ni+f_Al)^2 = %.4f"
+          % ("xray contrast", odd_x[1]/b2_natoms))
+
+    # The pattern keeps the same signature: the cross column is negative at the
+    # odd lines and positive at the even ones, and direct reproduces it all.
+    xrd_b2 = ["--xrd-lambda", "1.541838", "--xrd-range", "25", "80", "--xrd-step", "0.2"]
+    run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--xrd", path("b2.xrd"), *xrd_b2])
+    run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--method", "direct",
+         "--xrd", path("b2_direct.xrd"), *xrd_b2])
+    b2_xrd = read_matrix(path("b2.xrd"))
+    b2_dir = read_matrix(path("b2_direct.xrd"))
+    if b2_xrd.shape != b2_dir.shape:
+        raise SystemExit("FAIL B2 xrd: %s columns vs %s" % (b2_dir.shape, b2_xrd.shape))
+    worst = float(np.max(np.abs(b2_dir[:, 1:] - b2_xrd[:, 1:])
+                         / np.maximum(np.abs(b2_xrd[:, 1:]), 1.0)))
+    if worst > 1.0e-8:
+        raise SystemExit("FAIL B2 xrd: direct and nufft differ by %.3e" % worst)
+    for h, k, l, sign in ((1, 0, 0, -1), (1, 1, 0, 1), (1, 1, 1, -1), (2, 0, 0, 1)):
+        q = q_100*np.sqrt(h*h + k*k + l*l)
+        tth = 2.0*np.degrees(np.arcsin(q*1.541838/(4.0*np.pi)))
+        j = int(np.argmin(np.abs(b2_xrd[:, 0] - tth)))
+        if abs(b2_xrd[j, 0] - tth) > 0.2:
+            raise SystemExit("FAIL B2 xrd: no bin near %.2f deg for (%d%d%d)"
+                             % (tth, h, k, l))
+        if np.sign(b2_xrd[j, 3]) != sign:
+            raise SystemExit("FAIL B2 xrd: (%d%d%d) cross column is %.4g, expected sign %d"
+                             % (h, k, l, b2_xrd[j, 3], sign))
+        worst = abs(b2_xrd[j, 1] - (b2_xrd[j, 2] + 2.0*b2_xrd[j, 3] + b2_xrd[j, 4]))
+        if worst > 1.0e-6*abs(b2_xrd[j, 1]):
+            raise SystemExit("FAIL B2 xrd: (%d%d%d) sum rule off by %.3e" % (h, k, l, worst))
+    print("  ok   %-42s cross term -/+/-, direct matches to %.1e"
+          % ("pattern: (100), (110), (111), (200)", worst))
+
+    # --- 9f. q sampling helper --------------------------------------------
     # The skill ships choose_q.py, which reads the box and returns a sampling
     # with no empty shell; a shell the box cannot fill is written as 0.
     helper = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts",
