@@ -41,7 +41,7 @@ logs clean.
 | `--pair-entropy FILE` | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$ |
 | `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
-| `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor and overlap (see below) |
+| `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor, overlap and mean squared displacement (see below) |
 | `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` |
 | `--dyn-modes N` | mode budget of `--dyn-q grid`: 0 = unlimited (default) |
 | `--dyn-thin KIND` | order of the mode thinning: `shells` (default) or `orbits` |
@@ -55,9 +55,10 @@ logs clean.
 | `--dyn-format NAME` | `text` (default) or `hdf5` for all dynamic outputs |
 | `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
 | `--chi4 FILE` | the average overlap $Q(t)$ and dynamic susceptibility $\chi_4(t)$ |
+| `--msd FILE` | the mean squared displacement $\text{MSD}(t)$, plus per-species columns with `--partials` |
 | `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
-| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s (default 2.0; GB = $10^9$ bytes) |
-| `--stride N` | use every N-th dump frame for S4/chi4/F_s (default 1) |
+| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s/MSD (default 2.0; GB = $10^9$ bytes) |
+| `--stride N` | use every N-th dump frame for S4/chi4/F_s/MSD (default 1) |
 | `-q, --quiet` | suppress the progress output on stderr |
 | `-h, --help` | option summary |
 | `-v, --version` | program version |
@@ -268,7 +269,7 @@ space is sampled,
 
 | `--dyn-q` | q points | outputs |
 | --- | --- | --- |
-| `-` (default) | none | only `--chi4` ($Q(t)$ and $\chi_4(t)$) |
+| `-` (default) | none | only `--chi4` ($Q(t)$, $\chi_4(t)$) and `--msd` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
 | `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
@@ -276,8 +277,8 @@ space is sampled,
 
 Without q points there is no $S(q)$ at all: the run takes no `OUTPUT` table,
 and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the
-cheapest way to get $Q(t)$ and $\chi_4(t)$, which only need the overlap of the
-displaced positions.
+cheapest way to get $Q(t)$, $\chi_4(t)$ and $\text{MSD}(t)$, which only need
+the displaced positions.
 
 #### A q line
 
@@ -517,9 +518,9 @@ only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 static `OUTPUT` table is still written.  A run with only `--sqw`/`--fqt` does
 not allocate the S4 position buffer.  `--fqt-self` allocates that shared
-position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.  With
-`--dyn-q -` there are no density amplitudes at all, so only `--chi4` is left
-and no `OUTPUT` table is taken.
+position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers, and
+`--msd` does the same.  With `--dyn-q -` there are no density amplitudes at
+all, so only `--chi4` and `--msd` are left and no `OUTPUT` table is taken.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
@@ -530,6 +531,10 @@ sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
 # the same overlap dynamics without any q points, and no S(q) table
 sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --chi4 chi4.dat
+
+# the mean squared displacement of the same trajectory, no cutoff needed
+sqcalc -i traj.dump -w unit --dyn --dyn-q - --dt 0.005 --maxframes 400 \
+       --msd msd.dat
 
 # the isotropic average on one shell: the 110 point rule at |q| = 2.5 1/A,
 # halved to 55 modes by the +- merge
@@ -582,6 +587,46 @@ and HDF5 writes `/fqt_self/q`, `/fqt_self/tau`, `/fqt_self/F_s`,
 `/fqt_self/count`, `/fqt_self/pairs` and
 `/fqt_self/F_s_partial/<species>`, with `stride` and `effective_maxframes`
 attributes.  The coherent `--fqt` output uses the `/fqt` group.
+
+### Mean squared displacement (`--msd`)
+
+`--msd` writes the mean squared displacement of the same trajectory,
+
+$$
+\text{MSD}(t)=\frac{1}{N}\left\langle\sum_i
+  \left|\mathbf r_i(t_0+t)-\mathbf r_i(t_0)\right|^2\right\rangle_{t_0},
+$$
+
+using the same unwrapped coordinates, position buffer and
+`--stride`/`--lag` schedule as `--s4`/`--chi4`/`--fqt-self`.  It is a total
+self quantity: the weights are unit, so `-w`/`--norm` do not affect it, and it
+needs no overlap cutoff.  It is the natural partner of `--fqt-self`: the two
+are linked by
+
+$$
+\text{MSD}(t)=\lim_{q\to0}\frac{6\left[1-F_s(q,t)\right]}{q^2}.
+$$
+
+Unlike the reciprocal outputs, `--msd` works without any q points, so it is
+accepted by `--dyn-q -` (the default) alongside `--chi4`, and such a run takes
+no `OUTPUT` table.  In three dimensions the long-time slope gives the
+diffusion coefficient, $D = \text{slope}/6$.
+
+With `--partials` (the default) the table also carries one column per species,
+using the same $1/N$ normalization as the $F_s$ columns, so they add up to the
+total and a partial divided by its concentration tends to $6 D_a t$,
+
+```
+# tau MSD(t) MSD(Si) MSD(O)
+      0.00000000    0.000000000000E+00    0.000000000000E+00    0.000000000000E+00
+      1.00000000    5.961944468565E-01    2.996201670279E-01    2.965742798286E-01
+```
+
+The columns are labelled by element symbol when `-m` is given, otherwise by the
+LAMMPS type id (`MSD(1)`, `MSD(2)`).  `--no-partials` drops them and leaves a
+single total column.  HDF5 writes `/msd/tau`, `/msd/MSD`, `/msd/count` and,
+with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`, with the
+`stride` and `effective_maxframes` attributes.
 
 ## Output
 
@@ -639,6 +684,12 @@ scalar time series `# tau Q(t) chi4(t)`.  Both accept a `.h5`/`.hdf5` name (or
 `/chi4/count`, with the overlap cutoff in the `overlap` attribute.  The count
 is the number of time origins at each lag; a lag with a single origin has no
 measurable fluctuation and is written as zero.
+
+`--msd FILE` (dynamic method) is the time series `# tau MSD(t)` with a species
+column per type when `--partials` is on.  It accepts a `.h5`/`.hdf5` name (or
+`--dyn-format hdf5`) for HDF5, where the datasets are `/msd/tau`, `/msd/MSD`,
+`/msd/count` and, with `--partials`, `/msd/pairs` and
+`/msd/MSD_partial/<species>`.
 
 The shell, `g(r)` and grid tables are plain text, with the column names in the
 header line, so any plotting tool reads them as they are.  The skill ships

@@ -14,6 +14,7 @@
 !!   h5read file.h5 rdf      -> "# r g(r) Si-Si Si-O ..." table
 !!   h5read file.h5 s4       -> "# qx qy qz tau S4(q,t)" table
 !!   h5read file.h5 chi4     -> "# tau Q(t) chi4(t)" table
+!!   h5read file.h5 msd      -> "# tau MSD(t) MSD(Si) ..." table
 !!   h5read file.h5 count G  -> the per-lag origin counts of the dynamic group G
 !!   h5read file.h5 attr N   -> the value of the file attribute N
 program h5read
@@ -40,7 +41,7 @@ program h5read
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
       write (error_unit, '(a)') 'usage: h5read FILE '// &
          '(grid|shell|partials|xrd|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|'// &
-         'count GROUP|attr NAME)'
+         'msd|count GROUP|attr NAME)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -261,6 +262,35 @@ program h5read
             write (output_unit, '(a)') ''
          end do
       end do
+      call h5gclose_f(group_id, hdferr)
+   case ('msd')
+      ! mean squared displacement and its per-species columns
+      call h5gopen_f(file_id, 'msd', group_id, hdferr)
+      call read_real_1d(group_id, 'tau', axis, naxis)
+      call read_real_1d(group_id, 'MSD', s, naxis_check)
+      call read_string_1d(group_id, 'pairs', dnames, npairs)
+      allocate (part(naxis, max(npairs, 1)))
+      part = 0.0_real64
+      do i = 1, npairs
+         call h5gopen_f(group_id, 'MSD_partial', subgroup_id, hdferr)
+         call read_real_2d(subgroup_id, trim(dnames(i)), spec2, nq_check, naxis_check)
+         part(:, i) = spec2(1, :)
+         call h5gclose_f(subgroup_id, hdferr)
+         deallocate (spec2)
+      end do
+      write (output_unit, '(a)', advance='no') '# tau MSD(t)'
+      do i = 1, npairs
+         write (output_unit, '(a)', advance='no') ' '//trim(dnames(i))
+      end do
+      write (output_unit, '(a)') ''
+      do i = 1, naxis
+         write (output_unit, '(f16.8,2x,es20.12)', advance='no') axis(i), s(i)
+         do kk = 1, npairs
+            write (output_unit, '(2x,es20.12)', advance='no') part(i, kk)
+         end do
+         write (output_unit, '(a)') ''
+      end do
+      deallocate (part)
       call h5gclose_f(group_id, hdferr)
    case ('pair_entropy')
       ! final pair entropy values: one numeric row, total then partials

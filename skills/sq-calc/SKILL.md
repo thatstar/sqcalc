@@ -25,8 +25,9 @@ structure factor $S(q,\omega)$ (`--sqw`), the coherent intermediate scattering
 function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
 the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q
 points computes only the average overlap and dynamic susceptibility $Q(t)$,
-$\chi_4(t)$ (`--chi4`), and takes no `OUTPUT` table.  `--s4` and `--chi4` need
-the overlap cutoff `--s4-cutoff`.
+$\chi_4(t)$ (`--chi4`) and the mean squared displacement $\text{MSD}(t)$
+(`--msd`), and takes no `OUTPUT` table.  `--s4` and `--chi4` need the overlap
+cutoff `--s4-cutoff`; `--msd` needs none.
 
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
@@ -131,9 +132,12 @@ and `--dr` instead of the box sets the usable q range.
   `--stride N` subsamples the S4/chi4 trajectory to reduce both the buffer
   and the work.  A run with only `--s4`/`--chi4` skips the coherent
   $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
-  always includes every atom and never applies `--s4-cutoff`.
-* `--dyn-q -` (the default) samples no q at all, so `--chi4` is the only output
-  it accepts, no `OUTPUT` table is written, and `--s4` needs a line or a shell.
+  always includes every atom and never applies `--s4-cutoff`.  `--msd` shares
+  the same buffer and schedule and also uses unit weights.
+* `--dyn-q -` (the default) samples no q at all, so `--chi4` and `--msd` are
+  the only outputs it accepts, no `OUTPUT` table is written, and `--s4` needs
+  a line or a shell.  `--msd` writes one species column per type unless
+  `--no-partials` is given.
   A shell costs half the rule's directions per frame - 25, 55 or 97 modes once
   the `+-` pairs are merged - comparable to a line scan, and is written as a
   single row at `q = (0,0,Q)`.

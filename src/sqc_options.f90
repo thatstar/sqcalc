@@ -138,6 +138,8 @@ module sqc_options
       integer :: fqt_self_format = grid_format_text
       !> Four-point structure factor and average overlap / chi4 outputs.
       character(len=:), allocatable :: s4_output, chi4_output
+      !> Mean squared displacement output (--msd).
+      character(len=:), allocatable :: msd_output
       real(rk) :: s4_cutoff = 0.0_rk
       logical :: s4_cutoff_given = .false.
       real(rk) :: buffer_limit_gb = 2.0_rk
@@ -146,6 +148,7 @@ module sqc_options
       logical :: stride_given = .false.
       integer :: s4_format = grid_format_text
       integer :: chi4_format = grid_format_text
+      integer :: msd_format = grid_format_text
       type(weight_scheme_t) :: scheme
    end type options_t
 
@@ -239,7 +242,8 @@ contains
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--pair-entropy', '--s2-accum', &
                   '--dyn-q', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
-                  '--fqt-self', '--s4', '--chi4', '--s4-cutoff', '--buffer-limit', '--stride', &
+                  '--fqt-self', '--s4', '--chi4', '--msd', '--s4-cutoff', '--buffer-limit', &
+                  '--stride', &
                   '--dyn-modes', '--dyn-thin')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
@@ -448,6 +452,8 @@ contains
                   self%s4_output = trim(value)
                case ('--chi4')
                   self%chi4_output = trim(value)
+               case ('--msd')
+                  self%msd_output = trim(value)
                case ('--s4-cutoff')
                   read (value, *, iostat=ierr) self%s4_cutoff
                   if (ierr /= 0 .or. self%s4_cutoff <= 0.0_rk) then
@@ -669,7 +675,7 @@ contains
             return
          end if
          if (allocated(self%s4_output) .or. allocated(self%chi4_output) .or. &
-             allocated(self%fqt_self_output)) then
+             allocated(self%fqt_self_output) .or. allocated(self%msd_output)) then
             if ((allocated(self%s4_output) .or. allocated(self%chi4_output)) .and. &
                 .not. self%s4_cutoff_given) then
                ierr = 1
@@ -689,7 +695,8 @@ contains
             end if
          else if (self%s4_cutoff_given .or. self%buffer_limit_given .or. self%stride_given) then
             ierr = 1
-            message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4 or --fqt-self'
+            message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4, '// &
+               '--fqt-self or --msd'
             return
          end if
          if ((self%dyn_modes_given .or. self%dyn_thin_given) .and. &
@@ -709,9 +716,9 @@ contains
          return
       else if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
                allocated(self%fqt_self_output) .or. allocated(self%s4_output) .or. &
-               allocated(self%chi4_output)) then
+               allocated(self%chi4_output) .or. allocated(self%msd_output)) then
          ierr = 1
-         message = '--sqw, --fqt, --fqt-self, --s4 and --chi4 belong to --dyn'
+         message = '--sqw, --fqt, --fqt-self, --s4, --chi4 and --msd belong to --dyn'
          return
       else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
                self%dyn_format_given .or. self%s4_cutoff_given .or. &
@@ -759,9 +766,10 @@ contains
                '--dyn-q line:... or --dyn-q shell:...'
             return
          end if
-         if (.not. allocated(self%chi4_output)) then
+         if (.not. allocated(self%chi4_output) .and. .not. allocated(self%msd_output)) then
             ierr = 1
-            message = '--dyn-q - computes only --chi4; add --chi4 FILE or a q sampling'
+            message = '--dyn-q - computes only --chi4 and --msd; add --chi4 or --msd FILE, '// &
+               'or a q sampling'
             return
          end if
       end if
@@ -806,6 +814,7 @@ contains
          self%fqt_self_format = self%dyn_format
          self%s4_format = self%dyn_format
          self%chi4_format = self%dyn_format
+         self%msd_format = self%dyn_format
       else
          if (allocated(self%sqw_output)) then
             if (ends_with(self%sqw_output, '.h5') .or. ends_with(self%sqw_output, '.hdf5')) &
@@ -826,6 +835,10 @@ contains
          if (allocated(self%chi4_output)) then
             if (ends_with(self%chi4_output, '.h5') .or. ends_with(self%chi4_output, '.hdf5')) &
                self%chi4_format = grid_format_hdf5
+         end if
+         if (allocated(self%msd_output)) then
+            if (ends_with(self%msd_output, '.h5') .or. ends_with(self%msd_output, '.hdf5')) &
+               self%msd_format = grid_format_hdf5
          end if
       end if
    end subroutine parse_options
@@ -1171,8 +1184,8 @@ contains
       write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
       write (unit, '(a)') '      --dyn           keep the time axis: dynamic structure factor and'
       write (unit, '(a)') '                      the four-point structure factor and overlap'
-      write (unit, '(a)') '      --dyn-q SPEC    q sampling of --dyn; default "-" (chi4 only):'
-      write (unit, '(a)') '                      -   no q points, only --chi4 is available'
+      write (unit, '(a)') '      --dyn-q SPEC    q sampling of --dyn; default "-" (no q points):'
+      write (unit, '(a)') '                      -   no q points: only --chi4 and --msd are available'
       write (unit, '(a)') '                      line:NINT,S0,S1,DX,DY,DZ  q line through Gamma,'
       write (unit, '(a)') '                      NINT intervals, scale S0..S1 [1/A], direction'
       write (unit, '(a)') '                      shell:Q,low|medium|high  Lebedev average on |q| = Q'
@@ -1194,9 +1207,10 @@ contains
       write (unit, '(a)') '      --dyn-format NAME  text (default) or hdf5 for all dynamic outputs'
       write (unit, '(a)') '      --s4 FILE       S4(q,t) four-point structure factor (.h5 = HDF5)'
       write (unit, '(a)') '      --chi4 FILE     Q(t) and chi4(t) average overlap / susceptibility'
+      write (unit, '(a)') '      --msd FILE      MSD(t) mean squared displacement (.h5 = HDF5)'
       write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
-      write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s (default 2.0)'
-      write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s (default 1)'
+      write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s/MSD (default 2.0)'
+      write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s/MSD (default 1)'
       write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
       write (unit, '(a)') '      --partials      write the partial structure factor columns (default)'
       write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'

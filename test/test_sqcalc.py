@@ -1690,6 +1690,65 @@ def main():
         raise SystemExit("FAIL self F_s deviates from exp(-D q2 t) by %.3f" % worst_self)
     print("  ok   %-42s max deviation %.3f" % ("diffusive F_s vs exp(-D q2 t)", worst_self))
 
+    # --- mean squared displacement (--msd) ---------------------------------
+    print("mean squared displacement (--msd)")
+    ref_msd = os.path.join(HERE, "ref_msd.py")
+    msd_base = ["--dyn", "--dyn-q", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+         "--msd", path("msd.dat"), path("msd_sq.dat")])
+    run([sys.executable, ref_msd, "--input", diff_dump, "--maxframes", "8",
+         "--lag", "1", "--stride", "1", "--dt", "1", "--output", path("msd_ref.dat")])
+    msd = read_matrix(path("msd.dat"))
+    compare(msd, read_matrix(path("msd_ref.dat")), "MSD(t) vs numpy reference", rtol=1.0e-9)
+    if float(np.max(np.abs(msd[0, 1:]))) > 1.0e-12:
+        raise SystemExit("FAIL MSD(0) != 0")
+    # the text columns carry 13 significant digits, so the sum rule holds to a
+    # scale-following tolerance (MSD grows to ~5 in this window)
+    if float(np.max(np.abs(msd[:, 1] - msd[:, 2:].sum(axis=1)))) > 1.0e-10:
+        raise SystemExit("FAIL species MSD columns do not sum to the total")
+    print("  ok   %-42s MSD(0)=0" % "MSD normalization")
+
+    # The diffusive ideal gas has MSD = 6 D t, so the slope is 6*0.1 = 0.6 and
+    # each species column carries the same slope in this equilibrated mixture.
+    tau_msd = msd[:, 0]
+    slope_msd = (msd[-1, 1] - msd[0, 1])/(tau_msd[-1] - tau_msd[0])
+    if abs(slope_msd - 0.6) > 0.02:
+        raise SystemExit("FAIL diffusive MSD slope %.4f != 6D = 0.6" % slope_msd)
+    print("  ok   %-42s slope %.4f (6D = 0.6)" % ("diffusive MSD slope", slope_msd))
+
+    # MSD is unit weighted: -w/--norm, the overlap cutoff and every other
+    # output that shares the position buffer leave it untouched.
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+         "--s4-cutoff", "0.5", "--s4", path("msd_s4.dat"), "--chi4", path("msd_chi4.dat"),
+         "--fqt-self", path("msd_fs.dat"), "--sqw", path("msd_sqw.dat"),
+         "--msd", path("msd_all.dat"), path("msd_all_sq.dat")])
+    compare(read_matrix(path("msd_all.dat")), msd, "MSD with S4/chi4/F_s/sqw", rtol=1.0e-9)
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
+         *msd_base, "--lag", "1", "--msd", path("msd_n.dat"), path("msd_n_sq.dat")])
+    compare(read_matrix(path("msd_n.dat")), msd, "MSD --norm n invariance", rtol=1.0e-9)
+
+    # stride and origin lag against the reference.
+    for stride in (2, 3):
+        run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
+             "--stride", str(stride), "--msd", path("msd_stride.dat"),
+             path("msd_stride_sq.dat")])
+        run([sys.executable, ref_msd, "--input", diff_dump, "--maxframes", "8",
+             "--lag", "3", "--stride", str(stride), "--dt", "1",
+             "--output", path("msd_stride_ref.dat")])
+        compare(read_matrix(path("msd_stride.dat")), read_matrix(path("msd_stride_ref.dat")),
+                "MSD stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
+
+    # --dyn-q - needs no q points and no OUTPUT table; --no-partials drops the
+    # species columns from the text table.
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--dyn", "--dyn-q", "-", "--dt", "1",
+         "--maxframes", "8", "--msd", path("msd_none.dat")])
+    compare(read_matrix(path("msd_none.dat")), msd, "MSD with --dyn-q -", rtol=1.0e-9)
+    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--no-partials", *msd_base, "--lag", "1",
+         "--msd", path("msd_total.dat"), path("msd_total_sq.dat")])
+    if read_matrix(path("msd_total.dat")).shape[1] != 2:
+        raise SystemExit("FAIL --no-partials still wrote MSD species columns")
+    print("  ok   %-42s total only" % "--no-partials MSD columns")
+
     # The origin stride is shared with the coherent correlations.
     s4_lag = s4_base + ["--lag", "3"]
     run([exe, "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
@@ -1777,6 +1836,11 @@ def main():
         with open(path("fs_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("fs.h5"), "fqt_self"]).stdout)
         compare(read_matrix(path("fs_h5.txt")), fs, "HDF5 F_s(q,t) vs text", rtol=1.0e-9)
+        run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *fs_base, "--lag", "1",
+             "--msd", path("msd.h5"), path("msd_h5_sq.dat")])
+        with open(path("msd_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("msd.h5"), "msd"]).stdout)
+        compare(read_matrix(path("msd_h5.txt")), msd, "HDF5 MSD vs text", rtol=1.0e-9)
 
     # --- the q sampling modes of --dyn-q ----------------------------------
     print("--dyn-q sampling modes")
@@ -1972,6 +2036,7 @@ def main():
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "8", "--stride", "2"],
          "--stride without S4/chi4/F_s"),
         (["--fqt-self", "f.dat"], "--fqt-self without --dyn"),
+        (["--msd", "m.dat"], "--msd without --dyn"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
           "--fqt-self", "f.dat"], "--s4-cutoff with --fqt-self but no S4/chi4"),
         (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8"],
@@ -1989,7 +2054,7 @@ def main():
         (["--dyn", "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5", "--s4", "s.dat"],
          "--s4 without a q sampling"),
         (["--dyn", "--dyn-q", "-", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q - without --chi4"),
+         "--dyn-q - without --chi4/--msd"),
         (["--dyn-q", "line:4,1,4,1,0,0", "--dt", "1", "--maxframes", "8"],
          "--dyn-q without --dyn"),
         (["--dyn", "--dyn-q", "grid:0", "--dt", "1", "--maxframes", "8"],

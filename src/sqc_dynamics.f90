@@ -44,7 +44,8 @@ module sqc_dynamics
    use, intrinsic :: iso_fortran_env, only: output_unit
    use omp_lib, only: omp_get_max_threads, omp_get_thread_num
 #ifdef SQC_HAVE_HDF5
-   use sqc_hdf5, only: hdf5_write_dynamics, hdf5_write_chi4, hdf5_write_fqt_self
+   use sqc_hdf5, only: hdf5_write_dynamics, hdf5_write_chi4, hdf5_write_fqt_self, &
+                       hdf5_write_msd
 #endif
    implicit none
    private
@@ -157,6 +158,10 @@ module sqc_dynamics
       character(len=:), allocatable :: s4_path, chi4_path
       integer :: s4_format = dyn_format_text
       integer :: chi4_format = dyn_format_text
+      !> Mean squared displacement MSD(tau) and its per-species split.
+      logical :: msd_enabled = .false.
+      character(len=:), allocatable :: msd_path
+      integer :: msd_format = dyn_format_text
       !> True when F(q,t)/S(q,w) buffers and transforms are needed.
       logical :: coherent_enabled = .true.
       !> Position buffer limit [GB, 10^9 bytes] for --s4/--chi4.
@@ -182,12 +187,16 @@ module sqc_dynamics
       complex(c_double_complex), allocatable :: fs_sum(:, :, :)
       !> chi4 accumulators over the scalar overlap W0.
       real(rk), allocatable :: chi4_asum(:), chi4_bsum(:)
+      !> MSD accumulator: sum |r_i(t0+tau) - r_i(t0)|^2 per (species, lag).
+      real(rk), allocatable :: msd_sum(:, :)
       !> Time origins per S4 lag and the S4 time axis.
       integer(lk), allocatable :: sample_cnt(:, :)
       real(rk), allocatable :: sample_tau(:)
       !> Results: S4(q,t), average overlap Q(t) and chi4(t).
       real(rk), allocatable :: s4(:, :)
       real(rk), allocatable :: overlap(:), chi4(:)
+      !> Results: total and per-species mean squared displacement.
+      real(rk), allocatable :: msd_total(:), msd_partial(:, :)
       !> Results: total and per-species F_s(q,t).
       real(rk), allocatable :: fqt_self_total(:, :)
       real(rk), allocatable :: fqt_self_partial(:, :, :)
@@ -221,6 +230,7 @@ module sqc_dynamics
       procedure :: write_fqt_self => dyn_write_fqt_self
       procedure :: write_s4 => dyn_write_s4
       procedure :: write_chi4 => dyn_write_chi4
+      procedure :: write_msd => dyn_write_msd
    end type dynamics_structure_factor_t
 
 contains
@@ -433,7 +443,8 @@ contains
       ! Validate the overlap request before the coherent ring buffers are
       ! allocated, so an oversized --maxframes fails with the S4 message
       ! instead of exhausting memory in the unrelated F(q,t) accumulators.
-      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled) then
+      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
+          self%msd_enabled) then
          if (self%s4_enabled .or. self%chi4_enabled) then
             if (self%s4_cutoff <= 0.0_rk) then
                ierr = 1
@@ -459,7 +470,7 @@ contains
          if (need_bytes > limit_bytes) then
             ierr = 1
             write (message, '(a,f0.4,a,i0,a,f0.4,a,i0,a)') &
-               'the S4/chi4 position buffer needs ', real(need_bytes, rk)/1.0e9_rk, &
+               'the S4/chi4/F_s/MSD position buffer needs ', real(need_bytes, rk)/1.0e9_rk, &
                ' GB (', need_bytes, ' bytes), above the ', self%buffer_limit_gb, &
                ' GB (', limit_bytes, ' bytes) limit; raise --buffer-limit, '// &
                'increase --stride or reduce --maxframes'
@@ -523,15 +534,16 @@ contains
       end if
 
       ! --- four point structure factor / overlap accumulators ---------------
-      ! S4(q,t) and chi4(t) both need the positions of the frames that are
-      ! still inside the correlation window.  The list of overlapping atoms
-      ! is built once per lag and reused by every q mode.
-      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled) then
+      ! S4(q,t), chi4(t), F_s(q,t) and MSD(t) all need the positions of the
+      ! frames that are still inside the correlation window.  The list of
+      ! overlapping atoms is built once per lag and reused by every q mode.
+      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
+          self%msd_enabled) then
          allocate (self%pos_buffer(3, int(self%natoms), 0:self%nsteps), &
                    stat=astat, errmsg=amsg)
          if (astat /= 0) then
             ierr = 1
-            message = 'cannot allocate the position buffer for S4/chi4/F_s: '//trim(amsg)
+            message = 'cannot allocate the position buffer for S4/chi4/F_s/MSD: '//trim(amsg)
             return
          end if
          self%pos_buffer = 0.0_rk
@@ -549,6 +561,10 @@ contains
          allocate (self%chi4_asum(0:self%nsteps), self%chi4_bsum(0:self%nsteps))
          self%chi4_asum = 0.0_rk
          self%chi4_bsum = 0.0_rk
+      end if
+      if (self%msd_enabled) then
+         allocate (self%msd_sum(self%nspecies, 0:self%nsteps))
+         self%msd_sum = 0.0_rk
       end if
       if (self%s4_enabled) then
          allocate (self%acc_thread(self%nmodes, self%phase_threads))
@@ -702,8 +718,8 @@ contains
       ! j*stride original frames.  The coherent F(q,t)/S(q,w) path above
       ! still uses every dump frame.  F_s always includes every atom; the
       ! overlap cutoff is only used by S4/chi4.
-      if ((self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled) .and. &
-          mod(t_frame, self%stride) == 0) then
+      if ((self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
+           self%msd_enabled) .and. mod(t_frame, self%stride) == 0) then
          sample = t_frame/self%stride
          sample_slot = mod(sample, self%nsteps + 1)
          self%pos_buffer(:, :, sample_slot) = frame%pos
@@ -720,9 +736,9 @@ contains
          ! not split separately.
          !
          ! The lags are only spread when they carry a mode sum to pay for it.
-         ! A chi4-only lag is nothing but the scan, and spreading a streaming
-         ! pass over memory cost a third of its time on the machines this was
-         ! timed on, so that case runs the loop on one thread.
+         ! A chi4- or MSD-only lag is nothing but a streaming scan, and
+         ! spreading that over threads cost a third of its time on the
+         ! machines this was timed on, so those cases run on one thread.
          !$omp parallel do if(self%s4_enabled .or. self%fqt_self_enabled) &
          !$omp& schedule(dynamic, 1) &
          !$omp& private(oslot, nover, k, i, im, isp, tid, dx, dy, dz, rr, &
@@ -844,6 +860,19 @@ contains
             if (self%s4_enabled .or. self%chi4_enabled) then
                self%chi4_bsum(j) = self%chi4_bsum(j) + real(nover, rk)
                self%chi4_asum(j) = self%chi4_asum(j) + real(nover, rk)**2
+            end if
+
+            ! MSD(tau): the squared displacement of every atom, split by
+            ! species.  It never uses the cutoff and, like chi4, is a plain
+            ! streaming pass, so the lag that owns it does the whole sum.
+            if (self%msd_enabled) then
+               do i = 1, int(self%natoms)
+                  dx = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
+                  dy = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
+                  dz = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
+                  isp = int(self%species_of(i))
+                  self%msd_sum(isp, j) = self%msd_sum(isp, j) + dx*dx + dy*dy + dz*dz
+               end do
             end if
             self%sample_cnt(:, j) = self%sample_cnt(:, j) + 1
          end do
@@ -1085,7 +1114,27 @@ contains
             end do
          end do
       end if
-      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled) then
+      ! MSD(tau): the origin count is the same at every q mode, so the first
+      ! row of sample_cnt carries it.  The per-species columns use the same
+      ! 1/N normalization as F_s, so they add up to the total.
+      if (self%msd_enabled) then
+         allocate (self%msd_partial(self%nspecies, 0:self%nsteps))
+         allocate (self%msd_total(0:self%nsteps))
+         self%msd_partial = 0.0_rk
+         self%msd_total = 0.0_rk
+         do j = 0, self%nsteps
+            n = int(self%sample_cnt(1, j))
+            if (n > 0) then
+               do isp = 1, self%nspecies
+                  value = self%msd_sum(isp, j)/real(n, rk)/real(self%natoms, rk)
+                  self%msd_partial(isp, j) = value
+                  self%msd_total(j) = self%msd_total(j) + value
+               end do
+            end if
+         end do
+      end if
+      if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
+          self%msd_enabled) then
          allocate (self%sample_tau(0:self%nsteps))
          do j = 0, self%nsteps
            self%sample_tau(j) = real(j*self%stride, rk)*self%frame_dt
@@ -1636,20 +1685,24 @@ contains
    end function species_index
 
    !> Short label of one species, e.g. F_s(Si) or F_s(2).
-   pure subroutine species_label(scheme, type_id, label)
+   pure subroutine species_label(scheme, type_id, label, prefix)
       type(weight_scheme_t), intent(in) :: scheme
       integer, intent(in) :: type_id
       character(len=*), intent(out) :: label
+      character(len=*), intent(in), optional :: prefix
+      character(len=8) :: pfx
       character(len=2) :: sym
 
+      pfx = 'F_s'
+      if (present(prefix)) pfx = trim(prefix)
       sym = ' '
       if (allocated(scheme%symbols)) then
          if (type_id >= 1 .and. type_id <= size(scheme%symbols)) sym = scheme%symbols(type_id)
       end if
       if (len_trim(sym) > 0) then
-         label = 'F_s('//trim(sym)//')'
+         label = trim(pfx)//'('//trim(sym)//')'
       else
-         write (label, '(a,i0,a)') 'F_s(', type_id, ')'
+         write (label, '(a,i0,a)') trim(pfx)//'(', type_id, ')'
       end if
    end subroutine species_label
 
@@ -1818,6 +1871,79 @@ contains
       end do
       if (unit /= output_unit) close (unit)
    end subroutine dyn_write_chi4
+
+   !> Mean squared displacement MSD(tau) and its per-species split.
+   subroutine dyn_write_msd(self, path, format, scheme, input, ierr, message)
+      class(dynamics_structure_factor_t), intent(in) :: self
+      character(len=*), intent(in) :: path, input
+      integer, intent(in) :: format
+      type(weight_scheme_t), intent(in) :: scheme
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=18), allocatable :: labels(:)
+      character(len=18) :: slabel
+      integer :: unit, j, isp
+
+      ierr = 0
+      message = ''
+      if (format == dyn_format_hdf5) then
+#ifdef SQC_HAVE_HDF5
+         allocate (labels(self%nspecies))
+         do isp = 1, self%nspecies
+            call species_label(scheme, int(self%species_type(isp)), labels(isp), 'MSD')
+         end do
+         call hdf5_write_msd(path, self%sample_tau, self%msd_total, self%msd_partial, &
+                             labels, self%sample_cnt(1, :), self%partials, self%nframes, &
+                             self%frame_dt, self%maxframes, self%lag_stride, self%stride, &
+                             self%effective_maxframes, ierr, message)
+         deallocate (labels)
+#else
+         ierr = 1
+         message = 'this build has no HDF5 support; use --dyn-format text'
+#endif
+         return
+      end if
+
+      if (trim(path) == '-') then
+         unit = output_unit
+      else
+         open (newunit=unit, file=trim(path), status='replace', action='write', iostat=ierr)
+         if (ierr /= 0) then
+            message = 'cannot write the MSD output "'//trim(path)//'"'
+            return
+         end if
+      end if
+
+      write (unit, '(a)') '# sqcalc 0.1.0 mean squared displacement MSD(t)'
+      write (unit, '(a)') '# input '//trim(input)//'  weight unit (self)  norm unit'
+      write (unit, '(a,f12.6,a,i0,a,i0,a,i0)') '# frame_dt ', self%frame_dt, &
+         '  maxframes ', self%maxframes, '  lag ', self%lag_stride, '  nframes ', self%nframes
+      write (unit, '(a,i0,a,f0.6,a)') '# nlag ', self%nsteps + 1, &
+         '  tau 0 .. ', real(self%effective_maxframes, rk)*self%frame_dt, ' (time unit of dt)'
+      write (unit, '(a,i0,a,i0,a,i0,a)') '# stride ', self%stride, &
+         ' dump frames; effective maxframes ', self%effective_maxframes, ' (requested ', &
+         self%maxframes, ')'
+      write (unit, '(a)') '# MSD(t) = N^-1 <sum_i |r_i(t0+t) - r_i(t0)|^2>_t0 '// &
+         '(unit weights); one species column, the total is their sum'
+      write (unit, '(a)', advance='no') '# tau MSD(t)'
+      if (self%partials) then
+         do isp = 1, self%nspecies
+            call species_label(scheme, int(self%species_type(isp)), slabel, 'MSD')
+            write (unit, '(a)', advance='no') ' '//trim(slabel)
+         end do
+      end if
+      write (unit, '(a)') ''
+      do j = 0, self%nsteps
+         write (unit, '(f16.8,2x,es20.12)', advance='no') self%sample_tau(j), self%msd_total(j)
+         if (self%partials) then
+            do isp = 1, self%nspecies
+               write (unit, '(2x,es20.12)', advance='no') self%msd_partial(isp, j)
+            end do
+         end if
+         write (unit, '(a)') ''
+      end do
+      if (unit /= output_unit) close (unit)
+   end subroutine dyn_write_msd
 
    !> Text or HDF5 writer shared by the spectra and F(q,tau).
    subroutine dyn_write_table(self, path, format, scheme, input, kind, axis_name, &

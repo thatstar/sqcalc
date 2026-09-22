@@ -139,6 +139,8 @@ program sqcalc
          if (opts%s4_format == grid_format_hdf5) method%s4_format = dyn_format_hdf5
          method%chi4_format = dyn_format_text
          if (opts%chi4_format == grid_format_hdf5) method%chi4_format = dyn_format_hdf5
+         method%msd_format = dyn_format_text
+         if (opts%msd_format == grid_format_hdf5) method%msd_format = dyn_format_hdf5
          if (allocated(opts%s4_output)) then
             method%s4_path = opts%s4_output
             method%s4_enabled = .true.
@@ -146,6 +148,10 @@ program sqcalc
          if (allocated(opts%chi4_output)) then
             method%chi4_path = opts%chi4_output
             method%chi4_enabled = .true.
+         end if
+         if (allocated(opts%msd_output)) then
+            method%msd_path = opts%msd_output
+            method%msd_enabled = .true.
          end if
       end select
    case default
@@ -430,6 +436,14 @@ program sqcalc
                stop 27
             end if
          end if
+         if (allocated(method%msd_path)) then
+            call method%write_msd(method%msd_path, method%msd_format, opts%scheme, &
+                                  opts%input, ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 31
+            end if
+         end if
       end select
    end if
    if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
@@ -581,14 +595,14 @@ contains
             write (error_unit, '(a,3(i0,1x),a,f0.4,a)') '  q single   : n = (', &
                m%single_index, ') -> |q| = ', m%qlen(1), ' 1/A'
          case (dyn_q_none)
-            write (error_unit, '(a)') '  q sampling : none (only Q(t) and chi4(t))'
+            write (error_unit, '(a)') '  q sampling : none (only the overlap and MSD outputs)'
          case default
             write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q line     : ', &
                m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
          end select
          write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
             ' frames, origin lag ', m%lag_stride
-         if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled) then
+         if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled .or. m%msd_enabled) then
             if (m%s4_enabled .or. m%chi4_enabled) then
                write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
                   ' (S4/chi4 use unit weights)'
@@ -607,6 +621,9 @@ contains
          if (m%fqt_self_enabled) then
             write (error_unit, '(a)') '  F_s        : self intermediate scattering function '// &
                '(unit weights)'
+         end if
+         if (m%msd_enabled) then
+            write (error_unit, '(a)') '  MSD        : mean squared displacement (unit weights)'
          end if
       class default
          write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes

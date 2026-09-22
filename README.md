@@ -14,8 +14,9 @@ or nothing at all - and the run writes the dynamic structure factor
 $S(q,\omega)$, optionally with the intermediate scattering function $F(q,t)$.
 The same dynamic run can also write the four-point structure factor $S_4(q,t)$,
 the average overlap $Q(t)$ and the dynamic susceptibility $\chi_4(t)$ with
-`--s4` and `--chi4`.  That method correlates the density amplitudes (or the
-overlap field) in time rather than averaging their squares.
+`--s4` and `--chi4`, and the mean squared displacement $\text{MSD}(t)$ with
+`--msd`.  That method correlates the density amplitudes (or the overlap field)
+in time rather than averaging their squares.
 
 ```
 sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
@@ -118,7 +119,7 @@ With `--dyn` these options select the $q$ sampling and the correlation window:
 
 | dynamic option                | meaning                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `--dyn`                     | keep the time axis: dynamic structure factor, S4 and overlap (see below) |
+| `--dyn`                     | keep the time axis: dynamic structure factor, S4, overlap and MSD (see below) |
 | `--dyn-q SPEC`              | q sampling: `-` (default, no q points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC` or `grid:QMAX` |
 | `--dyn-modes N`             | mode budget of `--dyn-q grid` (0 = unlimited, the default)                  |
 | `--dyn-thin KIND`           | order of the grid thinning: `shells` (default) or `orbits`                  |
@@ -132,9 +133,10 @@ With `--dyn` these options select the $q$ sampling and the correlation window:
 | `--dyn-format NAME`         | `text` (default) or `hdf5` for all dynamic outputs                      |
 | `--s4 FILE`                 | the total four-point structure factor$S_4(q,t)$                           |
 | `--chi4 FILE`               | the average overlap$Q(t)$ and the susceptibility $\chi_4(t)$            |
+| `--msd FILE`                | the mean squared displacement $\text{MSD}(t)$ and its species columns      |
 | `--s4-cutoff A`             | overlap cutoff$a$, required by `--s4` and `--chi4`                    |
-| `--buffer-limit GB`         | position buffer limit for S4/chi4/F_s (default 2.0 GB)                      |
-| `--stride N`                | use every N-th dump frame for S4/chi4/F_s (default 1)                       |
+| `--buffer-limit GB`         | position buffer limit for S4/chi4/F_s/MSD (default 2.0 GB)                  |
+| `--stride N`                | use every N-th dump frame for S4/chi4/F_s/MSD (default 1)                   |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -175,6 +177,10 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
 # and the overlap dynamics alone: no q points, no S(q) table
 sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --chi4 chi4.dat
+
+# the mean squared displacement, also without q points
+sqcalc -i traj.dump -m 1:Si,2:O --dyn --dyn-q - --dt 0.005 --maxframes 400 \
+       --msd msd.dat
 ```
 
 ## Theoretical background
@@ -278,7 +284,7 @@ reciprocal space sampling is a separate choice, `--dyn-q`:
 
 | `--dyn-q` | q points | outputs |
 | --- | --- | --- |
-| `-` (default) | none | `--chi4`: the overlap $Q(t)$ and $\chi_4(t)$ |
+| `-` (default) | none | `--chi4`: the overlap $Q(t)$, $\chi_4(t)$; `--msd` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
 | `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
@@ -477,14 +483,14 @@ sets its limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size
 is printed in the run summary, and an oversized request is rejected before any
 large allocation.
 
-`--stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+`--stride N` subsamples the S4/chi4/F_s/MSD trajectory: only every N-th dump frame
 contributes, the lag axis becomes $0, N, 2N, \ldots$ in dump frames, and the
 position buffer stores only those frames.  This reduces both the buffer and
-the S4/chi4 work by roughly a factor $N$, at the cost of a coarser time axis.
+that work by roughly a factor $N$, at the cost of a coarser time axis.
 The coherent $F(q,t)/S(q,\omega)$ outputs still use every dump frame and the
-full `--maxframes`; only the S4/chi4 window is reduced to the largest multiple
-of $N$ that does not exceed `--maxframes`.  The run summary prints the
-effective window and a note when it is shorter than the requested one.
+full `--maxframes`; only the S4/chi4/F_s/MSD window is reduced to the largest
+multiple of $N$ that does not exceed `--maxframes`.  The run summary prints
+the effective window and a note when it is shorter than the requested one.
 `--lag` keeps its meaning in dump frames: an origin is used when its original
 frame index is a multiple of `--lag`, so with stride $N$, `--lag m` gives an
 origin every $m$ dump frames, not every $m$ S4 samples.
@@ -501,14 +507,51 @@ $F_s(a)$ sum to it.  Like S4, it reuses the shared position buffer and the
 `--stride`/`--lag` schedule, but it always includes every atom and never
 applies `--s4-cutoff`, even when `--s4` is also requested.
 
+### Mean squared displacement
+
+`--msd` writes the mean squared displacement of the same trajectory,
+
+$$
+\text{MSD}(t) = \frac{1}{N}\left\langle \sum_i
+  \left|\mathbf r_i(t_0+t) - \mathbf r_i(t_0)\right|^2\right\rangle_{t_0},
+$$
+
+with unit weights, so `-w`/`--norm` do not affect it and no overlap cutoff is
+needed.  It is the self quantity that parallels $F_s$,
+
+$$
+\text{MSD}(t) = \lim_{q\to0} \frac{6\left[1 - F_s(q,t)\right]}{q^2},
+$$
+
+and its long-time slope gives the diffusion coefficient, $D =
+\text{slope}/6$ in three dimensions.  Like S4 and $F_s$ it reuses the shared
+position buffer and the `--stride`/`--lag` schedule, and it is available
+without any q sampling (`--dyn-q -`), where a run writes no `OUTPUT` table.
+
+The table carries one species column per LAMMPS type when `--partials` is on
+(the default), with the same $1/N$ normalization as the $F_s$ columns, so the
+species columns sum to the total and a partial divided by its concentration
+tends to $6 D_a t$,
+
+```
+# tau MSD(t) MSD(Si) MSD(O)
+      0.00000000    0.000000000000E+00    0.000000000000E+00    0.000000000000E+00
+      1.00000000    5.961944468565E-01    2.996201670279E-01    2.965742798286E-01
+```
+
+`--no-partials` leaves only the total column.  A `.h5`/`.hdf5` name or
+`--dyn-format hdf5` selects HDF5, with `/msd/tau`, `/msd/MSD`, `/msd/count`
+and, with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`.
+
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 static `OUTPUT` table is still written.  Conversely, a run with only
 `--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`
-allocates that shared buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers.
-With `--dyn-q -` there are no density amplitudes at all, so `--chi4` is the
-only output and no `OUTPUT` table is taken.
+and `--msd` allocate that shared buffer but not the coherent
+$F(q,t)/S(q,\omega)$ buffers.  With `--dyn-q -` there are no density
+amplitudes at all, so `--chi4` and `--msd` are the only outputs and no
+`OUTPUT` table is taken.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
