@@ -186,9 +186,9 @@ $$
 They are labelled `I(Si-Si)`, `I(Si-O)`, ... from `-m` (or `I(1-1)`, ... when
 no mapping was given), carry the self term in the diagonal columns, and are
 dropped by `--no-partials`.  `-fz` is not applied: the table is in intensity
-units, not a structure factor.  The pair columns come from the `nufft` method
-(CPU or CUDA) and are what makes a multi component pattern readable - they are
-the simulation equivalent of isotope substitution or anomalous scattering.
+units, not a structure factor.  Every method writes them, `direct` included,
+and they are what makes a multi component pattern readable - the simulation
+equivalent of isotope substitution or anomalous scattering.
 
 `--xrd` needs the reciprocal methods and refuses `--method debye`, whose
 intensity is the orientation average $\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q
@@ -256,9 +256,8 @@ in the repository `README.md`.  **Prefer `-fz` when reporting partials**: the
 Faber-Ziman form tends to 1 for every pair, so the curves share a common
 asymptote and can be compared directly with the partials of other systems,
 while the default (OVITO) partials tend to the concentrations $x_a$ and hide
-the structure behind the composition.  The columns are accumulated by the
-`nufft` method (CPU or CUDA) and by `debye`; `direct` computes the total only
-and says so, instead of writing zero filled columns.
+the structure behind the composition.  Every method accumulates the columns,
+`nufft` (CPU or CUDA), `direct` and `debye` alike.
 
 ### The dynamic run (`--dyn`, `--dyn-q`)
 

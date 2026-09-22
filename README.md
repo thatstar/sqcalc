@@ -547,9 +547,9 @@ labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with element
 symbols and is required for the weighted schemes.  Report them with `-fz`:
 every Faber-Ziman pair tends to 1, so the curves can be read and compared
 across concentrations, which the OVITO pairs (tending to $x_a$) do not allow.
-The columns are accumulated by the `nufft` method (CPU or CUDA) and by
-`debye`; `direct` computes the total only, and a run says so instead of
-writing zero filled pair columns.
+Every method accumulates the columns: `nufft` (CPU or CUDA), `direct` and
+`debye`.  `direct` computes them in the same pass as the total, so the
+reference implementation covers the partials as well.
 
 A few limits are worth keeping in mind:
 
@@ -625,8 +625,8 @@ no mapping was given; the self term sits in the diagonal ones and `-fz` does
 not apply, because the table is in intensity units.  This is the simulation
 side of what isotope substitution or anomalous scattering provides in an
 experiment - in a two component pattern the pair columns say which sub-lattice
-a feature comes from.  The pair columns are accumulated by the `nufft` method
-(CPU or CUDA); `--no-partials` drops them, as it does in the $S(q)$ table.
+a feature comes from.  Every method accumulates them, `direct` included;
+`--no-partials` drops them, as it does in the $S(q)$ table.
 
 `--method debye` evaluates a different quantity - the orientation average
 $\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q r_{ij})$, which carries no multiplicity -

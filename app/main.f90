@@ -194,13 +194,6 @@ program sqcalc
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       stop 6
    end if
-   ! Not every method accumulates the pair columns: say so instead of writing
-   ! a table that carries them as zeros.
-   if (opts%partials .and. .not. allocated(method%partial_num) .and. &
-       .not. opts%quiet) then
-      write (error_unit, '(a)') '  note       : this method does not accumulate partials; '// &
-         'the nufft and debye paths write the pair columns'
-   end if
    if (.not. opts%quiet) call report_grid(method)
 
    ! --- accumulate over the trajectory ----------------------------------

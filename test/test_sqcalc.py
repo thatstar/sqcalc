@@ -571,7 +571,8 @@ def main():
 
     # --- 9. partial structure factors (OVITO convention + Faber-Ziman) -----
     print("partial structure factors")
-    for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
+    for method, extra in (("nufft", []), ("direct", []),
+                          ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
         sqcalc(dump, "part_%s.dat" % method, "-w", "unit", "--norm", "n", "--method", method,
                "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra)
         sqcalc(dump, "partfz_%s.dat" % method, "-w", "unit", "--norm", "n", "-fz",
@@ -852,9 +853,16 @@ def main():
     run([exe, "-i", sc, "-w", "unit", "--method", "direct", "--xrd", path("sc.xrd"),
          "--xrd-lambda", "1.5418", "--xrd-range", "40", "100"])
     cubic = read_matrix(path("sc.xrd"))
-    if cubic.shape != (4, 2):
-        raise SystemExit("FAIL xrd (unit weights): %s table, expected 4 bins"
+    if cubic.shape != (4, 3):
+        raise SystemExit("FAIL xrd (unit weights): %s table, expected 4 bins "
+                         "and one pair column"
                          % (cubic.shape,))
+    # one species: the pair column carries the total, direct or not
+    identity = float(np.max(np.abs(cubic[:, 1] - cubic[:, 2])
+                            / np.maximum(np.abs(cubic[:, 1]), 1.0)))
+    if identity > 1.0e-12:
+        raise SystemExit("FAIL xrd (unit weights): I(1-1) differs from the total "
+                         "by %.3e" % identity)
     for index, (m, mult) in enumerate(((1, 6), (2, 12), (3, 8))):
         tth = 2.0*np.degrees(np.arcsin(np.pi*np.sqrt(m)*1.5418/(4.0*np.pi)))
         want = 64.0*mult*lorentz_polarization(tth)
@@ -899,6 +907,38 @@ def main():
     print("  ok   %-42s %d bins over the default 1-179 deg range"
           % ("default step stays usable", wide_xrd.shape[0]))
 
+    # `direct` is a second implementation of the same sums, so it has to
+    # reproduce every column of the pattern - the pair columns included, which
+    # no other check pins against an independent computation.
+    cross = ["--xrd-lambda", "1.541838", "--xrd-range", "40", "80", "--xrd-step", "0.5"]
+    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide_direct.xrd"),
+         *cross])
+    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+         "--xrd", path("wide_nufft.xrd"), *cross])
+    xrd_direct = read_matrix(path("wide_direct.xrd"))
+    xrd_nufft = read_matrix(path("wide_nufft.xrd"))
+    if xrd_direct.shape != xrd_nufft.shape:
+        raise SystemExit("FAIL xrd: direct gives %s columns, nufft %s"
+                         % (xrd_direct.shape, xrd_nufft.shape))
+    worst = float(np.max(np.abs(xrd_direct[:, 1:] - xrd_nufft[:, 1:])
+                         / np.maximum(np.abs(xrd_nufft[:, 1:]), 1.0)))
+    if worst > 1.0e-8:
+        raise SystemExit("FAIL xrd: direct and nufft differ by %.3e" % worst)
+    # one species: the pair column is the total, for direct as well
+    identity = float(np.max(np.abs(xrd_direct[:, 1] - xrd_direct[:, 2])
+                            / np.maximum(np.abs(xrd_direct[:, 1]), 1.0)))
+    if identity > 1.0e-12:
+        raise SystemExit("FAIL xrd: direct I(Ni-Ni) differs from the total by %.3e"
+                         % identity)
+    print("  ok   %-42s max deviation %.2e" % ("direct vs nufft, pattern + pairs", worst))
+
+    # --no-partials still drops them
+    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+         "--no-partials", "--xrd", path("wide_plain.xrd"), *cross])
+    if read_matrix(path("wide_plain.xrd")).shape[1] != 2:
+        raise SystemExit("FAIL xrd: direct --no-partials left pair columns")
+    print("  ok   %-42s direct writes the total only" % "--no-partials")
+
     if args.h5read:
         run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.h5"),
              *ni_opts, "--xrd-step", "0.2"])
@@ -916,7 +956,7 @@ def main():
     # The combinations that cannot mean anything have to be refused.
     def expect_error(argv, needle):
         result = subprocess.run(argv, capture_output=True, text=True)
-        tail = " ".join(argv[len(base):])
+        tail = " ".join(argv[1:])
         if result.returncode == 0:
             raise SystemExit("FAIL xrd: %s was accepted" % tail)
         if needle not in result.stdout + result.stderr:
@@ -932,7 +972,11 @@ def main():
                          "--xrd-range", "0", "80"], "MIN2TH")
     expect_error(base + ["--xrd-step", "0.1", path("bad.xrd")], "belong to --xrd")
     expect_error(base + ["--no-lp", path("bad.dat")], "belong to --xrd")
-    print("  ok   %-42s 6 refusals" % "debye, qmin, lambda, range, stray flags")
+    # the 32000 atom box needs 2.3e10 phase evaluations, over the direct limit
+    expect_error([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+                  "--xrd", path("bad.xrd"), "--xrd-lambda", "1.541838",
+                  "--xrd-range", "40", "80"], "phase evaluations")
+    print("  ok   %-42s 7 refusals" % "debye, qmin, lambda, range, stray flags")
 
     # --- 9e. q sampling helper --------------------------------------------
     # The skill ships choose_q.py, which reads the box and returns a sampling
@@ -1012,7 +1056,8 @@ def main():
 
     # --- 10. Faber-Ziman cross-check and partial g(r) ---------------------
     print("faber-ziman cross-check and partial g(r)")
-    for method, extra in (("nufft", []), ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
+    for method, extra in (("nufft", []), ("direct", []),
+                          ("debye", ["--rmax", "6", "--dr", "0.01", "--skin", "0"])):
         sqcalc(dump, "fzchk_%s.dat" % method, "-w", "unit", "--norm", "n", "-fz",
                "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra)
         part = read_matrix(path("part_%s.dat" % method))

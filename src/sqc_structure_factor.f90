@@ -1363,8 +1363,17 @@ contains
       end block
       allocate (self%cart(3, frame%natoms))
       allocate (self%intensity(self%nmodes))
-      ! One hkl triple, q vector, |q|, grid index and value per kept mode.
+      ! The pair columns direct_accumulate fills, and their labels.
+      call sf_alloc_partials(self, scheme)
+      ! One hkl triple, q vector, |q|, grid index and value per kept mode,
+      ! plus one pair accumulator per thread when --partials is on.
       self%expected_bytes = 60.0_rk*real(self%nmodes, rk)
+      if (self%partials) then
+         self%expected_bytes = self%expected_bytes &
+            + 8.0_rk*real(self%ntypes, rk)**2 &
+              *real(self%nq + max(self%xrd_bins, 0), rk) &
+              *real(max(omp_get_max_threads(), 1), rk)
+      end if
       work = int(frame%natoms, lk)*self%nmodes
       if (work > 2000000000_lk) then
          ierr = 1
@@ -1374,6 +1383,15 @@ contains
       end if
    end subroutine direct_setup
 
+   !> Accumulate |rho(q)|^2 and, with --partials, every type pair sum.
+   !!
+   !! The pair sums are the two the NUFFT path accumulates in
+   !! `sf_accumulate_partials` and `sf_accumulate_xrd_partials`: the unweighted
+   !! `Re(rho_a conjg(rho_b))` per shell, and the `f_a(q) f_b(q)` weighted one
+   !! per two-theta bin times the Lorentz-polarization factor of the mode.
+   !! This loop already holds both amplitudes of every type, so it accumulates
+   !! them straight away instead of storing a per species spectrum - which is
+   !! what the grid methods do and what the direct method exists to avoid.
    subroutine direct_accumulate(self, frame, scheme, ierr, message)
       class(direct_structure_factor_t), intent(inout) :: self
       type(frame_t), intent(in) :: frame
@@ -1383,8 +1401,11 @@ contains
       real(rk) :: s(3), amp, phase, value
       real(rk) :: qx, qy, qz
       complex(c_double_complex) :: acc, total
+      complex(c_double_complex), allocatable :: acc_t(:), rho_t(:)
+      real(rk), allocatable :: local_pair(:, :, :, :), local_xrd(:, :, :, :)
       integer :: i, im, isp, sh, idx
-      integer(lk) :: g
+      integer :: ia, ib, tid, nthreads, xb
+      logical :: pairs
 
       ierr = 0
       message = ''
@@ -1394,7 +1415,25 @@ contains
          self%cart(:, i) = matmul(frame%cell%a, s)
       end do
 
-      !$omp parallel do schedule(static) private(im, isp, idx, i, amp, phase, acc, total, qx, qy, qz)
+      ! Each thread owns a pair accumulator (the shell reduction in
+      ! accumulate_values uses the same trick), so the result does not depend
+      ! on the schedule.  A fine --xrd-step is the one array here that can grow.
+      pairs = self%partials
+      nthreads = 1
+      !$ nthreads = omp_get_max_threads()
+      if (pairs) then
+         allocate (local_pair(self%ntypes, self%ntypes, self%nq, nthreads))
+         local_pair = 0.0_rk
+         allocate (local_xrd(self%ntypes, self%ntypes, max(self%xrd_bins, 1), nthreads))
+         local_xrd = 0.0_rk
+      end if
+
+      !$omp parallel private(tid, im, isp, idx, i, amp, phase, acc, total, qx, qy, qz, &
+      !$omp&                  acc_t, rho_t, ia, ib, xb, value)
+      tid = 1
+      !$ tid = omp_get_thread_num() + 1
+      allocate (acc_t(self%ntypes), rho_t(self%ntypes))
+      !$omp do schedule(static)
       do im = 1, int(self%nmodes)
          qx = self%qvec(1, im)
          qy = self%qvec(2, im)
@@ -1408,11 +1447,66 @@ contains
                phase = qx*self%cart(1, i) + qy*self%cart(2, i) + qz*self%cart(3, i)
                acc = acc + cmplx(cos(phase), sin(phase), c_double_complex)
             end do
-            total = total + cmplx(amp, 0.0_rk, c_double_complex)*acc
+            acc_t(isp) = acc
+            rho_t(isp) = cmplx(amp, 0.0_rk, c_double_complex)*acc
+            total = total + rho_t(isp)
          end do
          self%intensity(im) = real(total*conjg(total), rk)
+
+         if (pairs) then
+            sh = self%shell(im)
+            do ia = 1, self%ntypes
+               if (self%species_first(ia + 1) == self%species_first(ia)) cycle
+               do ib = ia, self%ntypes
+                  if (self%species_first(ib + 1) == self%species_first(ib)) cycle
+                  value = real(acc_t(ia)*conjg(acc_t(ib)), rk)
+                  local_pair(ia, ib, sh, tid) = local_pair(ia, ib, sh, tid) + value
+                  if (self%xrd_enabled) then
+                     value = real(rho_t(ia)*conjg(rho_t(ib)), rk)*self%xrd_weight(im)
+                     xb = self%xrd_bin(im)
+                     local_xrd(ia, ib, xb, tid) = local_xrd(ia, ib, xb, tid) + value
+                  end if
+               end do
+            end do
+         end if
       end do
-      !$omp end parallel do
+      !$omp end do
+      deallocate (acc_t, rho_t)
+      !$omp end parallel
+
+      if (pairs) then
+         if (.not. allocated(self%partial_num)) then
+            allocate (self%partial_num(self%ntypes, self%ntypes, self%nq))
+            self%partial_num = 0.0_rk
+         end if
+         do tid = 1, nthreads
+            do sh = 1, self%nq
+               do ib = 1, self%ntypes
+                  do ia = 1, self%ntypes
+                     self%partial_num(ia, ib, sh) = self%partial_num(ia, ib, sh) &
+                                                    + local_pair(ia, ib, sh, tid)
+                  end do
+               end do
+            end do
+         end do
+         if (self%xrd_enabled) then
+            if (.not. allocated(self%xrd_partial_num)) then
+               allocate (self%xrd_partial_num(self%ntypes, self%ntypes, self%xrd_bins))
+               self%xrd_partial_num = 0.0_rk
+            end if
+            do tid = 1, nthreads
+               do xb = 1, self%xrd_bins
+                  do ib = 1, self%ntypes
+                     do ia = 1, self%ntypes
+                        self%xrd_partial_num(ia, ib, xb) = self%xrd_partial_num(ia, ib, xb) &
+                                                           + local_xrd(ia, ib, xb, tid)
+                     end do
+                  end do
+               end do
+            end do
+         end if
+         deallocate (local_pair, local_xrd)
+      end if
 
       call self%accumulate_values(self%intensity)
    end subroutine direct_accumulate
