@@ -594,7 +594,11 @@ is the average over the trajectory of the intensity of each frame.
 Bins are uniform in two-theta.  Without `--xrd-step` the width comes from the
 box: the reciprocal lattice spacing $2\pi/L$ maps to
 $\lambda/(L\cos\theta)$ in two-theta, which is the width a box of size $L$ can
-give, so the default puts every line of the model into a single bin.  A finer
+give, so the default puts every line of the model into a single bin.  That
+width diverges towards $2\theta = 180^\circ$, so the reference angle is capped
+at $120^\circ$ of two-theta: a range that reaches beyond it is sampled more
+coarsely than the box could, and the run counts the bins that then hold no
+lattice point.  A finer
 step is allowed and then shows the individual reciprocal lattice points of the
 box (the run reports how many bins hold none), and a coarser step merges
 neighbouring lines.  The lines are as sharp as the box permits: that is the

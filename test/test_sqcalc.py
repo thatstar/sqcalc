@@ -885,6 +885,20 @@ def main():
                              % (label, ratio, want))
     print("  ok   %-42s LP within 1 per cent" % "--no-lp drops the LP factor")
 
+    # The derived bin width must stay usable over the default range, where the
+    # box spacing in two-theta diverges towards 180 degrees: without the cap on
+    # its reference angle the whole 1-179 degree range collapses to two bins.
+    wide = generate("xrd_wide.dump", natoms=4000, length=35.2, frames=1, mode="fcc",
+                    fractions=1.0, seed=3)
+    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide.xrd"),
+         "--xrd-lambda", "1.541838"])
+    wide_xrd = read_matrix(path("wide.xrd"))
+    if wide_xrd.shape[0] < 20:
+        raise SystemExit("FAIL xrd: the default range gave %d bins at %s"
+                         % (wide_xrd.shape[0], "the derived step"))
+    print("  ok   %-42s %d bins over the default 1-179 deg range"
+          % ("default step stays usable", wide_xrd.shape[0]))
+
     if args.h5read:
         run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.h5"),
              *ni_opts, "--xrd-step", "0.2"])
@@ -917,7 +931,8 @@ def main():
     expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
                          "--xrd-range", "0", "80"], "MIN2TH")
     expect_error(base + ["--xrd-step", "0.1", path("bad.xrd")], "belong to --xrd")
-    print("  ok   %-42s 5 refusals" % "debye, qmin, lambda, range, stray flags")
+    expect_error(base + ["--no-lp", path("bad.dat")], "belong to --xrd")
+    print("  ok   %-42s 6 refusals" % "debye, qmin, lambda, range, stray flags")
 
     # --- 9e. q sampling helper --------------------------------------------
     # The skill ships choose_q.py, which reads the box and returns a sampling

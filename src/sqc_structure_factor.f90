@@ -493,6 +493,13 @@ contains
 
       if (.not. self%partials) return
       if (nstride <= 0) return
+      ! Safety net: a method that reaches here without having allocated its
+      ! pair columns (see sf_alloc_partials, which also sets the labels) must
+      ! not read unallocated memory.  The columns are then simply zero.
+      if (.not. allocated(self%partial_num)) then
+         allocate (self%partial_num(self%ntypes, self%ntypes, self%nq))
+         self%partial_num = 0.0_rk
+      end if
       ia_max = min(size(species_type), int(size(rho_species)/nstride))
       allocate (local_partial(self%ntypes, self%ntypes, self%nq))
       local_partial = 0.0_rk
@@ -864,6 +871,13 @@ contains
             return
          end if
          theta_max = 0.5_rk*deg2rad*self%xrd_2theta_max
+         ! The reciprocal lattice spacing in two-theta is
+         ! lambda/(L cos theta), which diverges as theta approaches 90 degrees:
+         ! taken literally over the default 1-179 degree range the box would
+         ! give two bins.  Cap the reference angle, so the default stops
+         ! coarsening past 2 theta = 120 degrees; the run reports any bin that
+         ! then holds no lattice point, and --xrd-step overrides all of this.
+         theta_max = min(theta_max, 60.0_rk*deg2rad)
          self%xrd_step = (self%xrd_lambda/(bound*cos(theta_max)))/deg2rad
       end if
 

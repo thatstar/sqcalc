@@ -134,8 +134,9 @@ and `--dr` instead of the box sets the usable q range.
   always includes every atom and never applies `--s4-cutoff`.
 * `--dyn-q -` (the default) samples no q at all, so `--chi4` is the only output
   it accepts, no `OUTPUT` table is written, and `--s4` needs a line or a shell.
-  A shell costs `nmodes` = 50, 110 or 194 directions per frame, comparable to a
-  line scan, and is written as a single row at `q = (0,0,Q)`.
+  A shell costs half the rule's directions per frame - 25, 55 or 97 modes once
+  the `+-` pairs are merged - comparable to a line scan, and is written as a
+  single row at `q = (0,0,Q)`.
 * The Debye method can also write the pair entropy (`--pair-entropy`) and its
   accumulation curve (`--s2-accum`).  The raw integral is a finite-$r_{\max}$
   estimate; `scripts/s2_analysis.py` does the optional GCV smoothing, the

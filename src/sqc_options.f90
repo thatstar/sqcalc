@@ -94,6 +94,7 @@ module sqc_options
       logical :: xrd_step_given = .false.
       integer :: xrd_format = grid_format_text
       logical :: lp = .true.
+      logical :: lp_given = .false.
       !> True when -w was given; --xrd implies the x-ray weights otherwise.
       logical :: weight_given = .false.
       logical :: quiet = .false.
@@ -210,9 +211,11 @@ contains
                needs_value = .false.
             case ('--lp')
                self%lp = .true.
+               self%lp_given = .true.
                needs_value = .false.
             case ('--no-lp')
                self%lp = .false.
+               self%lp_given = .true.
                needs_value = .false.
             case ('-fz', '--faber-ziman')
                self%faber_ziman = .true.
@@ -616,9 +619,11 @@ contains
          ! q = 4 pi sin(theta)/lambda at the two ends of the requested range.
          self%qmin = 4.0_rk*pi*sin(0.5_rk*deg2rad*self%xrd_2theta_min)/self%xrd_lambda
          self%qmax = 4.0_rk*pi*sin(0.5_rk*deg2rad*self%xrd_2theta_max)/self%xrd_lambda
-      else if (self%xrd_lambda_given .or. self%xrd_range_given .or. self%xrd_step_given) then
+      else if (self%xrd_lambda_given .or. self%xrd_range_given .or. self%xrd_step_given .or. &
+               self%lp_given) then
          ierr = 1
-         message = '--xrd-lambda, --xrd-range and --xrd-step belong to --xrd FILE'
+         message = '--xrd-lambda, --xrd-range, --xrd-step and --lp/--no-lp '// &
+            'belong to --xrd FILE'
          return
       end if
       if (self%scheme%kind /= weight_unit .and. .not. self%scheme%has_mapping()) then
@@ -1150,7 +1155,8 @@ contains
       write (unit, '(a)') '      --xrd-lambda VALUE  incident wavelength [dump length unit]'
       write (unit, '(a)') '      --xrd-range MIN MAX two-theta range [deg] (default 1 179)'
       write (unit, '(a)') '      --xrd-step VALUE    two-theta bin width [deg] (default: from'
-      write (unit, '(a)') '                      the box, so that no bin is empty)'
+      write (unit, '(a)') '                      the box, at most as coarse as the 2theta ='
+      write (unit, '(a)') '                      120 deg spacing, so that no bin is empty)'
       write (unit, '(a)') '      --lp, --no-lp   apply (default) or drop the Lorentz-polarization'
       write (unit, '(a)') '                      factor of the XRD pattern'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'

@@ -167,11 +167,13 @@ The intensity is per atom and per frame, so the numbers are directly
 comparable with the histogram `compute xrd` produces.  Bins are uniform in
 two-theta and without `--xrd-step` the width is derived from the box: the
 reciprocal lattice spacing $2\pi/L$ maps to $\lambda/(L\cos\theta)$ in
-two-theta, so each line of the model lands in one bin.  A finer step shows the
-individual reciprocal lattice points of the box - the run reports how many
-bins hold none - and a coarser step merges neighbouring lines.  The lines are
-as sharp as the box allows: that is the size broadening of the periodic model,
-not an instrument profile.
+two-theta, so each line of the model lands in one bin.  Since that width
+diverges towards $2\theta = 180^\circ$ the reference angle is capped at
+$120^\circ$: a range reaching beyond it is sampled more coarsely than the box
+could, and the run counts the bins that hold no lattice point.  A finer step
+shows the individual reciprocal lattice points of the box and a coarser one
+merges neighbouring lines.  The lines are as sharp as the box allows: that is
+the size broadening of the periodic model, not an instrument profile.
 
 With `--partials` (the default) the pattern gets one column per type pair, the
 $f_a(q) f_b(q)$ weighted cross term of the same species amplitudes the $S(q)$
@@ -530,7 +532,8 @@ sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
 sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --chi4 chi4.dat
 
-# the isotropic average on one shell: 110 Lebedev directions at |q| = 2.5 1/A
+# the isotropic average on one shell: the 110 point rule at |q| = 2.5 1/A,
+# halved to 55 modes by the +- merge
 sqcalc -i traj.dump -w unit --dyn --dyn-q shell:2.5,medium \
        --dt 0.005 --maxframes 400 --sqw S_qw.dat S_q.dat
 ```
