@@ -180,7 +180,7 @@ $f_a(q) f_b(q)$ weighted cross term of the same species amplitudes the $S(q)$
 partials use, so the columns decompose the total:
 
 $$
-I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a<b} I_{ab}(2\theta).
+I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a \lt b} I_{ab}(2\theta).
 $$
 
 They are labelled `I(Si-Si)`, `I(Si-O)`, ... from `-m` (or `I(1-1)`, ... when
@@ -218,7 +218,7 @@ $$
 and the total follows the usual partial sum rule,
 
 $$
-S_2 = \sum_a S_2^{aa} + 2\sum_{a<b}S_2^{ab}.
+S_2 = \sum_a S_2^{aa} + 2\sum_{a \lt b}S_2^{ab}.
 $$
 
 The integration uses the exact shell volume of each radial bin (not

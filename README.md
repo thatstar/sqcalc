@@ -259,7 +259,7 @@ S_2^{ab} = -2\pi\rho\,x_a x_b \int_0^{r_{\max}} r^2
 $$
 
 with the total following the partial sum rule
-$S_2 = \sum_a S_2^{aa} + 2\sum_{a<b} S_2^{ab}$.  `--pair-entropy FILE` writes
+$S_2 = \sum_a S_2^{aa} + 2\sum_{a \lt b} S_2^{ab}$.  `--pair-entropy FILE` writes
 the final total and partial values; `--s2-accum FILE` writes the $S_2(r)$
 accumulation curve.  The integral uses the exact shell volume of each bin, the
 $g\to0$ limit of the integrand and a leading-order Poisson bias correction;
@@ -617,7 +617,7 @@ $$
 so the columns are a decomposition of the total:
 
 $$
-I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a<b} I_{ab}(2\theta).
+I(2\theta) = \sum_a I_{aa}(2\theta) + 2\sum_{a \lt b} I_{ab}(2\theta).
 $$
 
 They are labelled `I(Si-Si)`, `I(Si-O)`, ... from `-m`, or `I(1-1)`, ... when

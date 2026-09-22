@@ -54,6 +54,16 @@ KNOWN_ENVIRONMENTS = {
     "Vmatrix", "vmatrix",
 }
 ENVIRONMENT = re.compile(r"\\begin\{([^}]*)\}")
+# A raw ``<`` or ``>`` directly in front of a letter is read as an HTML tag by
+# the renderer (``\sum_{a<b}`` looks like ``<b>`` there): the math is split and
+# MathJax reports "Extra open brace or missing close brace".  Write ``\lt`` /
+# ``\gt``, or put spaces around the sign, so no tag can be recognised.
+RAW_ANGLE = re.compile(r"[<>][A-Za-z]")
+
+
+def angle_message(token: str) -> str:
+    return ("%s looks like an HTML tag inside math; use \\lt / \\gt or spaces "
+            "around the sign" % token)
 
 
 def split_code_spans(line: str) -> list[tuple[str, bool]]:
@@ -101,6 +111,7 @@ def check_complaints(body: str) -> list[str]:
                       for match in OLD_FONT_COMMANDS.finditer(body))
     complaints.extend("%s is not a GitHub math delimiter, use $$ or $" % match.group(0)
                       for match in LATEX_DELIMITERS.finditer(body))
+    complaints.extend(angle_message(match.group(0)) for match in RAW_ANGLE.finditer(body))
     complaints.extend("unknown math environment %s" % match.group(0)
                       for match in ENVIRONMENT.finditer(body)
                       if match.group(1) not in KNOWN_ENVIRONMENTS)
@@ -113,6 +124,7 @@ def check(path: Path) -> int:
     dollars = 0
     in_fence = False
     in_display = False
+    in_inline = False
     display_start = 0
     display_body: list[str] = []
     for number, line in enumerate(path.read_text().splitlines(), start=1):
@@ -153,6 +165,17 @@ def check(path: Path) -> int:
                     complaints += 1
                 continue
             dollars += text.count("$")
+            # Inline math is scanned character by character, because that is
+            # the only place a raw angle bracket turns into an HTML tag.
+            position = 0
+            while position < len(text):
+                if text[position] == "$":
+                    in_inline = not in_inline
+                elif (in_inline and text[position] in "<>" and position + 1 < len(text)
+                      and text[position + 1].isalpha()):
+                    report(path, number, angle_message(text[position:position + 2]))
+                    complaints += 1
+                position += 1
             for match in OLD_FONT_COMMANDS.finditer(text):
                 report(path, number, "%s does not exist in MathJax 3, use "
                        "\\mathrm{...} or \\text{...}" % match.group(0))
