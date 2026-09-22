@@ -21,6 +21,11 @@ logs clean.
 | `--qmin`, `--qmax`, `--nq` | $q$ range [1/A] and number of shells (defaults 0, 20, 500) |
 | `--grid FILE` | also write $S(q)$ on every reciprocal lattice point |
 | `--grid-format NAME` | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5 |
+| `--xrd FILE` | also write a powder XRD pattern; a `.h5`/`.hdf5` name implies hdf5 |
+| `--xrd-lambda VALUE` | incident wavelength of `--xrd`, in the dump length unit |
+| `--xrd-range MIN MAX` | two-theta range of `--xrd` in degrees (default `1 179`) |
+| `--xrd-step DEG` | two-theta bin width in degrees (default: from the box, see below) |
+| `--lp`, `--no-lp` | apply (default) or drop the Lorentz-polarization factor of `--xrd` |
 | `--method NAME` | `nufft` (default), `direct` ($O(N N_{\text{modes}})$ reference) or `debye` (real space pair histograms) |
 | `--device NAME` | `cpu` (default) or `gpu` (CUDA builds only) |
 | `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
@@ -131,6 +136,51 @@ fixes the low $q$ end.  So `--nq` can be pushed as far as the table length is
 convenient: `scripts/choose_q.py DUMP --method debye` suggests
 `--qmin 0 --qmax 20 --nq 2000` ($\Delta q = 0.01$) and checks `--dr` against
 the requested `--qmax`.
+
+### Powder XRD pattern (`--xrd`)
+
+`--xrd FILE` writes a powder diffraction pattern next to the $S(q)$ table, in
+the convention of LAMMPS's `compute xrd`:
+
+$$
+I(2\theta_b) = \frac{1}{N\,n_{\text{frames}}}
+\sum_{q \in b} \lvert \rho(q) \rvert^{2} \, \mathrm{LP}(2\theta_q)
+$$
+
+The sum runs over the reciprocal lattice vectors of the box that fall into the
+two-theta bin $b$, $\rho(q)$ is the amplitude of the chosen weighting and
+`--no-lp` drops the Lorentz-polarization factor
+$\mathrm{LP} = (1+\cos^2 2\theta)/(\sin^2\theta\cos\theta)$.  `--xrd-lambda` is
+the wavelength in dump length units and `--xrd-range` the two-theta limits in
+degrees; they fix the $q$ window through $q = 4\pi\sin\theta/\lambda$, so
+`--qmin` and `--qmax` cannot be combined with `--xrd` (only `--nq`, which
+shapes the $S(q)$ table, still can).  `--xrd` implies `-w xray` when no `-w`
+was given and then needs `-m`; `-w neutron` and `-w unit` are accepted too.
+
+The intensity is per atom and per frame, so the numbers are directly
+comparable with the histogram `compute xrd` produces.  Bins are uniform in
+two-theta and without `--xrd-step` the width is derived from the box: the
+reciprocal lattice spacing $2\pi/L$ maps to $\lambda/(L\cos\theta)$ in
+two-theta, so each line of the model lands in one bin.  A finer step shows the
+individual reciprocal lattice points of the box - the run reports how many
+bins hold none - and a coarser step merges neighbouring lines.  The lines are
+as sharp as the box allows: that is the size broadening of the periodic model,
+not an instrument profile.
+
+`--xrd` needs the reciprocal methods and refuses `--method debye`, whose
+intensity is the orientation average $\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q
+r_{ij})$ with no multiplicity.  The pattern of the reciprocal methods and the
+Debye one therefore answer different questions, and mixing them silently would
+scale the pattern by the density of states.
+
+```sh
+# Cu Kalpha, 40 to 80 degrees, bins from the box; S(q) still written
+sqcalc -i traj.dump -m 1:Ni -w xray --xrd ni.xrd --xrd-lambda 1.541838 \
+       --xrd-range 40 80 S_q.dat
+# an XRD-only run, HDF5, an instrument-like 0.02 degree step
+sqcalc -i traj.dump -m 1:Si,2:O --xrd pattern.h5 --xrd-lambda 1.5406 \
+       --xrd-range 10 120 --xrd-step 0.02
+```
 
 ### Pair entropy (`--pair-entropy`, `--s2-accum`)
 

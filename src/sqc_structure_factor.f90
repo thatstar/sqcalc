@@ -42,7 +42,8 @@ module sqc_structure_factor
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
              method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit, &
              sf_prepare_species, sf_shared_setup, sf_alloc_partials, mode_denominator, &
-             method_debye, method_dynamic
+             method_debye, method_dynamic, sf_xrd_empty_bins, two_theta_deg, &
+             lorentz_polarization
 
    !> Sentinel for "do not write this table".  A plain negative test would be
    !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
@@ -61,6 +62,10 @@ module sqc_structure_factor
 
    !> Safety limit on the number of grid modes (memory: 16 bytes per mode).
    integer(lk), parameter :: max_grid_modes = 400000000_lk
+
+   !> pi and the degree conversion of the two-theta (XRD) options.
+   real(rk), parameter :: pi = 3.14159265358979323846_rk
+   real(rk), parameter :: deg2rad = pi/180.0_rk
 
    !> Common configuration, reciprocal grid bookkeeping and accumulators.
    type, abstract :: structure_factor_t
@@ -115,6 +120,22 @@ module sqc_structure_factor
       integer(lk), allocatable :: shell_count(:)
       !> Accumulated numerator and denominator per grid point.
       real(rk), allocatable :: gnum(:), gden(:)
+      !> Powder XRD output (--xrd): the same per-mode intensities binned in
+      !! two-theta, with the Lorentz-polarization factor folded in per mode.
+      logical :: xrd_enabled = .false.
+      real(rk) :: xrd_lambda = 0.0_rk
+      real(rk) :: xrd_2theta_min = 0.0_rk
+      real(rk) :: xrd_2theta_max = 0.0_rk
+      !> Bin width [deg]; 0 asks for the value derived from the box.
+      real(rk) :: xrd_step = 0.0_rk
+      logical :: xrd_lp = .true.
+      integer :: xrd_bins = 0
+      !> Two-theta bin and the (Lorentz-polarization) weight of each kept mode.
+      integer(ik), allocatable :: xrd_bin(:)
+      real(rk), allocatable :: xrd_weight(:)
+      !> Accumulated intensity per bin, and the reciprocal lattice points in it.
+      real(rk), allocatable :: xrd_num(:)
+      integer(lk), allocatable :: xrd_count(:)
       !> Frame bookkeeping.
       integer(ik) :: natoms = 0
       integer(ik) :: ntypes = 0
@@ -133,6 +154,7 @@ module sqc_structure_factor
       procedure :: partial_value => sf_partial_value
       procedure :: partial_column => sf_partial_column
       procedure :: grid_value => sf_grid_value
+      procedure :: write_xrd => sf_write_xrd
       procedure(sf_setup_iface), deferred :: method_setup
       procedure(sf_accumulate_iface), deferred :: accumulate_frame
    end type structure_factor_t
@@ -383,6 +405,9 @@ contains
          if (self%want_grid) self%gden(self%gidx(i)) = dmode
       end do
 
+      call sf_configure_xrd(self, frame, ierr, message)
+      if (ierr /= 0) return
+
       call self%method_setup(frame, scheme, ierr, message)
    end subroutine sf_configure
 
@@ -478,22 +503,28 @@ contains
    subroutine sf_accumulate_values(self, values)
       class(structure_factor_t), intent(inout) :: self
       real(rk), intent(in) :: values(:)
-      real(rk), allocatable :: local_num(:, :)
-      integer :: im, sh, tid, nthreads
+      real(rk), allocatable :: local_num(:, :), local_xrd(:, :)
+      integer :: im, sh, tid, nthreads, xb
       integer(lk) :: g
 
       nthreads = 1
       !$ nthreads = omp_get_max_threads()
       allocate (local_num(self%nq, nthreads))
       local_num = 0.0_rk
+      allocate (local_xrd(max(self%xrd_bins, 1), nthreads))
+      local_xrd = 0.0_rk
 
-      !$omp parallel private(im, sh, tid)
+      !$omp parallel private(im, sh, tid, xb)
       tid = 1
       !$ tid = omp_get_thread_num() + 1
       !$omp do schedule(static)
       do im = 1, int(self%nmodes)
          sh = self%shell(im)
          local_num(sh, tid) = local_num(sh, tid) + values(im)
+         if (self%xrd_enabled) then
+            xb = self%xrd_bin(im)
+            local_xrd(xb, tid) = local_xrd(xb, tid) + values(im)*self%xrd_weight(im)
+         end if
       end do
       !$omp end do
       !$omp end parallel
@@ -502,8 +533,13 @@ contains
          do sh = 1, self%nq
             self%num(sh) = self%num(sh) + local_num(sh, tid)
          end do
+         if (self%xrd_enabled) then
+            do xb = 1, self%xrd_bins
+               self%xrd_num(xb) = self%xrd_num(xb) + local_xrd(xb, tid)
+            end do
+         end if
       end do
-      deallocate (local_num)
+      deallocate (local_num, local_xrd)
 
       if (self%want_grid) then
          do im = 1, int(self%nmodes)
@@ -697,6 +733,154 @@ contains
    end subroutine sf_write_results
 
    ! ---------------------------------------------------------------------
+   ! Powder XRD pattern
+   ! ---------------------------------------------------------------------
+
+   !> Build the two-theta bin map of the XRD pattern from the kept modes.
+   !!
+   !! The bins are uniform in two-theta, which is the diffractometer
+   !! convention, and the Lorentz-polarization factor of each mode is folded
+   !! into `xrd_weight`, so `xrd_num(bin)` is a plain sum of |rho(q)|^2 over
+   !! the reciprocal lattice points of that bin.  Dividing by the frame count
+   !! and by N at write time gives the LAMMPS-comparable intensity.
+   !!
+   !! Without an explicit `--xrd-step` the bin width comes from the box: the
+   !! reciprocal lattice spacing 2 pi / L maps to lambda / (L cos(theta_max))
+   !! in two-theta, so every bin holds at least one lattice point and the
+   !! pattern resolves everything the box can represent.  A finer step is
+   !! allowed and shows the individual lattice points instead.
+   subroutine sf_configure_xrd(self, frame, ierr, message)
+      class(structure_factor_t), intent(inout) :: self
+      type(frame_t), intent(in) :: frame
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk) :: widths(3), bound, span, theta_max, tth
+      integer :: i, b
+
+      ierr = 0
+      message = ''
+      if (.not. self%xrd_enabled) return
+
+      if (self%xrd_step <= 0.0_rk) then
+         widths = frame%cell%widths()
+         bound = huge(1.0_rk)
+         do i = 1, 3
+            if (frame%pbc(i)) bound = min(bound, widths(i))
+         end do
+         if (bound >= huge(1.0_rk)) then
+            ! No periodic direction: take the extent of the configuration.
+            do i = 1, 3
+               span = maxval(frame%pos(i, :)) - minval(frame%pos(i, :))
+               if (span > 0.0_rk) bound = min(bound, span)
+            end do
+         end if
+         if (bound <= 0.0_rk .or. bound >= huge(1.0_rk)) then
+            ierr = 1
+            message = 'cannot derive the XRD bin width from a degenerate box; pass --xrd-step'
+            return
+         end if
+         theta_max = 0.5_rk*deg2rad*self%xrd_2theta_max
+         self%xrd_step = (self%xrd_lambda/(bound*cos(theta_max)))/deg2rad
+      end if
+
+      self%xrd_bins = max(1, ceiling((self%xrd_2theta_max - self%xrd_2theta_min)/self%xrd_step))
+      ! Tile the requested range exactly with that many bins.
+      self%xrd_step = (self%xrd_2theta_max - self%xrd_2theta_min)/real(self%xrd_bins, rk)
+
+      allocate (self%xrd_bin(self%nmodes), self%xrd_weight(self%nmodes), &
+                self%xrd_num(self%xrd_bins), self%xrd_count(self%xrd_bins))
+      self%xrd_num = 0.0_rk
+      self%xrd_count = 0
+      do i = 1, int(self%nmodes)
+         tth = two_theta_deg(self%qlen(i), self%xrd_lambda)
+         b = int((tth - self%xrd_2theta_min)/self%xrd_step) + 1
+         b = min(max(b, 1), self%xrd_bins)
+         self%xrd_bin(i) = b
+         self%xrd_count(b) = self%xrd_count(b) + 1
+         self%xrd_weight(i) = 1.0_rk
+         if (self%xrd_lp) self%xrd_weight(i) = lorentz_polarization(tth)
+      end do
+   end subroutine sf_configure_xrd
+
+   !> Two-theta [deg] of the momentum transfer q at wavelength lambda.
+   pure real(rk) function two_theta_deg(q, lambda) result(tth)
+      real(rk), intent(in) :: q, lambda
+      real(rk) :: sin_theta
+
+      sin_theta = q*lambda/(4.0_rk*pi)
+      sin_theta = max(-1.0_rk, min(1.0_rk, sin_theta))
+      tth = 2.0_rk*asin(sin_theta)*180.0_rk/pi
+   end function two_theta_deg
+
+   !> Lorentz-polarization factor of a powder pattern, two-theta in degrees.
+   pure real(rk) function lorentz_polarization(tth_deg) result(lp)
+      real(rk), intent(in) :: tth_deg
+      real(rk) :: tth, theta
+
+      tth = tth_deg*deg2rad
+      theta = 0.5_rk*tth
+      lp = (1.0_rk + cos(tth)**2)/(sin(theta)**2*cos(theta))
+   end function lorentz_polarization
+
+   !> Number of two-theta bins that hold no reciprocal lattice point.
+   pure integer(lk) function sf_xrd_empty_bins(self) result(n)
+      class(structure_factor_t), intent(in) :: self
+      integer :: b
+
+      n = 0
+      if (.not. allocated(self%xrd_count)) return
+      do b = 1, size(self%xrd_count)
+         if (self%xrd_count(b) == 0) n = n + 1
+      end do
+   end function sf_xrd_empty_bins
+
+   !> Write the powder XRD pattern: two-theta [deg] and I(2theta).
+   !!
+   !! `xrd_num` accumulates the intensity of every frame; the table is the
+   !! trajectory average per atom, so it is comparable with the histogram
+   !! `compute xrd` produces (LAMMPS divides the same sum by N).
+   subroutine sf_write_xrd(self, unit, ierr, message)
+      class(structure_factor_t), intent(in) :: self
+      integer, intent(in) :: unit
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk) :: frames, tth, value
+      integer :: b
+
+      ierr = 0
+      message = ''
+      if (.not. self%xrd_enabled) return
+      if (unit == no_unit) return
+
+      frames = real(max(self%nframes, 1_lk), rk)
+      if (self%nframes == 1) then
+         write (unit, '(a,f0.6,a,f0.4,a,f0.4,a,f0.5,a,i0,a)') '# xrd: lambda ', &
+            self%xrd_lambda, ' A, 2theta ', self%xrd_2theta_min, ' to ', &
+            self%xrd_2theta_max, ' deg, step ', self%xrd_step, ' deg, ', self%xrd_bins, &
+            ' bins, 1 frame'
+      else
+         write (unit, '(a,f0.6,a,f0.4,a,f0.4,a,f0.5,a,i0,a,i0,a)') '# xrd: lambda ', &
+            self%xrd_lambda, ' A, 2theta ', self%xrd_2theta_min, ' to ', &
+            self%xrd_2theta_max, ' deg, step ', self%xrd_step, ' deg, ', self%xrd_bins, &
+            ' bins, ', self%nframes, ' frames'
+      end if
+      if (self%xrd_lp) then
+         write (unit, '(a)') '# I(2theta) = sum over the reciprocal lattice points in each '// &
+            'bin of |rho(q)|^2 times the Lorentz-polarization factor, per atom'
+      else
+         write (unit, '(a)') '# I(2theta) = sum over the reciprocal lattice points in each '// &
+            'bin of |rho(q)|^2, without the Lorentz-polarization factor, per atom'
+      end if
+      write (unit, '(a)') '# 2theta[deg] I'
+      do b = 1, self%xrd_bins
+         tth = self%xrd_2theta_min + (real(b, rk) - 0.5_rk)*self%xrd_step
+         value = 0.0_rk
+         if (self%natoms > 0) value = self%xrd_num(b)/(frames*real(self%natoms, rk))
+         write (unit, '(f12.4,2x,es20.12)') tth, value
+      end do
+   end subroutine sf_write_xrd
+
+   ! ---------------------------------------------------------------------
    ! NUFFT method
    ! ---------------------------------------------------------------------
 
@@ -814,7 +998,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: s(3), amp, value
-      real(rk) :: dummy(1), pi
+      real(rk) :: dummy(1)
       integer(c_int) :: ier
       integer :: i, im, isp, sh
       integer(lk) :: g
@@ -822,7 +1006,6 @@ contains
       ierr = 0
       message = ''
       dummy = 0.0_rk
-      pi = acos(-1.0_rk)
 
       ! Scaled coordinates in [-pi, pi) for the type-1 transform.
       do i = 1, frame%natoms

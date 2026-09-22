@@ -12,6 +12,8 @@ writes the total structure factor $S(q)$ plus one partial column per LAMMPS
 type pair as a `# q S(q)` table.  Two independent routes are available: a
 reciprocal space non-uniform FFT (FINUFFT on the CPU, cufinufft/cuFFT on a GPU)
 and a real space Debye pair histogram, which can also write $g(r)$.
+With `--xrd FILE` it writes a powder diffraction pattern instead of, or next
+to, the $S(q)$ table, in the convention of LAMMPS's `compute xrd`.
 
 With `--dyn` it instead keeps the time axis, and `--dyn-q` chooses the
 reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
@@ -105,6 +107,16 @@ and `--dr` instead of the box sets the usable q range.
 * Report partials with `-fz` (Faber-Ziman) in preference to the default OVITO
   columns: they tend to 1 for every pair, so they do not hide the structure
   behind the concentrations and compare directly between systems.
+* `--xrd FILE` needs `--xrd-lambda` and takes its q range from `--xrd-range`
+  [deg], so it cannot be combined with `--qmin`/`--qmax` (only `--nq`, which
+  shapes the $S(q)$ table, still applies).  The intensity is per atom and the
+  Lorentz-polarization factor is on unless `--no-lp` is given, so the numbers
+  are comparable with the histogram of `compute xrd`.  Without `--xrd-step`
+  the bin width comes from the box - that is the resolution the box can give,
+  and a finer step shows the individual reciprocal lattice points instead of a
+  smooth line.  `--method debye` is refused: its pattern is the orientation
+  average, which carries no multiplicity and would need the density of states
+  to be comparable.
 * `--s4` and `--chi4` are total overlap quantities and use unit weights, so
   `-w`/`--norm` and `--partials` do not change them.  They need a physically
   meaningful `--s4-cutoff` (a fraction of the particle diameter), and the

@@ -35,6 +35,10 @@ module sqc_options
 
    character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
 
+   !> pi and the degree to radian conversion (the XRD options are in degrees).
+   real(rk), parameter :: pi = 3.14159265358979323846_rk
+   real(rk), parameter :: deg2rad = pi/180.0_rk
+
    !> Everything configurable from the command line.
    type :: options_t
       character(len=:), allocatable :: input
@@ -69,10 +73,29 @@ module sqc_options
       integer :: nq = 500
       real(rk) :: qmin = 0.0_rk
       real(rk) :: qmax = 20.0_rk
+      !> True when the user set the q sampling himself (the XRD output owns it).
+      logical :: qmin_given = .false.
+      logical :: qmax_given = .false.
+      logical :: nq_given = .false.
       real(rk) :: eps = 1.0e-9_rk
       logical :: want_grid = .false.
       integer :: grid_format = grid_format_text
       logical :: grid_format_given = .false.
+      !> Powder XRD output (--xrd FILE) and the settings it needs: the
+      !! wavelength [dump length unit], the two-theta range [deg], the bin
+      !! width [deg, 0 = derive from the box] and the LP/weight switches.
+      character(len=:), allocatable :: xrd_output
+      real(rk) :: xrd_lambda = 0.0_rk
+      logical :: xrd_lambda_given = .false.
+      real(rk) :: xrd_2theta_min = 1.0_rk
+      real(rk) :: xrd_2theta_max = 179.0_rk
+      logical :: xrd_range_given = .false.
+      real(rk) :: xrd_step = 0.0_rk
+      logical :: xrd_step_given = .false.
+      integer :: xrd_format = grid_format_text
+      logical :: lp = .true.
+      !> True when -w was given; --xrd implies the x-ray weights otherwise.
+      logical :: weight_given = .false.
       logical :: quiet = .false.
       logical :: show_help = .false.
       logical :: show_version = .false.
@@ -132,7 +155,7 @@ contains
       type(options_t), intent(inout) :: self
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
-      character(len=256) :: arg, name, value, positional(4)
+      character(len=256) :: arg, name, value, value2, positional(4)
       integer :: i, nargs, npos, eq, kind
       logical :: has_inline, needs_value
 
@@ -185,6 +208,12 @@ contains
             case ('--no-cutoff-correction')
                self%no_cutoff_correction = .true.
                needs_value = .false.
+            case ('--lp')
+               self%lp = .true.
+               needs_value = .false.
+            case ('--no-lp')
+               self%lp = .false.
+               needs_value = .false.
             case ('-fz', '--faber-ziman')
                self%faber_ziman = .true.
                self%partials = .true.
@@ -203,6 +232,7 @@ contains
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
                   '--device', '--gpu-id', '--precision', '--grid-format', &
+                  '--xrd', '--xrd-lambda', '--xrd-range', '--xrd-step', &
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--pair-entropy', '--s2-accum', &
                   '--dyn-q', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
@@ -216,6 +246,21 @@ contains
                   end if
                   i = i + 1
                   call get_command_argument(i, value)
+               end if
+               ! --xrd-range takes the two limits as separate arguments.
+               if (trim(name) == '--xrd-range') then
+                  if (has_inline) then
+                     ierr = 1
+                     message = '--xrd-range takes two values: MIN2TH MAX2TH'
+                     return
+                  end if
+                  if (i + 1 > nargs) then
+                     ierr = 1
+                     message = 'missing value for option '//trim(name)
+                     return
+                  end if
+                  i = i + 1
+                  call get_command_argument(i, value2)
                end if
             case default
                ierr = 1
@@ -238,6 +283,7 @@ contains
                      return
                   end if
                   self%scheme%kind = kind
+                  self%weight_given = .true.
                case ('-t', '--threads')
                   read (value, *, iostat=ierr) self%threads
                   if (ierr /= 0 .or. self%threads < 1) then
@@ -252,6 +298,7 @@ contains
                      message = '--qmin must be a non-negative number'
                      return
                   end if
+                  self%qmin_given = .true.
                case ('--qmax')
                   read (value, *, iostat=ierr) self%qmax
                   if (ierr /= 0 .or. self%qmax <= 0.0_rk) then
@@ -259,6 +306,7 @@ contains
                      message = '--qmax must be a positive number'
                      return
                   end if
+                  self%qmax_given = .true.
                case ('--nq')
                   read (value, *, iostat=ierr) self%nq
                   if (ierr /= 0 .or. self%nq < 1) then
@@ -266,6 +314,7 @@ contains
                      message = '--nq must be a positive integer'
                      return
                   end if
+                  self%nq_given = .true.
                case ('--eps')
                   read (value, *, iostat=ierr) self%eps
                   if (ierr /= 0 .or. self%eps <= 0.0_rk) then
@@ -466,6 +515,33 @@ contains
                      return
                   end select
                   self%grid_format_given = .true.
+               case ('--xrd')
+                  self%xrd_output = trim(value)
+               case ('--xrd-lambda')
+                  read (value, *, iostat=ierr) self%xrd_lambda
+                  if (ierr /= 0 .or. self%xrd_lambda <= 0.0_rk) then
+                     ierr = 1
+                     message = '--xrd-lambda must be a positive wavelength'
+                     return
+                  end if
+                  self%xrd_lambda_given = .true.
+               case ('--xrd-range')
+                  read (value, *, iostat=ierr) self%xrd_2theta_min
+                  if (ierr == 0) read (value2, *, iostat=ierr) self%xrd_2theta_max
+                  if (ierr /= 0) then
+                     ierr = 1
+                     message = '--xrd-range takes two numbers: MIN2TH MAX2TH in degrees'
+                     return
+                  end if
+                  self%xrd_range_given = .true.
+               case ('--xrd-step')
+                  read (value, *, iostat=ierr) self%xrd_step
+                  if (ierr /= 0 .or. self%xrd_step <= 0.0_rk) then
+                     ierr = 1
+                     message = '--xrd-step must be a positive number of degrees'
+                     return
+                  end if
+                  self%xrd_step_given = .true.
                end select
             end if
          else
@@ -501,6 +577,48 @@ contains
       if (self%qmax <= self%qmin) then
          ierr = 1
          message = 'qmax must be larger than qmin'
+         return
+      end if
+      ! --- powder XRD output ------------------------------------------------
+      if (allocated(self%xrd_output)) then
+         if (self%dynamic) then
+            ierr = 1
+            message = '--xrd is a static output; it cannot be combined with --dyn'
+            return
+         end if
+         if (self%method == method_debye) then
+            ierr = 1
+            message = '--method debye sums the orientation-averaged Debye intensity, which is a '// &
+               'different quantity from the reciprocal lattice sum --xrd reports (it carries '// &
+               'no multiplicity); use the default nufft method, or --method direct as its reference'
+            return
+         end if
+         if (.not. self%xrd_lambda_given) then
+            ierr = 1
+            message = '--xrd needs --xrd-lambda LAMBDA (the incident wavelength)'
+            return
+         end if
+         if (self%qmin_given .or. self%qmax_given) then
+            ierr = 1
+            message = '--xrd takes the q range from --xrd-lambda and --xrd-range; '// &
+               'do not pass --qmin or --qmax with it'
+            return
+         end if
+         if (self%xrd_2theta_min <= 0.0_rk .or. self%xrd_2theta_max >= 180.0_rk .or. &
+             self%xrd_2theta_max <= self%xrd_2theta_min) then
+            ierr = 1
+            message = '--xrd-range needs 0 < MIN2TH < MAX2TH < 180 degrees'
+            return
+         end if
+         ! A powder x-ray pattern unless the user picked a weighting scheme;
+         ! the neutron and unit schemes give legitimate patterns too.
+         if (.not. self%weight_given) self%scheme%kind = weight_xray
+         ! q = 4 pi sin(theta)/lambda at the two ends of the requested range.
+         self%qmin = 4.0_rk*pi*sin(0.5_rk*deg2rad*self%xrd_2theta_min)/self%xrd_lambda
+         self%qmax = 4.0_rk*pi*sin(0.5_rk*deg2rad*self%xrd_2theta_max)/self%xrd_lambda
+      else if (self%xrd_lambda_given .or. self%xrd_range_given .or. self%xrd_step_given) then
+         ierr = 1
+         message = '--xrd-lambda, --xrd-range and --xrd-step belong to --xrd FILE'
          return
       end if
       if (self%scheme%kind /= weight_unit .and. .not. self%scheme%has_mapping()) then
@@ -648,8 +766,10 @@ contains
          return
       end if
       if (npos == 0) then
-         ! Only a run without any q sampling can do without the S(q) table.
-         if (.not. (self%dynamic .and. self%dyn_q_mode == dyn_q_none)) then
+         ! Only a run that writes some other table can do without the S(q)
+         ! table: a dynamic run without a q sampling, or an XRD-only run.
+         if (.not. (self%dynamic .and. self%dyn_q_mode == dyn_q_none) .and. &
+             .not. allocated(self%xrd_output)) then
             ierr = 1
             message = 'missing output argument (use - for stdout)'
             return
@@ -667,6 +787,12 @@ contains
       if (self%want_grid .and. .not. self%grid_format_given) then
          if (ends_with(self%grid_output, '.h5') .or. ends_with(self%grid_output, '.hdf5')) then
             self%grid_format = grid_format_hdf5
+         end if
+      end if
+      ! The XRD table infers its format from the file name as well.
+      if (allocated(self%xrd_output)) then
+         if (ends_with(self%xrd_output, '.h5') .or. ends_with(self%xrd_output, '.hdf5')) then
+            self%xrd_format = grid_format_hdf5
          end if
       end if
       if (self%dyn_format_given) then
@@ -1018,6 +1144,15 @@ contains
       write (unit, '(a)') '      --nq N          number of q shells (default 500)'
       write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
       write (unit, '(a)') '      --grid-format NAME  text (default) or hdf5 (.h5/.hdf5 implies hdf5)'
+      write (unit, '(a)') '      --xrd FILE      also write a powder XRD pattern (.h5 = HDF5):'
+      write (unit, '(a)') '                      I(2theta) = sum over the reciprocal lattice points'
+      write (unit, '(a)') '                      in each bin of |rho(q)|^2 LP(2theta), per atom'
+      write (unit, '(a)') '      --xrd-lambda VALUE  incident wavelength [dump length unit]'
+      write (unit, '(a)') '      --xrd-range MIN MAX two-theta range [deg] (default 1 179)'
+      write (unit, '(a)') '      --xrd-step VALUE    two-theta bin width [deg] (default: from'
+      write (unit, '(a)') '                      the box, so that no bin is empty)'
+      write (unit, '(a)') '      --lp, --no-lp   apply (default) or drop the Lorentz-polarization'
+      write (unit, '(a)') '                      factor of the XRD pattern'
       write (unit, '(a)') '      --method NAME   nufft (default) or direct'
       write (unit, '(a)') '                      debye: real space pair histograms'
       write (unit, '(a)') '      --rmax VALUE    Debye pair cutoff [A] (default: half the'

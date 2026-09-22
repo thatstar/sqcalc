@@ -83,6 +83,12 @@ LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 | `--qmin`, `--qmax`, `--nq` | $q$ range and number of shells (defaults 0, 20 1/A, 500)                                                                       |
 | `--grid FILE`                  | also write$S(q)$ on every reciprocal lattice point                                                                             |
 | `--grid-format NAME`           | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5                                                            |
+| `--xrd FILE`                   | also write a powder XRD pattern;`.h5`/`.hdf5` implies HDF5                                                              |
+| `--xrd-lambda VALUE`           | incident wavelength of`--xrd`, in the dump length unit                                                                    |
+| `--xrd-range MIN MAX`          | two-theta range of`--xrd` in degrees (default `1 179`)                                                                    |
+| `--xrd-step DEG`               | two-theta bin width in degrees (default: derived from the box)                                                            |
+| `--lp`                         | apply the Lorentz-polarization factor of`--xrd` (default)                                                                 |
+| `--no-lp`                      | drop the Lorentz-polarization factor of`--xrd`                                                                            |
 | `--method NAME`                | `nufft` (default), `direct` ($O(N \cdot N_{\text{modes}})$ reference) or `debye` (real space pair histograms, see below) |
 | `--device NAME`                | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`)                                                                    |
 | `--gpu-id N`                   | CUDA device to use when`--device gpu` (default 0)                                                                              |
@@ -529,6 +535,56 @@ A few limits are worth keeping in mind:
 - The lattice fixes which $q$ are measurable: set `--qmin` to the smallest reciprocal vector and keep the shell width `(qmax - qmin)/nq` comparable to the lattice spacing, or the table comes back with zero-filled shells the box can never fill. The skill's `scripts/choose_q.py` prints a safe set of options for a given dump.
 
 - Atoms of a type missing from `-m` under `-w neutron`/`xray`, or with an element that has no tabulated data, are rejected with a clear message.
+
+### Powder XRD pattern
+
+`--xrd FILE` adds a powder diffraction pattern in the convention of LAMMPS's
+`compute xrd`:
+
+$$
+I(2\theta_b) = \frac{1}{N\,n_{\text{frames}}}
+\sum_{q \in b} \lvert \rho(q) \rvert^{2} \, \mathrm{LP}(2\theta_q)
+$$
+
+The sum runs over the reciprocal lattice vectors $q$ of the box that fall into
+the two-theta bin $b$ and $\rho(q)$ is the amplitude of the chosen weighting
+(so the same form factors as the $S(q)$ table).  The Lorentz-polarization
+factor is
+
+$$
+\mathrm{LP}(2\theta) = \frac{1 + \cos^2 2\theta}{\sin^2\theta \cos\theta},
+$$
+
+which `--no-lp` drops.  The wavelength fixes the $q$ window through
+
+$$
+q = \frac{4\pi \sin\theta}{\lambda},
+$$
+
+so `--xrd-lambda` and `--xrd-range` replace `--qmin` and `--qmax` for such a
+run, and `--xrd` implies `-w xray` when no `-w` was given; `-w neutron` and
+`-w unit` are accepted as well (the latter is a structure-only pattern).  The
+intensity is per atom and per frame, so it is directly comparable with the
+histogram `compute xrd` produces.  The self term is included, and the pattern
+is the average over the trajectory of the intensity of each frame.
+
+Bins are uniform in two-theta.  Without `--xrd-step` the width comes from the
+box: the reciprocal lattice spacing $2\pi/L$ maps to
+$\lambda/(L\cos\theta)$ in two-theta, which is the width a box of size $L$ can
+give, so the default puts every line of the model into a single bin.  A finer
+step is allowed and then shows the individual reciprocal lattice points of the
+box (the run reports how many bins hold none), and a coarser step merges
+neighbouring lines.  The lines are as sharp as the box permits: that is the
+size broadening of the periodic model, not an instrument profile.
+
+`--method debye` evaluates a different quantity - the orientation average
+$\sum_{ij} f_i f_j \sin(Q r_{ij})/(Q r_{ij})$, which carries no multiplicity -
+so `--xrd` refuses that combination instead of mixing the two conventions.
+
+The table is text (`# 2theta[deg] I`, with the wavelength, range, step and the
+LP switch in the comment lines above it) or HDF5 when the name ends in
+`.h5`/`.hdf5` (`/xrd/two_theta`, `/xrd/I`, `/xrd/count`, with the settings as
+file attributes).
 
 ## License
 

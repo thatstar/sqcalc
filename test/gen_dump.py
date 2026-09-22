@@ -40,6 +40,20 @@ def lattice(natoms, length, rng, jitter):
     return pos
 
 
+def fcc(natoms, length, rng, jitter):
+    """Face centred cubic crystal: 4 * side^3 atoms, a = length / side."""
+    side = int(round((natoms / 4.0) ** (1.0 / 3.0)))
+    if 4 * side ** 3 != natoms:
+        raise SystemExit("--mode fcc needs 4 * side^3 atoms")
+    basis = np.array([[0.0, 0.0, 0.0], [0.0, 0.5, 0.5], [0.5, 0.0, 0.5], [0.5, 0.5, 0.0]])
+    cells = np.array([[i, j, k] for i in range(side) for j in range(side)
+                      for k in range(side)], dtype=float)
+    pos = (cells[:, None, :] + basis[None, :, :]).reshape(-1, 3) * (length / side)
+    if jitter > 0:
+        pos = pos + (rng.random(pos.shape) - 0.5) * jitter
+    return pos
+
+
 def ballistic(natoms, length, rng, nframes, temperature):
     """Free particles with Maxwell-Boltzmann velocities: an ideal gas in the
     ballistic regime.  The ensemble averaged coherent F(q,t) is
@@ -119,7 +133,7 @@ def main():
     parser.add_argument("--frames", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--mode",
-                        choices=["random", "lattice", "ballistic", "diffusive"],
+                        choices=["random", "lattice", "fcc", "ballistic", "diffusive"],
                         default="random")
     parser.add_argument("--fractions", default="0.5,0.5")
     parser.add_argument("--jitter", type=float, default=0.0)
@@ -149,6 +163,8 @@ def main():
         for _ in range(args.frames):
             if args.mode == "lattice":
                 frames.append(lattice(args.natoms, args.length, rng, args.jitter))
+            elif args.mode == "fcc":
+                frames.append(fcc(args.natoms, args.length, rng, args.jitter))
             else:
                 frames.append(ideal_gas(args.natoms, args.length, rng))
     write_dump(args.output, frames, types, args.length, args.tilt, args.columns,

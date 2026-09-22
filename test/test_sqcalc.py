@@ -667,7 +667,146 @@ def main():
     print("  ok   %-42s S(q) = S(a-a) = N = %.6g"
           % ("Bragg shell, 32768 atoms", peak))
 
-    # --- 9d. q sampling helper --------------------------------------------
+    # --- 9d. powder XRD pattern -------------------------------------------
+    # LAMMPS's own example geometry: fcc Ni, a = 3.52 A, 20x20x20 cells, Cu
+    # Kalpha.  The wavelength, range and bin width are the ones of
+    # examples/PACKAGES/diffraction, so the pattern can be compared with the
+    # reference histogram LAMMPS ships.  The intensity is per atom, as theirs
+    # is (they divide the same sum by N), which is what makes the numbers
+    # comparable at all.
+    print("powder XRD pattern")
+    ni = generate("xrd_ni.dump", natoms=32000, length=70.4, frames=1, mode="fcc",
+                  fractions=1.0, seed=3)
+    ni_opts = ["--xrd-lambda", "1.541838", "--xrd-range", "40", "80"]
+    run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.xrd"),
+         *ni_opts, "--xrd-step", "0.2"])
+    xrd = read_matrix(path("ni.xrd"))
+    if xrd.shape != (200, 2):
+        raise SystemExit("FAIL xrd: got a %s table for 40-80 deg at 0.2 deg"
+                         % (xrd.shape,))
+    with open(path("ni.xrd")) as handle:
+        header = [handle.readline() for _ in range(3)]
+    if not all(line.startswith("#") for line in header) or "lambda" not in header[0]:
+        raise SystemExit("FAIL xrd: the header does not describe the run")
+    if "Lorentz-polarization" not in header[1]:
+        raise SystemExit("FAIL xrd: the header does not mention the LP factor")
+
+    # IT92 form factor of Ni, the row src/sqc_element_data.f90 carries.
+    ni_a = [12.8376, 7.2920, 4.4438, 2.3800]
+    ni_b = [3.8785, 0.2565, 12.1763, 66.3421]
+    ni_c = 1.0341
+
+    def form_factor(q):
+        return ni_c + sum(ai*np.exp(-bi*(q/(4.0*np.pi))**2)
+                          for ai, bi in zip(ni_a, ni_b))
+
+    def lorentz_polarization(tth):
+        theta = np.radians(tth)/2.0
+        return ((1.0 + np.cos(np.radians(tth))**2)/(np.sin(theta)**2*np.cos(theta)))
+
+    # fcc Ni: all-even or all-odd hkl, with the multiplicity of the cubic
+    # lattice, so the relative intensities are m |F|^2 LP.
+    lines = [("111", 1, 1, 1, 8), ("200", 2, 0, 0, 6), ("220", 2, 2, 0, 12)]
+    expect = []
+    for label, h, k, l, mult in lines:
+        q = np.sqrt(h*h + k*k + l*l)*2.0*np.pi/3.52
+        tth = 2.0*np.degrees(np.arcsin(q*1.541838/(4.0*np.pi)))
+        expect.append((label, tth, mult*form_factor(q)**2*lorentz_polarization(tth)))
+    peak = float(xrd[:, 1].max())
+    ratios = []
+    for label, tth, want in expect:
+        j = int(np.argmin(np.abs(xrd[:, 0] - tth)))
+        if abs(xrd[j, 0] - tth) > 0.15:
+            raise SystemExit("FAIL xrd: no bin near %.2f deg for Ni(%s)" % (tth, label))
+        got = xrd[j, 1]/peak
+        rel = want/expect[0][2]
+        ratios.append(got)
+        if abs(got - rel) > 0.01*rel:
+            raise SystemExit("FAIL xrd: Ni(%s) at %.2f deg is %.4f of the peak, "
+                             "m|F|^2 LP predicts %.4f" % (label, tth, got, rel))
+    # a perfect lattice puts every line in one bin and leaves the rest empty
+    fourth = float(np.sort(xrd[:, 1])[-4])
+    if fourth > 1.0e-6*peak:
+        raise SystemExit("FAIL xrd: a fourth line holds %.3e of the peak" % (fourth/peak))
+    print("  ok   %-42s 1 : %.4f : %.4f" % ("fcc Ni, Cu Ka, 40-80 deg",
+                                            ratios[1], ratios[2]))
+
+    # Unit weights remove the form factor, so the bins are multiplicity times
+    # LP alone - a second, independent check of the binning, and of the bin
+    # width the box derives when --xrd-step is left out.
+    sc = generate("xrd_sc.dump", natoms=64, length=8.0, frames=2, mode="lattice",
+                  fractions=1.0, seed=3)
+    run([exe, "-i", sc, "-w", "unit", "--method", "direct", "--xrd", path("sc.xrd"),
+         "--xrd-lambda", "1.5418", "--xrd-range", "40", "100"])
+    cubic = read_matrix(path("sc.xrd"))
+    if cubic.shape != (4, 2):
+        raise SystemExit("FAIL xrd (unit weights): %s table, expected 4 bins"
+                         % (cubic.shape,))
+    for index, (m, mult) in enumerate(((1, 6), (2, 12), (3, 8))):
+        tth = 2.0*np.degrees(np.arcsin(np.pi*np.sqrt(m)*1.5418/(4.0*np.pi)))
+        want = 64.0*mult*lorentz_polarization(tth)
+        got = cubic[index, 1]
+        if abs(got - want) > 0.01*want:
+            raise SystemExit("FAIL xrd (unit weights): bin %d is %.6g, "
+                             "multiplicity x LP predicts %.6g" % (m, got, want))
+    if cubic[3, 1] > 1.0e-6*cubic[0, 1]:
+        raise SystemExit("FAIL xrd (unit weights): the empty bin holds %.3e"
+                         % cubic[3, 1])
+    print("  ok   %-42s cubic 100/110/111 in 4 box sized bins"
+          % "unit weights, direct method")
+
+    # --no-lp drops exactly the Lorentz-polarization factor.
+    run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--no-lp", "--xrd", path("ni_nolp.xrd"),
+         *ni_opts, "--xrd-step", "0.2"])
+    with open(path("ni_nolp.xrd")) as handle:
+        handle.readline()
+        if "without the Lorentz-polarization factor" not in handle.readline():
+            raise SystemExit("FAIL xrd: --no-lp is not reported in the header")
+    plain = read_matrix(path("ni_nolp.xrd"))
+    for label, tth, _ in expect:
+        j = int(np.argmin(np.abs(xrd[:, 0] - tth)))
+        ratio = xrd[j, 1]/plain[j, 1]
+        want = lorentz_polarization(tth)
+        if abs(ratio - want) > 0.01*want:
+            raise SystemExit("FAIL xrd: --no-lp ratio of Ni(%s) is %.4f, LP is %.4f"
+                             % (label, ratio, want))
+    print("  ok   %-42s LP within 1 per cent" % "--no-lp drops the LP factor")
+
+    if args.h5read:
+        run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.h5"),
+             *ni_opts, "--xrd-step", "0.2"])
+        with open(path("ni_from_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("ni.h5"), "xrd"]).stdout)
+        h5_xrd = read_matrix(path("ni_from_h5.txt"))
+        if h5_xrd.shape != xrd.shape:
+            raise SystemExit("FAIL hdf5 xrd shape %s vs text %s"
+                             % (h5_xrd.shape, xrd.shape))
+        worst = float(np.max(np.abs(h5_xrd - xrd)/np.maximum(np.abs(xrd), 1.0)))
+        if worst > 1.0e-12:
+            raise SystemExit("FAIL hdf5 vs text xrd: %.3e" % worst)
+        print("  ok   %-42s max deviation %.2e" % ("HDF5 vs text XRD table", worst))
+
+    # The combinations that cannot mean anything have to be refused.
+    def expect_error(argv, needle):
+        result = subprocess.run(argv, capture_output=True, text=True)
+        tail = " ".join(argv[len(base):])
+        if result.returncode == 0:
+            raise SystemExit("FAIL xrd: %s was accepted" % tail)
+        if needle not in result.stdout + result.stderr:
+            raise SystemExit("FAIL xrd: %s did not report %r" % (tail, needle))
+
+    base = [exe, "-i", ni, "-m", "1:Ni", "-w", "xray"]
+    expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
+                         "--method", "debye"], "--method debye sums")
+    expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
+                         "--qmin", "2"], "--qmin")
+    expect_error(base + ["--xrd", path("bad.xrd")], "--xrd-lambda")
+    expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
+                         "--xrd-range", "0", "80"], "MIN2TH")
+    expect_error(base + ["--xrd-step", "0.1", path("bad.xrd")], "belong to --xrd")
+    print("  ok   %-42s 5 refusals" % "debye, qmin, lambda, range, stray flags")
+
+    # --- 9e. q sampling helper --------------------------------------------
     # The skill ships choose_q.py, which reads the box and returns a sampling
     # with no empty shell; a shell the box cannot fill is written as 0.
     helper = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts",

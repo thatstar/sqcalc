@@ -34,7 +34,7 @@ module sqc_hdf5
    private
 
    public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics, &
-             hdf5_write_chi4, hdf5_write_fqt_self, hdf5_write_pair_entropy
+             hdf5_write_chi4, hdf5_write_fqt_self, hdf5_write_pair_entropy, hdf5_write_xrd
 
    !> HDF5 was compiled into this binary.
    logical, parameter :: hdf5_support = .true.
@@ -823,6 +823,100 @@ contains
       call h5close_f(hdferr)
       deallocate (one_d, label_buf)
    end subroutine hdf5_write_rdf
+
+   !> Powder XRD pattern: /xrd/two_theta [deg], /xrd/I and /xrd/count.
+   !!
+   !! I is the trajectory average per atom, so it is directly comparable with
+   !! the histogram `compute xrd` produces (LAMMPS divides the same sum by N).
+   !! The conventions of the run (wavelength, range, step, LP) are written as
+   !! attributes of the file.
+   subroutine hdf5_write_xrd(path, method, ierr, message)
+      character(len=*), intent(in) :: path
+      class(structure_factor_t), intent(in) :: method
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id
+      integer(hsize_t) :: dims(1)
+      integer :: hdferr, b, idum
+      integer(lk) :: nbins
+      real(real64), allocatable :: tth(:), inten(:)
+      integer(int64), allocatable :: cnt(:)
+      real(rk) :: frames, scale
+      character(len=4) :: lp_text
+
+      ierr = 0
+      message = ''
+      if (.not. method%xrd_enabled) return
+
+      call h5open_f(hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5 library initialisation failed'
+         return
+      end if
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'cannot create HDF5 file "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+
+      ! --- what the pattern means -------------------------------------------
+      call write_real_attr(file_id, 'lambda', real(method%xrd_lambda, real64), ierr, message)
+      if (ierr /= 0) return
+      call write_real_attr(file_id, 'two_theta_min', real(method%xrd_2theta_min, real64), &
+                           ierr, message)
+      if (ierr /= 0) return
+      call write_real_attr(file_id, 'two_theta_max', real(method%xrd_2theta_max, real64), &
+                           ierr, message)
+      if (ierr /= 0) return
+      call write_real_attr(file_id, 'step', real(method%xrd_step, real64), ierr, message)
+      if (ierr /= 0) return
+      call write_int_attr(file_id, 'bins', int(method%xrd_bins, int64), ierr, message)
+      if (ierr /= 0) return
+      call write_int_attr(file_id, 'nframes', int(method%nframes, int64), ierr, message)
+      if (ierr /= 0) return
+      call write_int_attr(file_id, 'natoms', int(method%natoms, int64), ierr, message)
+      if (ierr /= 0) return
+      lp_text = 'off'
+      if (method%xrd_lp) lp_text = 'on'
+      call write_string_attr(file_id, 'lorentz_polarization', trim(lp_text), ierr, message)
+      if (ierr /= 0) return
+      call write_string_attr(file_id, 'intensity', 'sum of |rho(q)|^2 over the reciprocal '// &
+         'lattice points of the bin, per atom and per frame', ierr, message)
+      if (ierr /= 0) return
+
+      ! --- the table --------------------------------------------------------
+      call h5gcreate_f(file_id, 'xrd', group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /xrd group'
+         call h5fclose_f(file_id, idum)
+         return
+      end if
+      nbins = int(method%xrd_bins, lk)
+      allocate (tth(nbins), inten(nbins), cnt(nbins))
+      frames = real(max(method%nframes, 1_lk), rk)
+      scale = frames*real(max(method%natoms, 1_ik), rk)
+      do b = 1, int(nbins)
+         tth(b) = real(method%xrd_2theta_min + (real(b, rk) - 0.5_rk)*method%xrd_step, real64)
+         inten(b) = real(method%xrd_num(b)/scale, real64)
+         cnt(b) = int(method%xrd_count(b), int64)
+      end do
+      dims = [int(nbins, hsize_t)]
+      call write_dataset_f(group_id, 'two_theta', H5T_NATIVE_DOUBLE, dims, tth, ierr, message)
+      if (ierr /= 0) return
+      call write_dataset_f(group_id, 'I', H5T_NATIVE_DOUBLE, dims, inten, ierr, message)
+      if (ierr /= 0) return
+      call write_dataset_i8_f(group_id, 'count', dims, cnt, ierr, message)
+      if (ierr /= 0) return
+
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (tth, inten, cnt)
+   end subroutine hdf5_write_xrd
 
    !> Pair entropy S2 and its r-accumulation curve.
    subroutine hdf5_write_pair_entropy(path, r, s2_partial, total, s2_curve, s2_total_curve, &

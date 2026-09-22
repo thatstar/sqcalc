@@ -20,7 +20,7 @@ program sqcalc
    use sqc_gpu, only: cufinufft_structure_factor_t
 #endif
 #ifdef SQC_HAVE_HDF5
-   use sqc_hdf5, only: hdf5_write_results
+   use sqc_hdf5, only: hdf5_write_results, hdf5_write_xrd
 #endif
    use, intrinsic :: iso_fortran_env, only: error_unit, output_unit
    use omp_lib, only: omp_set_num_threads, omp_get_max_threads
@@ -31,7 +31,7 @@ program sqcalc
    class(structure_factor_t), allocatable :: method
    type(frame_t) :: frame
    character(len=512) :: message, accum
-   integer :: ierr, shell_unit, grid_unit, tick, tick_rate, progress_step
+   integer :: ierr, shell_unit, grid_unit, xrd_unit, tick, tick_rate, progress_step
    integer(ik) :: natoms, step
    real(rk) :: ref_a(3, 3), elapsed, wall0, wall1, eps_used
    logical :: first_frame
@@ -182,6 +182,12 @@ program sqcalc
    method%want_grid = opts%want_grid
    method%partials = opts%partials
    method%faber_ziman = opts%faber_ziman
+   method%xrd_enabled = allocated(opts%xrd_output)
+   method%xrd_lambda = opts%xrd_lambda
+   method%xrd_2theta_min = opts%xrd_2theta_min
+   method%xrd_2theta_max = opts%xrd_2theta_max
+   method%xrd_step = opts%xrd_step
+   method%xrd_lp = opts%lp
 
    call method%configure(frame, opts%scheme, ierr, message)
    if (ierr /= 0) then
@@ -275,6 +281,11 @@ program sqcalc
          'configure with -DSQC_ENABLE_HDF5=ON or use --grid-format text'
       stop 17
    end if
+   if (allocated(opts%xrd_output) .and. opts%xrd_format == grid_format_hdf5) then
+      write (error_unit, '(a)') 'sqcalc: this build has no HDF5 support; '// &
+         'configure with -DSQC_ENABLE_HDF5=ON or name the XRD file .txt'
+      stop 17
+   end if
 #endif
    if (opts%method == method_debye .and. allocated(opts%rdf_output)) then
       select type (method)
@@ -353,6 +364,29 @@ program sqcalc
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
       stop 13
    end if
+   ! --- powder XRD pattern -----------------------------------------------
+   xrd_unit = no_unit
+   if (allocated(opts%xrd_output) .and. opts%xrd_format /= grid_format_hdf5) then
+      call open_output(opts%xrd_output, xrd_unit, ierr, message)
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 21
+      end if
+   end if
+   call method%write_xrd(xrd_unit, ierr, message)
+   if (ierr /= 0) then
+      write (error_unit, '(a)') 'sqcalc: '//trim(message)
+      stop 21
+   end if
+#ifdef SQC_HAVE_HDF5
+   if (allocated(opts%xrd_output) .and. opts%xrd_format == grid_format_hdf5) then
+      call hdf5_write_xrd(opts%xrd_output, method, ierr, message)
+      if (ierr /= 0) then
+         write (error_unit, '(a)') 'sqcalc: '//trim(message)
+         stop 21
+      end if
+   end if
+#endif
    if (opts%method == method_dynamic) then
       select type (method)
       type is (dynamics_structure_factor_t)
@@ -410,6 +444,7 @@ program sqcalc
    end if
    if (shell_unit /= no_unit .and. shell_unit /= output_unit) close (shell_unit)
    if (grid_unit /= no_unit .and. grid_unit /= output_unit) close (grid_unit)
+   if (xrd_unit /= no_unit .and. xrd_unit /= output_unit) close (xrd_unit)
 
    if (.not. opts%quiet) then
       if (opts%method == method_dynamic) then
@@ -578,6 +613,13 @@ contains
          write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
          write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q range    : ', m%nmodes, &
             ' modes in [', m%qmin, ', ', m%qmax, '] 1/A'
+         if (m%xrd_enabled) then
+            write (error_unit, '(a,f0.6,a,f0.4,a,f0.4,a,f0.5,a)') '  xrd        : lambda ', &
+               m%xrd_lambda, ' A, 2theta ', m%xrd_2theta_min, '-', m%xrd_2theta_max, &
+               ' deg, step ', m%xrd_step, ' deg'
+            write (error_unit, '(a,i0,a,i0,a)') '  xrd bins   : ', m%xrd_bins, &
+               ' bins, ', sf_xrd_empty_bins(m), ' without a reciprocal lattice point'
+         end if
       end select
    end subroutine report_grid
 

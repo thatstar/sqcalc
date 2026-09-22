@@ -9,6 +9,7 @@
 !! without depending on python HDF5 bindings:
 !!   h5read file.h5 grid     -> "# qx qy qz S(q)" table
 !!   h5read file.h5 shell    -> "# q S(q)" table
+!!   h5read file.h5 xrd      -> "# 2theta[deg] I" table
 !!   h5read file.h5 partials -> "# q Si-Si Si-O ..." table
 !!   h5read file.h5 rdf      -> "# r g(r) Si-Si Si-O ..." table
 !!   h5read file.h5 s4       -> "# qx qy qz tau S4(q,t)" table
@@ -38,7 +39,8 @@ program h5read
    call get_command_argument(3, subject)
    if (len_trim(path) == 0 .or. len_trim(which) == 0) then
       write (error_unit, '(a)') 'usage: h5read FILE '// &
-         '(grid|shell|partials|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|count GROUP|attr NAME)'
+         '(grid|shell|partials|xrd|rdf|sqw|fqt|fqt_self|s4|chi4|pair_entropy|s2_accum|'// &
+         'count GROUP|attr NAME)'
       stop 1
    end if
    call h5open_f(hdferr)
@@ -67,6 +69,16 @@ program h5read
       write (output_unit, '(a)') '# qx qy qz S(q)'
       do i = 1, n
          write (output_unit, '(3(f14.8,2x),es20.12)') qx(i), qy(i), qz(i), s(i)
+      end do
+      call h5gclose_f(group_id, hdferr)
+   case ('xrd')
+      ! powder XRD pattern of the static methods
+      call h5gopen_f(file_id, 'xrd', group_id, hdferr)
+      call read_real_1d(group_id, 'two_theta', q, n)
+      call read_real_1d(group_id, 'I', s, n)
+      write (output_unit, '(a)') '# 2theta[deg] I'
+      do i = 1, n
+         write (output_unit, '(f12.4,2x,es20.12)') q(i), s(i)
       end do
       call h5gclose_f(group_id, hdferr)
    case ('partials')
