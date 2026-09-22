@@ -610,7 +610,62 @@ def main():
         raise SystemExit("FAIL unmapped partial g(r) columns: %s"
                          % " ".join(rdf_header))
 
-    # --- 9c. q sampling helper --------------------------------------------
+    # --- 9c. partials are accumulated exactly ------------------------------
+    # The partial sums are real numbers; they used to be accumulated in an
+    # integer array, which truncated every shell sum to a whole number and
+    # overflowed int32 once a shell held sharp Bragg peaks (|rho|^2 ~ N^2 per
+    # mode, so a few 1e4 atoms already exceed 2^31).  Both effects show up
+    # against quantities that are exact without a reference: for one species
+    # S(q) and S(a-a) are the same number, and a commensurate lattice has
+    # S(q) = N in a shell that holds only the Bragg family.
+    print("partials are accumulated exactly")
+    gas1 = generate("part_gas1.dump", natoms=400, length=20, frames=3, seed=5,
+                    fractions=1.0)
+    run([exe, "-i", gas1, "-w", "unit", "--norm", "n", "--qmax", "6",
+         "--nq", "60", path("part_gas1.dat")])
+    one = read_matrix(path("part_gas1.dat"))
+    if one.shape[1] != 3:
+        raise SystemExit("FAIL partial accumulator: %d columns, expected 3"
+                         % one.shape[1])
+    worst = float(np.max(np.abs(one[:, 1] - one[:, 2])
+                         / np.maximum(np.abs(one[:, 1]), 1.0)))
+    if worst > 1.0e-6:
+        raise SystemExit("FAIL partial accumulator: S(q) and S(a-a) differ by "
+                         "%.3e for a single species (truncated?)" % worst)
+    print("  ok   %-42s max deviation %.1e"
+          % ("single species S(q) = S(a-a)", worst))
+
+    # The cross term uses the same accumulator, so the OVITO sum rule has to
+    # hold to roundoff rather than to the few percent the older check allowed.
+    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
+         "--qmax", "6", "--nq", "60", path("part_sum_rule.dat")])
+    two = read_matrix(path("part_sum_rule.dat"))
+    worst = float(np.max(np.abs(two[:, 1] - (two[:, 2] + 2.0*two[:, 3] + two[:, 4]))))
+    if worst > 1.0e-6:
+        raise SystemExit("FAIL partial accumulator: sum rule off by %.3e" % worst)
+    print("  ok   %-42s off by %.1e" % ("S = Saa + 2Sab + Sbb", worst))
+
+    # Sharp Bragg peaks: |rho|^2 = N^2 per mode, so summing the six <100> modes
+    # of a 32768-atom lattice needs 6 N^2 ~ 6.4e9 and used to come back as a
+    # fraction of a single mode (or a negative number).
+    lat = generate("part_lat.dump", natoms=32768, length=20, frames=1,
+                   mode="lattice", fractions=1.0, seed=3)
+    run([exe, "-i", lat, "-w", "unit", "--norm", "n", "--qmin", "10.05",
+         "--qmax", "10.056", "--nq", "1", "--eps", "1e-10",
+         path("part_lat.dat")])
+    bragg = read_matrix(path("part_lat.dat"))
+    peak = float(bragg[0, 1])
+    if abs(peak - 32768.0) / 32768.0 > 1.0e-6:
+        raise SystemExit("FAIL partial accumulator: Bragg shell S = %.6g, "
+                         "expected N = 32768" % peak)
+    worst = abs(bragg[0, 1] - bragg[0, 2]) / abs(bragg[0, 1])
+    if worst > 1.0e-9:
+        raise SystemExit("FAIL partial accumulator: Bragg shell S(q) and S(a-a) "
+                         "differ by %.3e (integer overflow?)" % worst)
+    print("  ok   %-42s S(q) = S(a-a) = N = %.6g"
+          % ("Bragg shell, 32768 atoms", peak))
+
+    # --- 9d. q sampling helper --------------------------------------------
     # The skill ships choose_q.py, which reads the box and returns a sampling
     # with no empty shell; a shell the box cannot fill is written as 0.
     helper = os.path.join(HERE, os.pardir, "skills", "sq-calc", "scripts",

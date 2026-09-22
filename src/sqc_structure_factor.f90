@@ -444,9 +444,13 @@ contains
       class(structure_factor_t), intent(inout) :: self
       complex(c_double_complex), intent(in) :: rho_species(:, :)
       integer :: ia, ib, im, ia_max
-      integer(ik), allocatable :: local_partial(:, :, :)
       integer(lk) :: g, s
       real(rk) :: value, contribution
+      ! Must be real: a shell of a large crystal holds sharp Bragg peaks with
+      ! |rho|^2 ~ N^2 per mode, so an integer accumulator would both quantise
+      ! every partial and overflow int32 (see the test "partials are
+      ! accumulated exactly").
+      real(rk), allocatable :: local_partial(:, :, :)
 
       if (.not. self%partials) return
       ia_max = size(rho_species, 2)
