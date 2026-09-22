@@ -541,9 +541,11 @@ def main():
         fz = read_matrix(path("partfz_%s.dat" % method))
         if part.shape[1] != 5:
             raise SystemExit("FAIL %s: expected 5 columns, got %d" % (method, part.shape[1]))
-        # OVITO sum rule: S(q) = S_aa + 2 S_ab + S_bb
+        # OVITO sum rule: S(q) = S_aa + 2 S_ab + S_bb.  This is an identity of
+        # the accumulation (see "partials are accumulated exactly" below), so
+        # it holds to roundoff for both methods, not to a few percent.
         worst = float(np.max(np.abs(part[:, 1] - (part[:, 2] + 2.0*part[:, 3] + part[:, 4]))))
-        if worst > 0.02:
+        if worst > 1.0e-9:
             raise SystemExit("FAIL %s: partial sum rule is off by %.3e" % (method, worst))
         print("  ok   %-42s sum rule %.1e" % ("%s partials: S = Saa + 2Sab + Sbb" % method, worst))
         # high-q limits: S_aa -> x_a = 0.5, S_ab -> 0, A_ab -> 1
@@ -592,7 +594,7 @@ def main():
             "unmapped vs mapped unit weights", rtol=1.0e-12)
     # OVITO sum rule and the high-q concentration limits.
     worst = float(np.max(np.abs(ka[:, 1] - (ka[:, 2] + 2.0*ka[:, 3] + ka[:, 4]))))
-    if worst > 0.02:
+    if worst > 1.0e-9:
         raise SystemExit("FAIL unmapped partials: sum rule is off by %.3e" % worst)
     high = ka[:, 0] > 4.0
     s_aa = float(np.mean(ka[high, 2]))
@@ -759,10 +761,9 @@ def main():
         print("  ok   %-42s max deviation %.1e"
               % ("%s: A = (S - x delta)/(x x) + 1" % method, worst))
         # FZ sum rule: sum_ab (2 - delta_ab) x_a x_b A_ab = S(q)
-        fsum = fz[:, 2] + 2.0*fz[:, 3]*x*x/0.25 + fz[:, 4]
         fsum = x*x*fz[:, 2] + 2.0*x*x*fz[:, 3] + x*x*fz[:, 4]
         worst = float(np.max(np.abs(fsum - fz[:, 1])))
-        if worst > 0.02:
+        if worst > 1.0e-9:
             raise SystemExit("FAIL %s: FZ sum rule is off by %.3e" % (method, worst))
         print("  ok   %-42s sum rule %.1e"
               % ("%s: S = sum (2-d) x_a x_b A_ab" % method, worst))
