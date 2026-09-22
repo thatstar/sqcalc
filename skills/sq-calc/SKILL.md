@@ -93,9 +93,11 @@ and `--dr` instead of the box sets the usable q range.
 
 ## Reminders
 
-* `-m` (LAMMPS type id to element) is required for the `neutron`/`xray` weights;
-  without it the partials are still written, labelled by LAMMPS type id
-  (`S(1-1)`, `S(1-2)`, ...).
+* `-m` (LAMMPS type id to element or species) is required for the
+  `neutron`/`xray` weights; the X-ray form factors are tabulated per species,
+  so an entry may name an ion or a valence state instead of the neutral atom
+  (`-m 1:Si4+,2:O2-`).  Without `-m` the partials are still written, labelled
+  by LAMMPS type id (`S(1-1)`, `S(1-2)`, ...).
 * The reciprocal methods sample $q$ on the lattice of the dump box, so the box
   must be constant and the grid costs $(q_{\max} L)^3$; the Debye method needs
   no periodic box and wins for large, sparse systems.

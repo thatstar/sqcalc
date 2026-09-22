@@ -504,17 +504,17 @@ contains
          idx = scheme%element(t)
          if (idx == 0) then
             write (error_unit, '(a,i0,a)') 'sqcalc: atom type ', t, &
-               ' has no element symbol in the mapping'
+               ' has no species in the mapping'
             stop 14
          end if
          if (scheme%kind == weight_neutron .and. .not. element_table%has_neutron(idx)) then
             write (error_unit, '(a,a,a)') 'sqcalc: no neutron scattering length for ', &
-               trim(element_table%symbol_of(idx)), '; use --weight xray or unit'
+               trim(scheme%species(t)), '; use --weight xray or unit'
             stop 15
          end if
-         if (scheme%kind == weight_xray .and. .not. element_table%has_xray(idx)) then
+         if (scheme%kind == weight_xray .and. scheme%species_index(t) == 0) then
             write (error_unit, '(a,a,a)') 'sqcalc: no X-ray form factor for ', &
-               trim(element_table%symbol_of(idx)), '; use --weight neutron or unit'
+               trim(scheme%species(t)), '; use --weight neutron or unit'
             stop 15
          end if
       end do
@@ -525,7 +525,7 @@ contains
       type(frame_t), intent(in) :: frame
       type(cell_t) :: cell
       integer :: i
-      character(len=2) :: symbol
+      character(len=8) :: species
 
       cell = frame%cell
       write (error_unit, '(a)') 'sqcalc: '//program_version
@@ -538,9 +538,9 @@ contains
       if (opt%scheme%has_mapping()) then
          write (error_unit, '(a)', advance='no') '  mapping    : '
          do i = 1, opt%scheme%mapped_types()
-            symbol = opt%scheme%symbols(i)
-            if (len_trim(symbol) == 0) cycle
-            write (error_unit, '(a,i0,a,a,a)', advance='no') ' ', i, ':', trim(symbol), ','
+            species = opt%scheme%species(i)
+            if (len_trim(species) == 0) cycle
+            write (error_unit, '(a,i0,a,a,a)', advance='no') ' ', i, ':', trim(species), ','
          end do
          write (error_unit, '(a)') ''
       end if

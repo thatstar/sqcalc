@@ -15,7 +15,7 @@ logs clean.
 | option | meaning |
 | --- | --- |
 | `-i, --input FILE` | LAMMPS dump trajectory (required) |
-| `-m, --mapping LIST` | LAMMPS type id to element symbol, e.g. `1:Si,2:O` |
+| `-m, --mapping LIST` | LAMMPS type id to element or species, e.g. `1:Si,2:O` or `1:Si4+,2:O2-` |
 | `-w, --weight SCHEME` | `unit` (default), `neutron` or `xray` |
 | `-t, --threads N` | OpenMP threads (default: all available) |
 | `--qmin`, `--qmax`, `--nq` | $q$ range [1/A] and number of shells (defaults 0, 20, 500) |
@@ -70,7 +70,10 @@ logs clean.
 The per-atom weight $w_j$ is `1`, the bound coherent neutron scattering length
 $b$ (`neutron`) or the IT92 form factor $f(q)$ (`xray`).  The weights come from
 a table of 104 elements, so `-m` is required for anything but `unit`; without it
-every atom has weight 1.0.
+every atom has weight 1.0.  For `xray` the right hand side of each mapping entry
+is a *species*, not just an element: the element symbol alone selects the
+neutral atom, and a charge suffix selects one of the tabulated ions or valence
+states (see below).
 
 $$S(q) = \frac{\langle |\rho(q)|^2 \rangle}{W(q)}$$
 
@@ -81,6 +84,63 @@ with `--norm` selecting $W(q)$:
 | `mean` (default) | $N \langle w \rangle^2$ | Faber-Ziman total $S(q)$ |
 | `self` | $\sum_j w_j^2$ | $S(q) \to 1$ at large $q$ |
 | `n` | $N$ | the debyer convention |
+
+### Ion and valence species (`xray`)
+
+`-m 1:Si4+,2:O2-` gives those two types the IT92 form factors of the Si$^{4+}$
+and O$^{2-}$ ions, which differ from the neutral atoms mainly at low $q$ (they
+carry 10 instead of 14 and 8 electrons at $q = 0$).  The label is a choice of
+parameterization, not a property read from the dump: sqcalc never looks at
+partial charges, and the tabulated states are the discrete ones of the source
+table.  The element still sets everything else, so masses, neutron lengths
+(nuclear, and therefore independent of the electronic state) and the
+type-to-element grouping are unchanged.
+
+Besides the neutral atoms, these states are available (the bare element symbol
+is always accepted and selects the neutral row):
+
+```
+H H1-               Li Li1+             Be Be2+             C Cval
+O O1- O2-           F F1-               Na Na1+             Mg Mg2+
+Al Al3+             Si Sival Si4+       Cl Cl1-             K K1+
+Ca Ca2+             Sc Sc3+             Ti Ti2+ Ti3+ Ti4+   V V2+ V3+ V5+
+Cr Cr2+ Cr3+        Mn Mn2+ Mn3+ Mn4+   Fe Fe2+ Fe3+        Co Co2+ Co3+
+Ni Ni2+ Ni3+        Cu Cu1+ Cu2+        Zn Zn2+             Ga Ga3+
+Ge Ge4+             Br Br1-             Rb Rb1+             Sr Sr2+
+Y Y3+               Zr Zr4+             Nb Nb3+ Nb5+
+Mo Mo3+ Mo5+ Mo6+   Ru Ru3+ Ru4+        Rh Rh3+ Rh4+        Pd Pd2+ Pd4+
+Ag Ag1+ Ag2+        Cd Cd2+             In In3+             Sn Sn2+ Sn4+
+Sb Sb3+ Sb5+        I I1-               Cs Cs1+             Ba Ba2+
+La La3+             Ce Ce3+ Ce4+        Pr Pr3+ Pr4+        Nd Nd3+
+Pm Pm3+             Sm Sm3+             Eu Eu2+ Eu3+        Gd Gd3+
+Tb Tb3+             Dy Dy3+             Ho Ho3+             Er Er3+
+Tm Tm3+             Yb Yb2+ Yb3+        Lu Lu3+             Hf Hf4+
+Ta Ta5+             W W6+               Os Os4+             Ir Ir3+ Ir4+
+Pt Pt2+ Pt4+        Au Au1+ Au3+        Hg Hg1+ Hg2+        Tl Tl1+ Tl3+
+Pb Pb2+ Pb4+        Bi Bi3+ Bi5+        Ra Ra2+             Ac Ac3+
+Th Th4+             U U3+ U4+ U6+       Np Np3+ Np4+ Np6+
+Pu Pu3+ Pu4+ Pu6+
+```
+
+Two spellings of the source table repeat a row under a second name and are
+accepted as aliases: `Siv` for the neutral `Si` row and `H'` for the `D` row.
+Labels are case insensitive (`o2-` works).  A charge suffix is
+`<count><sign>`, e.g. `Fe3+`, `O2-`; the count may be omitted for a single
+charge (`Na+`).  `Cval` and `Sival` are the carbon and silicon valence-state
+parameterizations of the source table, which keep the neutral electron count.
+An element with no such state fails with a message listing what is available:
+
+```
+sqcalc: element "O" has no charge state "O3-"; available: O, O1-, O2-
+```
+
+The table is the IT92 analytic approximation (International Tables for
+Crystallography Vol. C, table 6.1.1.4), valid for $0 < \sin\theta/\lambda < 2$
+$\text{\AA}^{-1}$; beyond that the parameterization is an extrapolation.  No
+common anion is missing for oxides (`O1-` and `O2-` are both present), but the
+ion list is far from complete elsewhere: there is no `N3-`, `S2-` or `Se2-`,
+and no charge state outside the list, so a partially ionic model has to pick
+the closest tabulated state and say so in the write-up.
 
 ### Methods
 
@@ -252,7 +312,7 @@ $A_{ab}(q) = (S_{ab}(q) - x_a \delta_{ab})/(x_a x_b) + 1$, which tends to 1.
 Partials work with both the reciprocal and the Debye method and are written by
 default, so a model system without elements (`-w unit`, no `-m`) still gets
 them: the pair is labelled with the LAMMPS type ids, `S(1-1) S(1-2) S(2-2)`,
-and `-m` only replaces those labels with element symbols.  The derivations are
+and `-m` only replaces those labels with the species of the mapping.  The derivations are
 in the repository `README.md`.  **Prefer `-fz` when reporting partials**: the
 Faber-Ziman form tends to 1 for every pair, so the curves share a common
 asymptote and can be compared directly with the partials of other systems,
@@ -566,7 +626,7 @@ F_s(q,\tau)=\sum_a F_s^{a}(q,\tau).
 $$
 
 At $\tau = 0$ the total is 1 and each species column is $N_a/N = x_a$; the
-columns are labelled by element symbol when `-m` is given, otherwise by the
+columns are labelled by species when `-m` is given, otherwise by the
 LAMMPS type id (`F_s(Si)`, `F_s(O)` or `F_s(1)`, `F_s(2)`).
 
 `--fqt-self` always includes every atom and **never** applies `--s4-cutoff`,
@@ -622,7 +682,7 @@ total and a partial divided by its concentration tends to $6 D_a t$,
       1.00000000    5.961944468565E-01    2.996201670279E-01    2.965742798286E-01
 ```
 
-The columns are labelled by element symbol when `-m` is given, otherwise by the
+The columns are labelled by species when `-m` is given, otherwise by the
 LAMMPS type id (`MSD(1)`, `MSD(2)`).  `--no-partials` drops them and leaves a
 single total column.  HDF5 writes `/msd/tau`, `/msd/MSD`, `/msd/count` and,
 with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`, with the
@@ -742,9 +802,11 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
   100 MD steps resolves far less than one dumped every 10.  sqcalc prints the
   derived frame interval and warns when the frame-to-frame displacements
   suggest the dynamics are undersampled.
-* With `-w neutron`/`xray` a type missing from the mapping, or an element
-  without tabulated data, is rejected with a clear message; `-w unit` needs no
-  mapping and labels the partials by type id instead.
+* With `-w neutron`/`xray` a type missing from the mapping, an unknown element,
+  a charge state the table does not carry and an element without tabulated
+  data are each rejected with their own message, the charge-state one naming
+  the states that would work; `-w unit` needs no mapping and labels the
+  partials by type id instead.
 * The `OUTPUT` table reports 0 for the grid shells the box cannot sample (the
   `--dyn-q shell:` average is a single shell and is never empty).  Pick
   `--qmin` and `--nq` with `scripts/choose_q.py` before trusting the low-$q$

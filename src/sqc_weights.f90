@@ -6,7 +6,7 @@
 !> Per-atom scattering weights: unit, neutron or X-ray.
 module sqc_weights
    use sqc_kinds
-   use sqc_elements, only: element_table, normalise_symbol
+   use sqc_elements, only: element_table
    implicit none
    private
 
@@ -24,9 +24,11 @@ module sqc_weights
       integer :: kind = weight_unit
       !> Number of LAMMPS atom types covered by the mapping.
       integer(ik) :: ntypes = 0
-      !> Canonical element symbol of each type id (blank when unmapped).
-      character(len=2), allocatable :: symbols(:)
-      !> Index of each type id in the element table (0 when unmapped).
+      !> Canonical species label of each type id (blank when unmapped).
+      character(len=8), allocatable :: species(:)
+      !> X-ray species index of each type id (0 for an element with no row).
+      integer, allocatable :: species_index(:)
+      !> Element table index of each type id (0 when unmapped).
       integer, allocatable :: element(:)
       !> Largest type id that was actually mapped (0 when none).
       integer(ik) :: n_mapped = 0
@@ -36,7 +38,7 @@ module sqc_weights
       procedure :: has_mapping => scheme_has_mapping
       procedure :: mapped_types => scheme_mapped_types
       procedure :: amplitude => scheme_amplitude
-      procedure :: amplitude_of_element => scheme_amplitude_of_element
+      procedure :: amplitude_of_species => scheme_amplitude_of_species
       procedure :: label => scheme_label
       procedure :: pair_label => scheme_pair_label
    end type weight_scheme_t
@@ -51,7 +53,8 @@ contains
       character(len=*), intent(out) :: message
       character(len=64), allocatable :: items(:)
       character(len=:), allocatable :: item, left, right
-      integer :: nitems, i, colon, type_id, idx
+      character(len=8) :: label
+      integer :: nitems, i, colon, type_id, idx, element
 
       ierr = 0
       message = ''
@@ -79,15 +82,12 @@ contains
             message = 'invalid atom type id "'//left//'" in the element mapping'
             return
          end if
-         idx = element_table%index_of(right)
-         if (idx == 0) then
-            ierr = 1
-            message = 'unknown element symbol "'//right//'" in the element mapping'
-            return
-         end if
+         call element_table%find_species(right, idx, element, label, ierr, message)
+         if (ierr /= 0) return
          call self%grow(type_id)
-         self%symbols(type_id) = element_table%symbol_of(idx)
-         self%element(type_id) = idx
+         self%species(type_id) = label
+         self%species_index(type_id) = idx
+         self%element(type_id) = element
          self%n_mapped = max(self%n_mapped, int(type_id, ik))
       end do
    end subroutine scheme_set_mapping
@@ -96,20 +96,23 @@ contains
    subroutine scheme_grow(self, ntypes)
       class(weight_scheme_t), intent(inout) :: self
       integer, intent(in) :: ntypes
-      character(len=2), allocatable :: symbols(:)
-      integer, allocatable :: element(:)
+      character(len=8), allocatable :: species(:)
+      integer, allocatable :: species_index(:), element(:)
       integer :: n
 
       if (ntypes <= self%ntypes) return
       n = max(ntypes, max(self%ntypes*2, 4))
-      allocate(symbols(n), element(n))
-      symbols = ' '
+      allocate(species(n), species_index(n), element(n))
+      species = ' '
+      species_index = 0
       element = 0
       if (self%ntypes > 0) then
-         symbols(1:self%ntypes) = self%symbols(1:self%ntypes)
+         species(1:self%ntypes) = self%species(1:self%ntypes)
+         species_index(1:self%ntypes) = self%species_index(1:self%ntypes)
          element(1:self%ntypes) = self%element(1:self%ntypes)
       end if
-      call move_alloc(symbols, self%symbols)
+      call move_alloc(species, self%species)
+      call move_alloc(species_index, self%species_index)
       call move_alloc(element, self%element)
       self%ntypes = n
    end subroutine scheme_grow
@@ -137,30 +140,37 @@ contains
       integer :: idx
 
       select case (self%kind)
-      case (weight_neutron, weight_xray)
+      case (weight_neutron)
          idx = 0
          if (type_id >= 1 .and. type_id <= self%ntypes) idx = self%element(type_id)
-         weight = self%amplitude_of_element(idx, q)
+         weight = element_table%neutron_b(idx)
+      case (weight_xray)
+         idx = 0
+         if (type_id >= 1 .and. type_id <= self%ntypes) idx = self%species_index(type_id)
+         weight = element_table%species_xray_f(idx, q)
       case default
          weight = 1.0_rk
       end select
    end function scheme_amplitude
 
-   !> Scattering amplitude of an element table index at momentum transfer q.
-   pure real(rk) function scheme_amplitude_of_element(self, idx, q) result(weight)
+   !> Scattering amplitude of a species index at momentum transfer q.
+   !!
+   !! Neutron lengths are nuclear and do not depend on the electronic state, so
+   !! the change of an ion label applies to the X-ray form factor alone.
+   pure real(rk) function scheme_amplitude_of_species(self, idx, q) result(weight)
       class(weight_scheme_t), intent(in) :: self
       integer, intent(in) :: idx
       real(rk), intent(in) :: q
 
       select case (self%kind)
       case (weight_neutron)
-         weight = element_table%neutron_b(idx)
+         weight = element_table%neutron_b(element_table%species_element_of(idx))
       case (weight_xray)
-         weight = element_table%xray_f(idx, q)
+         weight = element_table%species_xray_f(idx, q)
       case default
          weight = 1.0_rk
       end select
-   end function scheme_amplitude_of_element
+   end function scheme_amplitude_of_species
 
    !> Human readable description used in diagnostics.
    pure function scheme_label(self) result(label)
@@ -181,13 +191,13 @@ contains
       class(weight_scheme_t), intent(in) :: self
       integer, intent(in) :: ia, ib
       character(len=18) :: label
-      character(len=2) :: sa, sb
+      character(len=8) :: sa, sb
 
       sa = ' '
       sb = ' '
-      if (allocated(self%symbols)) then
-         if (ia >= 1 .and. ia <= size(self%symbols)) sa = self%symbols(ia)
-         if (ib >= 1 .and. ib <= size(self%symbols)) sb = self%symbols(ib)
+      if (allocated(self%species)) then
+         if (ia >= 1 .and. ia <= size(self%species)) sa = self%species(ia)
+         if (ib >= 1 .and. ib <= size(self%species)) sb = self%species(ib)
       end if
       if (len_trim(sa) > 0 .and. len_trim(sb) > 0) then
          label = trim(sa)//'-'//trim(sb)

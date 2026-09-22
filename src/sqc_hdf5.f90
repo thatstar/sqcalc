@@ -61,7 +61,9 @@ contains
       real(real64), allocatable :: qd(:), sd(:), qx(:), qy(:), qz(:)
       integer(int32), allocatable :: hh(:), kk(:), ll(:)
       real(real64) :: qc, cell_dbl(3, 3)
-      character(len=256) :: mapping
+      ! Species labels are longer than element symbols, so leave room for a
+      ! system with many types instead of truncating the attribute silently.
+      character(len=1024) :: mapping
       integer(int64) :: nframes
       integer :: nmodes_txt
 
@@ -119,9 +121,9 @@ contains
       if (ierr /= 0) return
       mapping = ''
       do s = 1, scheme%mapped_types()
-         if (len_trim(scheme%symbols(s)) == 0) cycle
+         if (len_trim(scheme%species(s)) == 0) cycle
          if (len_trim(mapping) > 0) mapping = trim(mapping)//','
-         write (mapping, '(a,i0,a,a)') trim(mapping), s, ':', trim(scheme%symbols(s))
+         write (mapping, '(a,i0,a,a)') trim(mapping), s, ':', trim(scheme%species(s))
       end do
       call write_string_attr(file_id, 'mapping', trim(mapping), ierr, message)
       if (ierr /= 0) return

@@ -1691,13 +1691,13 @@ contains
       character(len=*), intent(out) :: label
       character(len=*), intent(in), optional :: prefix
       character(len=8) :: pfx
-      character(len=2) :: sym
+      character(len=8) :: sym
 
       pfx = 'F_s'
       if (present(prefix)) pfx = trim(prefix)
       sym = ' '
-      if (allocated(scheme%symbols)) then
-         if (type_id >= 1 .and. type_id <= size(scheme%symbols)) sym = scheme%symbols(type_id)
+      if (allocated(scheme%species)) then
+         if (type_id >= 1 .and. type_id <= size(scheme%species)) sym = scheme%species(type_id)
       end if
       if (len_trim(sym) > 0) then
          label = trim(pfx)//'('//trim(sym)//')'

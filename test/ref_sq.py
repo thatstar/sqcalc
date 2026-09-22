@@ -14,6 +14,7 @@ src/sqc_element_data.f90 carries).
 """
 
 import argparse
+import re
 
 import numpy as np
 
@@ -24,7 +25,21 @@ XRAY = {
     "O": ([3.0485, 2.2868, 1.5463, 0.867], [13.2771, 5.7011, 0.3239, 32.9089], 0.2508),
     "H": ([0.493002, 0.322912, 0.140191, 0.040810],
           [10.5109, 26.1257, 3.14236, 57.7997], 0.003038),
+    # IT92 ion and valence rows, the same table the Fortran code generates.
+    "O1-": ([4.1916, 1.63969, 1.52673, -20.307],
+            [12.8573, 4.17236, 47.0179, -0.01404], 21.9412),
+    "O2-": ([3.7504, 2.84294, 1.54298, 1.62091],
+            [16.5151, 6.59203, 0.319201, 43.3486], 0.242060),
+    "Si4+": ([4.43918, 3.20345, 1.19453, 0.416530],
+             [1.64167, 3.43757, 0.214900, 6.65365], 0.746297),
+    "Sival": ([5.66269, 3.07164, 2.62446, 1.39320],
+              [2.66520, 38.6634, 0.916946, 93.5458], 1.24707),
 }
+
+
+def element_of(symbol):
+    """Element of a species label: "O2-", "Sival" and "Si" are O, Si and Si."""
+    return re.match(r"[A-Z][a-z]?", symbol).group(0)
 
 
 def xray_f(symbol, q):
@@ -39,7 +54,9 @@ def amplitude_of(type_id, q, mapping, weight):
     if weight == "unit":
         return np.ones_like(q)
     if weight == "neutron":
-        return np.full_like(q, NEUTRON_B[symbol])
+        # The neutron length is a nuclear property: an ion label uses the
+        # element it belongs to.
+        return np.full_like(q, NEUTRON_B[element_of(symbol)])
     return xray_f(symbol, q)
 
 

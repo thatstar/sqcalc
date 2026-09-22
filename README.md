@@ -71,14 +71,14 @@ shell table is text, `# q S(q)`; `--grid FILE` additionally writes every
 reciprocal lattice vector, in text (`# qx qy qz S(q)`) or as a one dimensional
 array per quantity in HDF5 when the file name ends in `.h5`/`.hdf5`.  Both
 tables exclude the trivial $q = 0$ mode.  When partials are written they appear
-as one extra column per type pair, labelled with the element symbols of `-m`
+as one extra column per type pair, labelled with the species of `-m`
 (e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`) or, without a mapping, with the
 LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 
 | option                           | meaning                                                                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `-i, --input FILE`             | LAMMPS dump trajectory (required)                                                                                                |
-| `-m, --mapping LIST`           | LAMMPS type id to element symbol, e.g.`1:Si,2:O`                                                                               |
+| `-m, --mapping LIST`           | LAMMPS type id to element or species, e.g.`1:Si,2:O` or `1:Si4+,2:O2-`                                                    |
 | `-w, --weight SCHEME`          | `unit` (default), `neutron` or `xray`                                                                                      |
 | `-t, --threads N`              | OpenMP threads (default: all available)                                                                                          |
 | `--qmin`, `--qmax`, `--nq` | $q$ range and number of shells (defaults 0, 20 1/A, 500)                                                                       |
@@ -198,7 +198,12 @@ with the per-atom weight $w_j$
 
 * `unit`   : $w = 1$ for every atom,
 * `neutron`: $w = b(\text{element})$, the bound coherent neutron scattering length,
-* `xray`   : $w = f(\text{element}, q) = \sum_i a_i \exp(-b_i (q/4\pi)^2) + c$ (IT92).
+* `xray`   : $w = f(\text{species}, q) = \sum_i a_i \exp(-b_i (q/4\pi)^2) + c$ (IT92).
+
+The X-ray weights are tabulated per species, so the mapping of a type may name
+an ion or a valence state instead of the neutral atom (`-m 1:Si4+,2:O2-`); the
+neutron length is nuclear and uses the element of the species either way.  The
+available labels are listed in `skills/sq-calc/references/usage.md`.
 
 $S(q)$ is the trajectory average
 
@@ -586,8 +591,8 @@ $$
 which tends to 1 for every pair.  Partials are available for both the
 reciprocal and the Debye method; `--no-partials` turns them off.  They only
 need the LAMMPS type ids, so a model system without elements gets them too,
-labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with element
-symbols and is required for the weighted schemes.  Report them with `-fz`:
+labelled `S(1-1)`, `S(1-2)`, ...; `-m` replaces those labels with the species
+of the mapping and is required for the weighted schemes.  Report them with `-fz`:
 every Faber-Ziman pair tends to 1, so the curves can be read and compared
 across concentrations, which the OVITO pairs (tending to $x_a$) do not allow.
 Every method accumulates the columns: `nufft` (CPU or CUDA), `direct` and
@@ -718,3 +723,6 @@ components under terms that do not otherwise combine:
   (1992) 29-37; debyer's GPL notice covers its code and not the data
   ("Copyright 2009 Marcin Wojdyr (only code, not the tabular data)").  More
   about debyer: [https://github.com/wojdyr/debyer](https://github.com/wojdyr/debyer).
+  The X-ray table keeps the ion and valence rows of that source next to the
+  neutral atoms (213 species), and the generator checks every row against the
+  electron-count sum rule $f(0) = Z - q$ before writing it out.

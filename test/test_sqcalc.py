@@ -155,6 +155,40 @@ def main():
     compare(s_xray_direct, s_xray, "NUFFT vs direct (X-ray)")
     compare(s_xray_direct, s_xray_ref, "direct vs numpy reference (X-ray)")
 
+    # --- 2b. ion species: an ion label selects a different X-ray row -------
+    print("ion species")
+    run([exe, "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "xray", "--norm", "mean",
+         *common, path("gas_ion.dat")])
+    run([sys.executable, os.path.join(HERE, "ref_sq.py"), "--input", dump,
+         "--weight", "xray", "--norm", "mean", "--mapping", "1:Si4+,2:O2-",
+         "--qmax", "6", "--nq", "120", "--output", path("gas_ion_ref.dat")])
+    _, s_ion = read_table(path("gas_ion.dat"))
+    _, s_ion_ref = read_table(path("gas_ion_ref.dat"))
+    compare(s_ion, s_ion_ref, "ionic X-ray vs numpy reference")
+    q_ion, _ = read_table(path("gas_ion.dat"))
+    low = q_ion < 1.0
+    shift = np.max(np.abs(s_ion[low] - s_xray[low]) / (1.0 + np.abs(s_xray[low])))
+    if shift < 1.0e-3:
+        raise SystemExit("FAIL ion species: the charge state did not change S(q)")
+    print("  ok   Si4+/O2- moves S(q) by %.3f at q < 1 1/A" % shift)
+
+    # The neutron length is nuclear: an ion label must not change it.
+    run([exe, "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "neutron", "--norm",
+         "mean", *common, path("gas_ion_neutron.dat")])
+    _, s_ion_neutron = read_table(path("gas_ion_neutron.dat"))
+    compare(s_ion_neutron, s_neutron, "neutron ignores the charge state")
+
+    # The pair columns carry the species label, and an unknown state is named.
+    header = open(path("gas_ion.dat")).readline()
+    if "S(Si4+-O2-)" not in header:
+        raise SystemExit("FAIL ion species: pair label missing from %r" % header)
+    print("  ok   pair columns are labelled with the species")
+    bad = subprocess.run([exe, "-i", dump, "-m", "1:O3-", "-w", "xray", "-"],
+                         capture_output=True, text=True)
+    if bad.returncode == 0 or "available: O, O1-, O2-" not in bad.stderr:
+        raise SystemExit("FAIL ion species: O3- was accepted\n%s" % bad.stderr)
+    print("  ok   an unknown charge state lists the available ones")
+
     # --- 3. simple cubic lattice: Bragg peaks ------------------------------
     print("simple cubic lattice")
     dump_lattice = generate("lattice.dump", natoms=125, length=20, frames=3, seed=3,
