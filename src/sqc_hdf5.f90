@@ -1100,6 +1100,10 @@ contains
       ierr = 0
       message = ''
       if (.not. allocated(method%partial_num)) return
+      ! The labels name the datasets, so a table that carries the sums without
+      ! them (a method that never called sf_alloc_partials, which the text
+      ! writer already tolerates) has nothing to write here.
+      if (.not. allocated(method%pair_label)) return
       npair = 0
       do ia = 1, method%ntypes
          if (sf_type_count(method, ia) == 0) cycle
