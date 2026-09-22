@@ -31,7 +31,7 @@ logs clean.
 | `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
 | `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--norm NAME` | `mean` (default), `self` or `n` (see below) |
-| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path) |
+| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path); below 1e-9 the transform switches to the higher memory kernel, see below |
 | `--partials`, `--no-partials` | write / omit the partial structure factor columns (default: on) |
 | `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
 | `--rmax VALUE` | Debye pair cutoff [A] (default: half the smallest periodic box side, or all pairs without periodicity) |
@@ -120,7 +120,13 @@ and prints the option string to use; the reasoning is
   counts).
 * `--qmax` costs $(q_{\max} L)^3$ lattice points; grids above 4e8 are refused,
   which caps `qmax` for large boxes.  The script reports the grid it would
-  build.
+  build, and every run prints the estimated peak memory of the grid before it
+  reads the trajectory.  The transform holds a few arrays over the grid plus
+  FINUFFT's internally upsampled copy: roughly 0.16 kB per lattice point at
+  the default tolerance, and about twice that when `--eps` is tightened below
+  1e-9 (which switches FINUFFT from its 1.25 to its 2.0 upsampling).  For
+  comparison the `direct` method holds only the lattice points inside the
+  window, 60 B each, but pays $N$ times more work.
 * A small box cannot resolve small $q$ at all: use a larger box, or the Debye
   method, whose $q$ grid is not tied to the box.
 
@@ -691,5 +697,6 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
   `--qmin` and `--nq` with `scripts/choose_q.py` before trusting the low-$q$
   end, and read the Faber-Ziman partials (`-fz`) when comparing partials across
   concentrations.
-* Grids above 4e8 points are refused (about 6 GB); `--grid` is written single
-  threaded and does not affect the shell table.
+* Grids above 4e8 points are refused (that is tens of GB with the transform's
+  own arrays, which is why the run reports its estimate); `--grid` is written
+  single threaded and does not affect the shell table.

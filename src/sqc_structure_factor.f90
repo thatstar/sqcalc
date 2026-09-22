@@ -136,6 +136,9 @@ module sqc_structure_factor
       !> Accumulated intensity per bin, and the reciprocal lattice points in it.
       real(rk), allocatable :: xrd_num(:)
       integer(lk), allocatable :: xrd_count(:)
+      !> Rough peak memory of the per-mode state, so a run can report what the
+      !! transform will cost before it reads the trajectory (0 = not estimated).
+      real(rk) :: expected_bytes = 0.0_rk
       !> Accumulated XRD intensity per type pair and bin (allocated by the
       !! first frame that accumulates pair columns).
       real(rk), allocatable :: xrd_partial_num(:, :, :)
@@ -1021,6 +1024,7 @@ contains
       character(len=*), intent(out) :: message
       integer(c_int64_t) :: n_modes(3)
       integer(c_int) :: ier
+      real(rk) :: sigma
 
       ierr = 0
       message = ''
@@ -1054,6 +1058,14 @@ contains
 
       call finufft_default_opts(self%opts)
       self%opts%modeord = mode_cmcl
+      ! FINUFFT's default upsampling of 2.0 makes the internal fine grid eight
+      ! times the mode grid - the largest single allocation of a run, and two
+      ! thirds of the peak memory measured on a Ni box.  A factor of 1.25 costs
+      ! only twice the mode grid and reaches about nine digits, so it is used
+      ! whenever the requested tolerance is not tighter than that; --eps below
+      ! 1e-9 keeps the library's high accuracy choice.  cufinufft implements
+      ! only 2.0, so the GPU path is left alone.
+      if (self%eps >= 1.0e-9_rk) self%opts%upsampfac = 1.25_rk
       self%opts%nthreads = int(max(self%nthreads, 0), c_int)
       n_modes = int(self%modes, c_int64_t)
       ier = finufft_makeplan(type1, 3_c_int, n_modes, 1_c_int, 1_c_int, &
@@ -1064,6 +1076,15 @@ contains
          message = trim(message)//')'
          return
       end if
+      ! Estimate the peak memory of the transform for the report: our own mode
+      ! arrays, FINUFFT's oversampled fine grid (sigma^3 complex values) and
+      ! its working arrays, plus the mode tables of the shell output.  The
+      ! coefficients are measured against FINUFFT 2.5.1 in double precision and
+      ! are meant as an order of magnitude, not as a promise.
+      sigma = 2.0_rk
+      if (self%opts%upsampfac > 1.0_rk) sigma = real(self%opts%upsampfac, rk)
+      self%expected_bytes = real(self%gridpoints, rk)*(70.0_rk + 31.0_rk*sigma**3) &
+                            + 60.0_rk*real(self%nmodes, rk)
    end subroutine nufft_setup
 
    !> Species present in the frame plus the amplitude of each species at every
@@ -1328,6 +1349,8 @@ contains
       end block
       allocate (self%cart(3, frame%natoms))
       allocate (self%intensity(self%nmodes))
+      ! One hkl triple, q vector, |q|, grid index and value per kept mode.
+      self%expected_bytes = 60.0_rk*real(self%nmodes, rk)
       work = int(frame%natoms, lk)*self%nmodes
       if (work > 2000000000_lk) then
          ierr = 1

@@ -617,7 +617,12 @@ contains
          end if
       class default
          write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes
-         write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
+         if (m%expected_bytes > 0.0_rk) then
+            write (error_unit, '(a,i0,a,f0.1,a)') '  grid points: ', m%gridpoints, &
+               ' (~', m%expected_bytes/1.0e6_rk, ' MB peak, estimated)'
+         else
+            write (error_unit, '(a,i0)') '  grid points: ', m%gridpoints
+         end if
          write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q range    : ', m%nmodes, &
             ' modes in [', m%qmin, ', ', m%qmax, '] 1/A'
          if (m%xrd_enabled) then

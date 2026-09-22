@@ -212,6 +212,26 @@ The weights are looked up from a table of 104 elements covering the periodic
 table.  Without `-m` no element is known, so every atom has weight 1.0; a
 weighted scheme therefore requires a type id mapping.
 
+The three routes trade memory for time, and every run prints the memory of the
+one it is about to use - the grid estimate, or the mode table of `direct` -
+before it reads the trajectory:
+
+| route | memory | work per frame |
+| --- | --- | --- |
+| `nufft` | a grid of $(q_{\max} L)^3$ lattice points, about 0.16 kB per point at the default tolerance | $O(N + M \log M)$ |
+| `direct` | only the lattice points inside the $q$ window, 60 B per point | $O(N M)$ |
+| `debye` | the pair histograms, independent of $N$ and of $q_{\max}$ | $O(N \times \text{neighbours})$ |
+
+with $M$ the number of kept lattice points, which grows as $L^3$ in both grid
+routes and therefore linearly with the atom count at a fixed $q_{\max}$.  The
+NUFFT's internally upsampled fine grid is its largest single allocation:
+FINUFFT upsamples by 1.25 while the requested tolerance is 1e-9 or looser
+(about twice the mode grid) and by 2.0 for a tighter `--eps` (about eight
+times), so asking for more than nine digits roughly doubles the memory - and
+`cufinufft` implements only 2.0, so the GPU path stays there.  The direct sum
+is the light one but pays $N$ times the work; the Debye histograms are the only
+route that does not grow with the system size.
+
 The Debye method replaces the reciprocal space transform by counting atom pairs
 as a function of distance, for every pair of chemical types, and averaging those
 histograms over the trajectory - the recipe used by the `debyer` program:

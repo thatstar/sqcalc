@@ -602,13 +602,15 @@ def main():
         # same-time product, so Re(rho_a rho_b*) and Re(rho_b rho_a*) are equal
         # exactly (they are complex conjugates), and the Debye ordered pair
         # counts satisfy n_ab = n_ba identically.  Swapping -m must therefore
-        # leave the cross column bit for bit unchanged.
+        # leave the cross column unchanged; the comparison is to roundoff
+        # rather than exactly, because the two runs reach the amplitudes
+        # through a different order of operations inside the transform.
         run([exe, "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "n",
              "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra,
              path("part_swap_%s.dat" % method)])
         swapped = read_matrix(path("part_swap_%s.dat" % method))
         worst = float(np.max(np.abs(swapped[:, 3] - part[:, 3])))
-        if worst != 0.0:
+        if worst > 1.0e-12:
             raise SystemExit("FAIL %s: S_ab is not symmetric in a <-> b (%.3e)"
                              % (method, worst))
         print("  ok   %-42s cross column identical" % ("%s partial symmetry a<->b" % method))
@@ -679,7 +681,10 @@ def main():
         raise SystemExit("FAIL sparse type ids: %s columns vs %s"
                          % (sparse.shape, dense.shape))
     worst = float(np.max(np.abs(sparse - dense)))
-    if worst != 0.0:
+    # A tolerance rather than bit identity: the two runs number the types
+    # differently, so the transform sees the same atoms in a different order
+    # and the last bit of the amplitudes can differ.
+    if worst > 1.0e-12:
         raise SystemExit("FAIL sparse type ids: columns differ by %.3e" % worst)
     if float(np.max(np.abs(sparse[:, 3]))) <= 0.0:
         raise SystemExit("FAIL sparse type ids: the cross column is empty")
