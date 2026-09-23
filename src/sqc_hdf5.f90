@@ -54,17 +54,16 @@ contains
       character(len=*), intent(in) :: device, precision
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
-      integer(hid_t) :: file_id, group_id, space_id, dset_id, attr_id, type_id
+      integer(hid_t) :: file_id, group_id, space_id, attr_id
       integer(hsize_t) :: dims(1)
       integer :: hdferr, s
       integer(lk), allocatable :: counts(:)
       real(real64), allocatable :: qd(:), sd(:), qx(:), qy(:), qz(:)
       integer(int32), allocatable :: hh(:), kk(:), ll(:)
-      real(real64) :: qc, cell_dbl(3, 3)
+      real(real64) :: cell_dbl(3, 3)
       ! Species labels are longer than element symbols, so leave room for a
       ! system with many types instead of truncating the attribute silently.
       character(len=1024) :: mapping
-      integer(int64) :: nframes
       integer :: nmodes_txt
 
       ierr = 0
@@ -245,7 +244,7 @@ contains
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id, subgroup_id
       integer(hsize_t) :: dims(2), dims1(1)
-      integer :: hdferr, im, p, nq, naxis, npair, idum
+      integer :: hdferr, p, nq, naxis, npair, idum
       real(real64), allocatable :: flat(:), qflat(:), axis64(:)
       integer(int64), allocatable :: cflat(:)
       character(len=18), allocatable :: label_buf(:)

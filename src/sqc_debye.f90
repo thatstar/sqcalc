@@ -267,7 +267,9 @@ contains
             do ib = 1, self%ntypes
                if (self%count_type(ib) == 0) cycle
                do k = 1, self%nbins
-                  if (self%histogram(ia, ib, k) == 0.0_rk) cycle
+                  ! Counts are non-negative integers held as reals, so this is
+                  ! an exact "empty bin" test without a real equality compare.
+                  if (self%histogram(ia, ib, k) <= 0.0_rk) cycle
                   r_bin = (real(k, rk) - 0.5_rk)*self%dr
                   sinc = sin(q*r_bin)/(q*r_bin)
                   pair_sum = pair_sum + weight(ia)*weight(ib) &
@@ -301,7 +303,7 @@ contains
                   if (self%count_type(ib) == 0) cycle
                   part_sum = 0.0_rk
                   do k = 1, self%nbins
-                     if (self%histogram(ia, ib, k) == 0.0_rk) cycle
+                     if (self%histogram(ia, ib, k) <= 0.0_rk) cycle
                      r_bin = (real(k, rk) - 0.5_rk)*self%dr
                      part_sum = part_sum + (self%histogram(ia, ib, k) &
                                 /real(self%nhist, rk))*sin(q*r_bin)/(q*r_bin)

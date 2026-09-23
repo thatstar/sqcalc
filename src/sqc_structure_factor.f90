@@ -318,7 +318,6 @@ contains
       character(len=*), intent(out) :: message
       real(rk) :: q(3), ql, dmode, length_a
       integer :: i, p1, p2, p3, h(3), n_keep, pass
-      integer(lk) :: g
 
       ierr = 0
       message = ''
@@ -486,7 +485,7 @@ contains
       integer(ik), intent(in) :: species_type(:)
       integer :: ia, ib, im, ia_max
       integer(lk) :: g, s
-      real(rk) :: value, contribution
+      real(rk) :: value
       ! Must be real: a shell of a large crystal holds sharp Bragg peaks with
       ! |rho|^2 ~ N^2 per mode, so an integer accumulator would both quantise
       ! every partial and overflow int32 (see the test "partials are
@@ -776,7 +775,7 @@ contains
       character(len=*), intent(out) :: message
       real(rk) :: qc, value, frames
       integer :: s, t, u
-      integer(lk) :: i, g
+      integer(lk) :: i
 
       ierr = 0
       message = ''
@@ -1169,10 +1168,10 @@ contains
       type(weight_scheme_t), intent(in) :: scheme
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
-      real(rk) :: s(3), amp, value
+      real(rk) :: s(3)
       real(rk) :: dummy(1)
       integer(c_int) :: ier
-      integer :: i, im, isp, sh
+      integer :: i, im, isp
       integer(lk) :: g
 
       ierr = 0

@@ -123,7 +123,6 @@ contains
       class(lammps_dump_reader_t), intent(inout) :: self
       character(len=*), intent(in) :: path
       integer, intent(out) :: ierr
-      character(len=max_line_length) :: line
       integer :: ios
 
       self%path = trim(path)
@@ -167,7 +166,7 @@ contains
       character(len=max_line_length) :: line, label
       character(len=16) :: tokens(max_columns)
       real(rk) :: bounds(3, 3), values(3)
-      integer :: ios, ntok, n, i, irow, nvals
+      integer :: ios, ntok, i, irow, nvals
       logical :: have_atoms, have_box, triclinic
 
       ierr = 0
