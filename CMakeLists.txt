@@ -99,6 +99,22 @@ else()
   set(FINUFFT_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   add_subdirectory(external/finufft)
   set(_sqc_finufft_target finufft)
+
+  if(TARGET cufinufft)
+    # The vendored cufinufft advertises a top level "contrib" include directory
+    # that does not exist (its headers live in include/cufinufft/contrib and are
+    # included as <cufinufft/contrib/...>).  Since sqcalc links cufinufft PUBLIC
+    # the stale entry reaches every Fortran compile and gfortran reports it as
+    # -Wmissing-include-dirs, so drop it here instead of patching the subtree.
+    get_target_property(_sqc_cufinufft_incs cufinufft INTERFACE_INCLUDE_DIRECTORIES)
+    if(_sqc_cufinufft_incs)
+      list(FILTER _sqc_cufinufft_incs EXCLUDE REGEX "/contrib>$")
+      set_target_properties(
+        cufinufft PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_sqc_cufinufft_incs}"
+      )
+      unset(_sqc_cufinufft_incs)
+    endif()
+  endif()
 endif()
 
 if(SQC_ENABLE_CUDA)
