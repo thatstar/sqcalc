@@ -3,7 +3,7 @@
 !
 ! SPDX-License-Identifier: GPL-3.0-or-later
 
-!> Reciprocal-lattice mode sets for the grid q sampling (`--dyn-q grid`).
+!> Reciprocal-lattice mode sets for the grid q sampling (`--q grid`).
 !!
 !! A grid run samples the reciprocal lattice of the (constant) simulation cell
 !! instead of an arbitrary line or sphere,

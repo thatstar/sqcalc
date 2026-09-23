@@ -42,18 +42,18 @@ module sqc_structure_factor
    public :: structure_factor_t, nufft_structure_factor_t, direct_structure_factor_t, &
              method_nufft, method_direct, norm_mean, norm_self, norm_natom, no_unit, &
              sf_prepare_species, sf_shared_setup, sf_alloc_partials, mode_denominator, &
-             method_debye, method_dynamic, sf_xrd_empty_bins, two_theta_deg, &
+             method_debye, sf_xrd_empty_bins, two_theta_deg, &
              lorentz_polarization
 
    !> Sentinel for "do not write this table".  A plain negative test would be
    !! wrong because OPEN(NEWUNIT=) may hand out negative unit numbers.
    integer, parameter :: no_unit = -huge(1)
 
-   !> Available evaluation methods.
+   !> Evaluation methods of the static subcommand; the dyn subcommand is
+   !! selected by options_t%command, not by a method.
    integer, parameter :: method_nufft = 1
    integer, parameter :: method_direct = 2
    integer, parameter :: method_debye = 3
-   integer, parameter :: method_dynamic = 4
 
    !> Normalization conventions.
    integer, parameter :: norm_mean = 1

@@ -7,12 +7,13 @@
 program sqcalc
    use sqc_kinds
    use sqc_options
+   use sqc_output, only: format_hdf5
    use sqc_dump
    use sqc_weights
    use sqc_cell, only: cell_t
    use sqc_elements, only: element_table
    use sqc_structure_factor
-   use sqc_dynamics, only: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
+   use sqc_dynamics, only: dynamics_structure_factor_t, &
                            dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
@@ -38,7 +39,7 @@ program sqcalc
 
    call parse_options(opts, ierr, message)
    if (opts%show_help) then
-      call print_usage(output_unit)
+      call print_usage(output_unit, opts%command)
       stop
    end if
    if (opts%show_version) then
@@ -47,7 +48,7 @@ program sqcalc
    end if
    if (ierr /= 0) then
       write (error_unit, '(a)') 'sqcalc: '//trim(message)
-      call print_usage(error_unit)
+      call print_usage(error_unit, opts%command)
       stop 2
    end if
 
@@ -85,46 +86,30 @@ program sqcalc
    if (.not. opts%quiet) call report_setup(opts, frame)
 
    ! --- create the requested method -------------------------------------
-   select case (opts%method)
-   case (method_direct)
-      allocate (direct_structure_factor_t :: method)
-   case (method_debye)
-      allocate (debye_structure_factor_t :: method)
-      select type (method)
-      type is (debye_structure_factor_t)
-         method%rmax = opts%rmax
-         method%dr = opts%dr
-         method%skin = opts%skin
-         method%correct_cutoff = .not. opts%no_cutoff_correction
-         if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
-         if (allocated(opts%pair_entropy_output)) method%pair_entropy_path = &
-            opts%pair_entropy_output
-         if (allocated(opts%s2_accum_output)) method%s2_accum_path = opts%s2_accum_output
-      end select
-   case (method_dynamic)
+   ! The subcommand picks the method family; --method picks the variant inside
+   ! the static family (the dyn subcommand has no --method).
+   select case (opts%command)
+   case (cmd_dyn)
       allocate (dynamics_structure_factor_t :: method)
       select type (method)
       type is (dynamics_structure_factor_t)
-         method%q_mode = opts%dyn_q_mode
-         method%nintervals = opts%dyn_intervals
-         method%s0 = opts%dyn_s0
-         method%s1 = opts%dyn_s1
-         method%direction = opts%dyn_dir
-         method%shell_q = opts%dyn_shell_q
-         method%shell_order = opts%dyn_shell_order
-         method%grid_qmax = opts%dyn_grid_qmax
-         method%grid_budget = opts%dyn_modes
-         method%grid_thin = opts%dyn_thin
-         method%keep_modes = opts%dyn_keep_modes
-         method%single_index = opts%dyn_single
+         method%q_mode = opts%q_mode
+         method%nintervals = opts%q_intervals
+         method%s0 = opts%q_s0
+         method%s1 = opts%q_s1
+         method%direction = opts%q_dir
+         method%shell_q = opts%shell_q
+         method%shell_order = opts%shell_order
+         method%grid_qmax = opts%grid_qmax
+         method%grid_budget = opts%modes
+         method%grid_thin = opts%thin
+         method%keep_modes = opts%keep_modes
+         method%single_index = opts%single_index
          method%maxframes = opts%maxframes
          method%lag_stride = opts%lag_stride
-         method%sqw_format = dyn_format_text
-         if (opts%sqw_format == grid_format_hdf5) method%sqw_format = dyn_format_hdf5
-         method%fqt_format = dyn_format_text
-         if (opts%fqt_format == grid_format_hdf5) method%fqt_format = dyn_format_hdf5
-         method%fqt_self_format = dyn_format_text
-         if (opts%fqt_self_format == grid_format_hdf5) method%fqt_self_format = dyn_format_hdf5
+         method%sqw_format = opts%sqw_format
+         method%fqt_format = opts%fqt_format
+         method%fqt_self_format = opts%fqt_self_format
          if (allocated(opts%sqw_output)) method%sqw_path = opts%sqw_output
          if (allocated(opts%fqt_output)) method%fqt_path = opts%fqt_output
          if (allocated(opts%fqt_self_output)) then
@@ -135,12 +120,9 @@ program sqcalc
          method%s4_cutoff = opts%s4_cutoff
          method%buffer_limit_gb = opts%buffer_limit_gb
          method%stride = opts%stride
-         method%s4_format = dyn_format_text
-         if (opts%s4_format == grid_format_hdf5) method%s4_format = dyn_format_hdf5
-         method%chi4_format = dyn_format_text
-         if (opts%chi4_format == grid_format_hdf5) method%chi4_format = dyn_format_hdf5
-         method%msd_format = dyn_format_text
-         if (opts%msd_format == grid_format_hdf5) method%msd_format = dyn_format_hdf5
+         method%s4_format = opts%s4_format
+         method%chi4_format = opts%chi4_format
+         method%msd_format = opts%msd_format
          if (allocated(opts%s4_output)) then
             method%s4_path = opts%s4_output
             method%s4_enabled = .true.
@@ -154,23 +136,43 @@ program sqcalc
             method%msd_enabled = .true.
          end if
       end select
-   case default
-      if (opts%device == device_gpu) then
-#ifdef SQC_ENABLE_CUDA
-         allocate (cufinufft_structure_factor_t :: method)
+   case (cmd_static)
+      select case (opts%method)
+      case (method_direct)
+         allocate (direct_structure_factor_t :: method)
+      case (method_debye)
+         allocate (debye_structure_factor_t :: method)
          select type (method)
-         type is (cufinufft_structure_factor_t)
-            method%device = opts%gpu_id
-            method%single_precision = opts%precision == precision_single
+         type is (debye_structure_factor_t)
+            method%rmax = opts%rmax
+            method%dr = opts%dr
+            method%skin = opts%skin
+            method%correct_cutoff = .not. opts%no_cutoff_correction
+            ! --format overrides the suffix rule of g(r) and the pair entropy.
+            if (opts%output_format_given) method%output_format = opts%output_format
+            if (allocated(opts%rdf_output)) method%rdf_path = opts%rdf_output
+            if (allocated(opts%pair_entropy_output)) method%pair_entropy_path = &
+               opts%pair_entropy_output
+            if (allocated(opts%s2_accum_output)) method%s2_accum_path = opts%s2_accum_output
          end select
+      case default
+         if (opts%device == device_gpu) then
+#ifdef SQC_ENABLE_CUDA
+            allocate (cufinufft_structure_factor_t :: method)
+            select type (method)
+            type is (cufinufft_structure_factor_t)
+               method%device = opts%gpu_id
+               method%single_precision = opts%precision == precision_single
+            end select
 #else
-         write (error_unit, '(a)') 'sqcalc: this build has no GPU support; '// &
-            'configure with -DSQC_ENABLE_CUDA=ON'
-         stop 16
+            write (error_unit, '(a)') 'sqcalc: this build has no GPU support; '// &
+               'configure with -DSQC_ENABLE_CUDA=ON'
+            stop 16
 #endif
-      else
-         allocate (nufft_structure_factor_t :: method)
-      end if
+         else
+            allocate (nufft_structure_factor_t :: method)
+         end if
+      end select
    end select
    method%norm = opts%norm
    method%nq = opts%nq
@@ -248,11 +250,11 @@ program sqcalc
    call reader%close()
 
    ! --- the dynamic method needs a constant time between frames ----------
-   if (opts%method == method_dynamic) then
+   if (opts%command == cmd_dyn) then
       step = reader_step_stride(reader)
       if (.not. reader_uniform_steps(reader) .or. step <= 0) then
          write (error_unit, '(a)') 'sqcalc: the dump must sample the trajectory at a '// &
-            'constant timestep interval for --dyn'
+            'constant timestep interval for the dyn subcommand'
          stop 21
       end if
       select type (method)
@@ -282,12 +284,12 @@ program sqcalc
 
    ! --- write the results ------------------------------------------------
 #ifndef SQC_HAVE_HDF5
-   if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
+   if (opts%want_grid .and. opts%grid_format == format_hdf5) then
       write (error_unit, '(a)') 'sqcalc: this build has no HDF5 support; '// &
-         'configure with -DSQC_ENABLE_HDF5=ON or use --grid-format text'
+         'configure with -DSQC_ENABLE_HDF5=ON or use --format text'
       stop 17
    end if
-   if (allocated(opts%xrd_output) .and. opts%xrd_format == grid_format_hdf5) then
+   if (allocated(opts%xrd_output) .and. opts%xrd_format == format_hdf5) then
       write (error_unit, '(a)') 'sqcalc: this build has no HDF5 support; '// &
          'configure with -DSQC_ENABLE_HDF5=ON or name the XRD file .txt'
       stop 17
@@ -316,7 +318,7 @@ program sqcalc
          stop 30
       end if
    end if
-   ! A run without any q sampling (--dyn-q -) has no S(q) table to write.
+   ! A run without --q has no S(q) table to write.
    shell_unit = no_unit
    if (allocated(opts%output)) then
       call open_output(opts%output, shell_unit, ierr, message)
@@ -326,14 +328,14 @@ program sqcalc
       end if
       ! A shell average is the single row at |q| = Q; label it before the
       ! shared table header names the columns.
-      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_shell) then
+      if (opts%command == cmd_dyn .and. opts%q_mode == dyn_q_shell) then
          select type (method)
          type is (dynamics_structure_factor_t)
             write (shell_unit, '(a,f12.6,a)') '# shell average over |q| = ', &
                method%shell_q, ' 1/A (Lebedev quadrature, one row)'
          end select
       end if
-      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_grid) then
+      if (opts%command == cmd_dyn .and. opts%q_mode == dyn_q_grid) then
          select type (method)
          type is (dynamics_structure_factor_t)
             if (method%keep_modes) then
@@ -347,7 +349,7 @@ program sqcalc
             end if
          end select
       end if
-      if (opts%method == method_dynamic .and. opts%dyn_q_mode == dyn_q_single) then
+      if (opts%command == cmd_dyn .and. opts%q_mode == dyn_q_single) then
          select type (method)
          type is (dynamics_structure_factor_t)
             write (shell_unit, '(a,3(i0,1x),a,f0.4,a)') '# single q from n = (', &
@@ -357,7 +359,7 @@ program sqcalc
    end if
    grid_unit = no_unit
    if (opts%want_grid) then
-      if (opts%grid_format /= grid_format_hdf5) then
+      if (opts%grid_format /= format_hdf5) then
          call open_output(opts%grid_output, grid_unit, ierr, message)
          if (ierr /= 0) then
             write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -372,7 +374,7 @@ program sqcalc
    end if
    ! --- powder XRD pattern -----------------------------------------------
    xrd_unit = no_unit
-   if (allocated(opts%xrd_output) .and. opts%xrd_format /= grid_format_hdf5) then
+   if (allocated(opts%xrd_output) .and. opts%xrd_format /= format_hdf5) then
       call open_output(opts%xrd_output, xrd_unit, ierr, message)
       if (ierr /= 0) then
          write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -385,7 +387,7 @@ program sqcalc
       stop 21
    end if
 #ifdef SQC_HAVE_HDF5
-   if (allocated(opts%xrd_output) .and. opts%xrd_format == grid_format_hdf5) then
+   if (allocated(opts%xrd_output) .and. opts%xrd_format == format_hdf5) then
       call hdf5_write_xrd(opts%xrd_output, method, ierr, message)
       if (ierr /= 0) then
          write (error_unit, '(a)') 'sqcalc: '//trim(message)
@@ -393,7 +395,7 @@ program sqcalc
       end if
    end if
 #endif
-   if (opts%method == method_dynamic) then
+   if (opts%command == cmd_dyn) then
       select type (method)
       type is (dynamics_structure_factor_t)
          if (allocated(method%sqw_path)) then
@@ -446,7 +448,7 @@ program sqcalc
          end if
       end select
    end if
-   if (opts%want_grid .and. opts%grid_format == grid_format_hdf5) then
+   if (opts%want_grid .and. opts%grid_format == format_hdf5) then
 #ifdef SQC_HAVE_HDF5
       call hdf5_write_results(opts%grid_output, method, opts%scheme, natoms, ref_a, eps_used, &
                               device_name(opts), precision_name(opts), ierr, message)
@@ -461,7 +463,7 @@ program sqcalc
    if (xrd_unit /= no_unit .and. xrd_unit /= output_unit) close (xrd_unit)
 
    if (.not. opts%quiet) then
-      if (opts%method == method_dynamic) then
+      if (opts%command == cmd_dyn) then
          select type (method)
          type is (dynamics_structure_factor_t)
             if (method%probe_valid) then
@@ -588,7 +590,7 @@ contains
                   ' shells (point group order ', m%grid_nops, ')'
             end if
             if (m%grid_thinned .and. .not. m%grid_budget_met) then
-               write (error_unit, '(a,i0,a,i0,a)') '  note       : --dyn-modes ', m%grid_budget, &
+               write (error_unit, '(a,i0,a,i0,a)') '  note       : --modes ', m%grid_budget, &
                   ' could not be met; the two end shells alone need ', m%nmodes, ' modes'
             end if
          case (dyn_q_single)
@@ -668,31 +670,37 @@ contains
    function method_description(opt) result(text)
       type(options_t), intent(in) :: opt
       character(len=:), allocatable :: text
-      select case (opt%method)
-      case (method_direct)
-         text = 'direct summation'
-      case (method_debye)
-         text = 'Debye pair histograms'
-      case (method_dynamic)
-         select case (opt%dyn_q_mode)
+      if (opt%command == cmd_dyn) then
+         select case (opt%q_mode)
          case (dyn_q_line)
             text = 'dynamic structure factor (direct summation on a q line)'
          case (dyn_q_shell)
             text = 'dynamic structure factor (Lebedev average on a q shell)'
+         case (dyn_q_grid)
+            text = 'dynamic structure factor on the reciprocal grid'
+         case (dyn_q_single)
+            text = 'dynamic structure factor at one lattice vector'
          case default
             text = 'overlap dynamics (average overlap and chi4)'
          end select
-      case default
-         if (opt%device == device_gpu) then
-            if (opt%precision == precision_single) then
-               text = 'NUFFT on GPU, float32 (cufinufftf/cuFFT)'
+      else
+         select case (opt%method)
+         case (method_direct)
+            text = 'direct summation'
+         case (method_debye)
+            text = 'Debye pair histograms'
+         case default
+            if (opt%device == device_gpu) then
+               if (opt%precision == precision_single) then
+                  text = 'NUFFT on GPU, float32 (cufinufftf/cuFFT)'
+               else
+                  text = 'NUFFT on GPU, float64 (cufinufft/cuFFT)'
+               end if
             else
-               text = 'NUFFT on GPU, float64 (cufinufft/cuFFT)'
+               text = 'NUFFT on CPU (FINUFFT)'
             end if
-         else
-            text = 'NUFFT on CPU (FINUFFT)'
-         end if
-      end select
+         end select
+      end if
    end function method_description
 
    !> Name of the device used for the transform (written to HDF5 metadata).

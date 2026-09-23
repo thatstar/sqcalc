@@ -3,7 +3,7 @@
 !
 ! SPDX-License-Identifier: GPL-3.0-or-later
 
-!> Validation of the reciprocal-lattice mode sets (`--dyn-q grid`).
+!> Validation of the reciprocal-lattice mode sets (`--qpoints grid`).
 !!
 !! The three reductions of `sqc_modes` are checked against counts that were
 !! obtained independently (a small Python enumeration, see the design notes):

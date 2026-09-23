@@ -77,8 +77,13 @@ def compare(reference, candidate, label, rtol=1.0e-6, atol=1.0e-8):
 
 
 def dyn_line(spec):
-    """The --dyn flags that sample a q line through the Gamma point."""
-    return ["--dyn", "--dyn-q", "line:" + spec]
+    """The q sampling flags of a q line through the Gamma point.
+
+    This uses the short alias, so every dynamic test exercises `-q` as well;
+    the long `--qpoints` spelling is checked against it in the validation
+    section at the end.
+    """
+    return ["-q", "line:" + spec]
 
 
 def main():
@@ -107,7 +112,11 @@ def main():
         return path(out)
 
     def sqcalc(dump, out, *options):
-        cmd = [exe, "-i", dump, "-m", "1:Si,2:O", *options, path(out)]
+        cmd = [exe, "static", "-i", dump, "-m", "1:Si,2:O", *options, path(out)]
+        return run(cmd)
+
+    def sqcalc_dyn(dump, *options):
+        cmd = [exe, "dyn", "-i", dump, *options]
         return run(cmd)
 
     common = ["--qmax", "6", "--nq", "120", "--eps", "1e-10"]
@@ -157,7 +166,7 @@ def main():
 
     # --- 2b. ion species: an ion label selects a different X-ray row -------
     print("ion species")
-    run([exe, "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "xray", "--norm", "mean",
+    run([exe, "static", "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "xray", "--norm", "mean",
          *common, path("gas_ion.dat")])
     run([sys.executable, os.path.join(HERE, "ref_sq.py"), "--input", dump,
          "--weight", "xray", "--norm", "mean", "--mapping", "1:Si4+,2:O2-",
@@ -173,7 +182,7 @@ def main():
     print("  ok   Si4+/O2- moves S(q) by %.3f at q < 1 1/A" % shift)
 
     # The neutron length is nuclear: an ion label must not change it.
-    run([exe, "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "neutron", "--norm",
+    run([exe, "static", "-i", dump, "-m", "1:Si4+,2:O2-", "-w", "neutron", "--norm",
          "mean", *common, path("gas_ion_neutron.dat")])
     _, s_ion_neutron = read_table(path("gas_ion_neutron.dat"))
     compare(s_ion_neutron, s_neutron, "neutron ignores the charge state")
@@ -183,7 +192,7 @@ def main():
     if "S(Si4+-O2-)" not in header:
         raise SystemExit("FAIL ion species: pair label missing from %r" % header)
     print("  ok   pair columns are labelled with the species")
-    bad = subprocess.run([exe, "-i", dump, "-m", "1:O3-", "-w", "xray", "-"],
+    bad = subprocess.run([exe, "static", "-i", dump, "-m", "1:O3-", "-w", "xray", "-"],
                          capture_output=True, text=True)
     if bad.returncode == 0 or "available: O, O1-, O2-" not in bad.stderr:
         raise SystemExit("FAIL ion species: O3- was accepted\n%s" % bad.stderr)
@@ -193,7 +202,7 @@ def main():
     print("simple cubic lattice")
     dump_lattice = generate("lattice.dump", natoms=125, length=20, frames=3, seed=3,
                             mode="lattice", fractions="1.0")
-    run([exe, "-i", dump_lattice, "-w", "unit", "--norm", "self", "--qmax", "6",
+    run([exe, "static", "-i", dump_lattice, "-w", "unit", "--norm", "self", "--qmax", "6",
          "--nq", "120", path("lattice.dat")])
     q_lat, s_lat = read_table(path("lattice.dat"))
     peak = np.max(s_lat)
@@ -292,10 +301,10 @@ def main():
     # --- 6. command line errors -------------------------------------------
     print("command line handling")
     cases = [
-        ([exe, "-i", dump], "missing output argument"),
-        ([exe, dump], "missing input"),
-        ([exe, "-i", dump, "--bogus", "1", "-"], "unknown option"),
-        ([exe, "-i", dump, "-w", "neutron", "-"], "weight without mapping"),
+        ([exe, "static", "-i", dump], "missing output argument"),
+        ([exe, "static", dump], "missing input"),
+        ([exe, "static", "-i", dump, "--bogus", "1", "-"], "unknown option"),
+        ([exe, "static", "-i", dump, "-w", "neutron", "-"], "weight without mapping"),
     ]
     for cmd, label in cases:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -310,7 +319,7 @@ def main():
     # --- 7. GPU backend (optional) ----------------------------------------
     if args.gpu:
         print("gpu backend")
-        probe = subprocess.run([exe, "-i", dump, "--device", "gpu", "--qmax", "3",
+        probe = subprocess.run([exe, "static", "-i", dump, "--device", "gpu", "--qmax", "3",
                                 "--nq", "4", "-"], capture_output=True, text=True)
         skip_reasons = ("no GPU support", "no usable CUDA device", "CUDA device",
                         "incompatible cufinufft_opts")
@@ -326,14 +335,14 @@ def main():
             gpu_common = ["--qmax", "6", "--nq", "40", "--eps", "1e-10"]
             for weight, norm in (("unit", "self"), ("neutron", "mean"), ("xray", "mean")):
                 sqcalc(dump, "cpu_%s.dat" % weight, "-w", weight, "--norm", norm, *gpu_common)
-                run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", weight, "--norm", norm,
+                run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", weight, "--norm", norm,
                      "--device", "gpu", *gpu_common, path("gpu_%s.dat" % weight)])
                 _, s_cpu = read_table(path("cpu_%s.dat" % weight))
                 _, s_gpu = read_table(path("gpu_%s.dat" % weight))
                 compare(s_cpu, s_gpu, "GPU vs CPU (%s weights)" % weight)
 
             # Single precision GPU transform against the double precision CPU one.
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
                  "--device", "gpu", "--precision", "single", *gpu_common,
                  path("gpu_single.dat")])
             _, s_cpu_unit = read_table(path("cpu_unit.dat"))
@@ -341,9 +350,9 @@ def main():
             compare(s_cpu_unit, s_gpu_single, "GPU float32 vs CPU float64", rtol=1.0e-4)
 
             # Reciprocal grid output must agree as well.
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
                  "--grid", path("cpu_grid.dat"), *gpu_common, path("cpu_grid_sq.dat")])
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "self",
                  "--device", "gpu", "--grid", path("gpu_grid.dat"), *gpu_common,
                  path("gpu_grid_sq.dat")])
             cpu_grid = np.loadtxt(path("cpu_grid.dat"))
@@ -360,9 +369,9 @@ def main():
             # Pair columns come from the per species amplitudes on the host
             # side of the download, so the S(q) partials have to match the CPU
             # run column by column.
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", *gpu_common,
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", *gpu_common,
                  path("cpu_p.dat")])
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
                  *gpu_common, path("gpu_p.dat")])
             cpu_part = read_matrix(path("cpu_p.dat"))
             gpu_part = read_matrix(path("gpu_p.dat"))
@@ -380,9 +389,9 @@ def main():
             # has to match.
             xrd_gpu = ["--xrd-lambda", "1.5406", "--xrd-range", "10", "60",
                        "--xrd-step", "1"]
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd",
                  path("cpu.xrd"), *xrd_gpu, *gpu_common, path("cpu_xrd_sq.dat")])
-            run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
+            run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
                  "--xrd", path("gpu.xrd"), *xrd_gpu, *gpu_common, path("gpu_xrd_sq.dat")])
             cpu_xrd = read_matrix(path("cpu.xrd"))
             gpu_xrd = read_matrix(path("gpu.xrd"))
@@ -458,7 +467,7 @@ def main():
     # g_ab is symmetric in a <-> b for the same reason as S_ab: the ordered
     # pair counts satisfy n_ab = n_ba and the normalizations N_a rho_b and
     # N_b rho_a are equal, so swapping -m must not change the cross column.
-    run([exe, "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "self",
+    run([exe, "static", "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "self",
          "--method", "debye", "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
          "--rdf", path("deb_swap.rdf"), path("deb_swap_sq.dat")])
     rdf_swap = read_matrix(path("deb_swap.rdf"))
@@ -492,10 +501,31 @@ def main():
                              % (rdf_h5.shape, rdf.shape))
         compare(rdf[:, 1:], rdf_h5[:, 1:], "HDF5 rdf vs text rdf", rtol=1.0e-8)
 
+        # --format has to override the file name in both directions: HDF5 into
+        # a plain name, text into a .h5 name.
+        sqcalc(dump, "deb_rdf_fmt_sq.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+               "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+               "--format", "hdf5", "--rdf", path("deb_rdf_fmt.dat"))
+        with open(path("deb_rdf_fmt.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("deb_rdf_fmt.dat"), "rdf"]).stdout)
+        rdf_fmt = read_matrix(path("deb_rdf_fmt.txt"))
+        if rdf_fmt.shape != rdf.shape:
+            raise SystemExit("FAIL --format hdf5 rdf shape %s vs text shape %s"
+                             % (rdf_fmt.shape, rdf.shape))
+        compare(rdf[:, 1:], rdf_fmt[:, 1:],
+                "rdf: --format hdf5 beats a .dat name", rtol=1.0e-8)
+
+        sqcalc(dump, "deb_rdf_forced_sq.dat", "-w", "unit", "--norm", "self", "--method", "debye",
+               "--qmax", "4", "--nq", "8", "--rmax", "8", "--dr", "0.05",
+               "--format", "text", "--rdf", path("deb_rdf_forced.h5"))
+        rdf_txt = read_matrix(path("deb_rdf_forced.h5"))
+        compare(rdf[:, 1:], rdf_txt[:, 1:],
+                "rdf: --format text beats a .h5 name", rtol=1.0e-8)
+
     # --- pair entropy from the Debye g(r) ---------------------------------
     print("pair entropy (--pair-entropy/--s2-accum)")
     s2_dump = generate("s2_gas.dump", natoms=1000, length=25, frames=200, seed=13)
-    run([exe, "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
+    run([exe, "static", "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
          "--rmax", "8", "--dr", "0.05", "--rdf", path("s2.rdf"),
          "--pair-entropy", path("s2.dat"), "--s2-accum", path("s2acc.dat"),
          path("s2_sq.dat")])
@@ -558,7 +588,7 @@ def main():
           ("ideal gas S2 and partial curves", text_final[0], npairs))
 
     if args.h5read:
-        run([exe, "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
+        run([exe, "static", "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
              "--rmax", "8", "--dr", "0.05", "--pair-entropy", path("s2.h5"),
              "--s2-accum", path("s2acc.h5"), path("s2_h5_sq.dat")])
         with open(path("s2_h5.txt"), "w") as handle:
@@ -568,6 +598,21 @@ def main():
         compare(read_matrix(path("s2acc_h5.txt")), accum, "HDF5 S2 curve vs text", rtol=1.0e-8)
         compare(read_matrix(path("s2_h5.txt")).reshape(-1),
                 text_final.reshape(-1), "HDF5 pair entropy vs text", rtol=1.0e-8)
+
+        # --format decides the container of both entropy files, whatever the
+        # names look like.
+        run([exe, "static", "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",
+             "--rmax", "8", "--dr", "0.05", "--format", "hdf5",
+             "--pair-entropy", path("s2_fmt.dat"),
+             "--s2-accum", path("s2acc_fmt.dat"), path("s2_fmt_sq.dat")])
+        with open(path("s2_fmt.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("s2_fmt.dat"), "pair_entropy"]).stdout)
+        with open(path("s2acc_fmt.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("s2acc_fmt.dat"), "s2_accum"]).stdout)
+        compare(read_matrix(path("s2acc_fmt.txt")), accum,
+                "pair entropy: --format hdf5 beats a .dat name", rtol=1.0e-8)
+        compare(read_matrix(path("s2_fmt.txt")).reshape(-1), text_final.reshape(-1),
+                "S2 curve: --format hdf5 beats a .dat name", rtol=1.0e-8)
 
     # The optional Python analysis tool must run on the generated files.
     try:
@@ -591,7 +636,7 @@ def main():
     # lattice with a = 4 A (4, 5.66, 6.93, 8 A).
     lattice_dump = generate("lattice_debye.dump", natoms=125, length=20, frames=1,
                             seed=3, mode="lattice", fractions="1.0")
-    run([exe, "-i", lattice_dump, "-m", "1:Si", "-w", "unit", "--norm", "self",
+    run([exe, "static", "-i", lattice_dump, "-m", "1:Si", "-w", "unit", "--norm", "self",
          "--method", "debye", "--qmax", "4", "--nq", "8", "--rmax", "9", "--dr", "0.02",
          "--rdf", path("lattice.rdf"), path("lattice_sq.dat")])
     rdf_lat = read_matrix(path("lattice.rdf"))
@@ -640,7 +685,7 @@ def main():
         # leave the cross column unchanged; the comparison is to roundoff
         # rather than exactly, because the two runs reach the amplitudes
         # through a different order of operations inside the transform.
-        run([exe, "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "n",
+        run([exe, "static", "-i", dump, "-m", "1:O,2:Si", "-w", "unit", "--norm", "n",
              "--method", method, "--qmin", "0.5", "--qmax", "5.9", "--nq", "27", *extra,
              path("part_swap_%s.dat" % method)])
         swapped = read_matrix(path("part_swap_%s.dat" % method))
@@ -657,9 +702,9 @@ def main():
     print("partials without a mapping")
     dump_ka = generate("ka.dump", natoms=400, length=16, frames=3, seed=5,
                        fractions="0.8,0.2")
-    run([exe, "-i", dump_ka, "-w", "unit", "--qmax", "6", "--nq", "120",
+    run([exe, "static", "-i", dump_ka, "-w", "unit", "--qmax", "6", "--nq", "120",
          path("ka_unmapped.dat")])
-    run([exe, "-i", dump_ka, "-m", "1:Si,2:O", "-w", "unit", "--qmax", "6",
+    run([exe, "static", "-i", dump_ka, "-m", "1:Si,2:O", "-w", "unit", "--qmax", "6",
          "--nq", "120", path("ka_mapped.dat")])
     with open(path("ka_unmapped.dat")) as handle:
         header = handle.readline().split()
@@ -680,7 +725,7 @@ def main():
     print("  ok   %-42s sum rule %.1e, high-q S11=%.3f S22=%.3f"
           % ("unmapped partials are type labelled", worst, s_aa, s_bb))
     # The Debye g(r) partials carry the same type-id labels.
-    run([exe, "-i", dump_ka, "-w", "unit", "--method", "debye", "--rmax", "6",
+    run([exe, "static", "-i", dump_ka, "-w", "unit", "--method", "debye", "--rmax", "6",
          "--rdf", path("ka.rdf"), path("ka_sq.dat")])
     with open(path("ka.rdf")) as handle:
         rdf_header = handle.readline().split()
@@ -708,7 +753,7 @@ def main():
     with open(path("sparse.dump"), "w") as handle:
         handle.writelines(rewritten)
     sqcalc(dump, "dense_ids.dat", "-w", "unit", "--qmax", "6", "--nq", "30")
-    run([exe, "-i", path("sparse.dump"), "-m", "1:Si,3:O", "-w", "unit",
+    run([exe, "static", "-i", path("sparse.dump"), "-m", "1:Si,3:O", "-w", "unit",
          "--qmax", "6", "--nq", "30", path("sparse_ids.dat")])
     dense = read_matrix(path("dense_ids.dat"))
     sparse = read_matrix(path("sparse_ids.dat"))
@@ -737,7 +782,7 @@ def main():
     print("partials are accumulated exactly")
     gas1 = generate("part_gas1.dump", natoms=400, length=20, frames=3, seed=5,
                     fractions=1.0)
-    run([exe, "-i", gas1, "-w", "unit", "--norm", "n", "--qmax", "6",
+    run([exe, "static", "-i", gas1, "-w", "unit", "--norm", "n", "--qmax", "6",
          "--nq", "60", path("part_gas1.dat")])
     one = read_matrix(path("part_gas1.dat"))
     if one.shape[1] != 3:
@@ -753,7 +798,7 @@ def main():
 
     # The cross term uses the same accumulator, so the OVITO sum rule has to
     # hold to roundoff rather than to the few percent the older check allowed.
-    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
+    run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
          "--qmax", "6", "--nq", "60", path("part_sum_rule.dat")])
     two = read_matrix(path("part_sum_rule.dat"))
     worst = float(np.max(np.abs(two[:, 1] - (two[:, 2] + 2.0*two[:, 3] + two[:, 4]))))
@@ -766,7 +811,7 @@ def main():
     # fraction of a single mode (or a negative number).
     lat = generate("part_lat.dump", natoms=32768, length=20, frames=1,
                    mode="lattice", fractions=1.0, seed=3)
-    run([exe, "-i", lat, "-w", "unit", "--norm", "n", "--qmin", "10.05",
+    run([exe, "static", "-i", lat, "-w", "unit", "--norm", "n", "--qmin", "10.05",
          "--qmax", "10.056", "--nq", "1", "--eps", "1e-10",
          path("part_lat.dat")])
     bragg = read_matrix(path("part_lat.dat"))
@@ -792,7 +837,7 @@ def main():
     ni = generate("xrd_ni.dump", natoms=32000, length=70.4, frames=1, mode="fcc",
                   fractions=1.0, seed=3)
     ni_opts = ["--xrd-lambda", "1.541838", "--xrd-range", "40", "80"]
-    run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.xrd"),
+    run([exe, "static", "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.xrd"),
          *ni_opts, "--xrd-step", "0.2"])
     xrd = read_matrix(path("ni.xrd"))
     if xrd.shape != (200, 3):
@@ -853,7 +898,7 @@ def main():
 
     # Two species: the pair columns have to add up to the total, which is what
     # makes them a decomposition rather than three unrelated curves.
-    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd", path("mix.xrd"),
+    run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd", path("mix.xrd"),
          "--xrd-lambda", "1.5418", "--xrd-range", "5", "60", "--xrd-step", "0.5"])
     mix = read_matrix(path("mix.xrd"))
     if mix.shape[1] != 5:
@@ -872,7 +917,7 @@ def main():
     if worst > 1.0e-9:
         raise SystemExit("FAIL xrd: pair columns are off the total by %.3e" % worst)
     # --no-partials drops them, like it does in the S(q) table
-    run([exe, "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--no-partials", "--xrd",
+    run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--no-partials", "--xrd",
          path("mix_nopart.xrd"), "--xrd-lambda", "1.5418", "--xrd-range", "5", "60",
          "--xrd-step", "0.5"])
     if read_matrix(path("mix_nopart.xrd")).shape[1] != 2:
@@ -884,7 +929,7 @@ def main():
     # width the box derives when --xrd-step is left out.
     sc = generate("xrd_sc.dump", natoms=64, length=8.0, frames=2, mode="lattice",
                   fractions=1.0, seed=3)
-    run([exe, "-i", sc, "-w", "unit", "--method", "direct", "--xrd", path("sc.xrd"),
+    run([exe, "static", "-i", sc, "-w", "unit", "--method", "direct", "--xrd", path("sc.xrd"),
          "--xrd-lambda", "1.5418", "--xrd-range", "40", "100"])
     cubic = read_matrix(path("sc.xrd"))
     if cubic.shape != (4, 3):
@@ -911,7 +956,7 @@ def main():
           % "unit weights, direct method")
 
     # --no-lp drops exactly the Lorentz-polarization factor.
-    run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--no-lp", "--xrd", path("ni_nolp.xrd"),
+    run([exe, "static", "-i", ni, "-m", "1:Ni", "-w", "xray", "--no-lp", "--xrd", path("ni_nolp.xrd"),
          *ni_opts, "--xrd-step", "0.2"])
     with open(path("ni_nolp.xrd")) as handle:
         handle.readline()
@@ -932,7 +977,7 @@ def main():
     # its reference angle the whole 1-179 degree range collapses to two bins.
     wide = generate("xrd_wide.dump", natoms=4000, length=35.2, frames=1, mode="fcc",
                     fractions=1.0, seed=3)
-    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide.xrd"),
+    run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide.xrd"),
          "--xrd-lambda", "1.541838"])
     wide_xrd = read_matrix(path("wide.xrd"))
     if wide_xrd.shape[0] < 20:
@@ -945,9 +990,9 @@ def main():
     # reproduce every column of the pattern - the pair columns included, which
     # no other check pins against an independent computation.
     cross = ["--xrd-lambda", "1.541838", "--xrd-range", "40", "80", "--xrd-step", "0.5"]
-    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide_direct.xrd"),
+    run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide_direct.xrd"),
          *cross])
-    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+    run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
          "--xrd", path("wide_nufft.xrd"), *cross])
     xrd_direct = read_matrix(path("wide_direct.xrd"))
     xrd_nufft = read_matrix(path("wide_nufft.xrd"))
@@ -967,14 +1012,14 @@ def main():
     print("  ok   %-42s max deviation %.2e" % ("direct vs nufft, pattern + pairs", worst))
 
     # --no-partials still drops them
-    run([exe, "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+    run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
          "--no-partials", "--xrd", path("wide_plain.xrd"), *cross])
     if read_matrix(path("wide_plain.xrd")).shape[1] != 2:
         raise SystemExit("FAIL xrd: direct --no-partials left pair columns")
     print("  ok   %-42s direct writes the total only" % "--no-partials")
 
     if args.h5read:
-        run([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.h5"),
+        run([exe, "static", "-i", ni, "-m", "1:Ni", "-w", "xray", "--xrd", path("ni.h5"),
              *ni_opts, "--xrd-step", "0.2"])
         with open(path("ni_from_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("ni.h5"), "xrd"]).stdout)
@@ -996,7 +1041,7 @@ def main():
         if needle not in result.stdout + result.stderr:
             raise SystemExit("FAIL xrd: %s did not report %r" % (tail, needle))
 
-    base = [exe, "-i", ni, "-m", "1:Ni", "-w", "xray"]
+    base = [exe, "static", "-i", ni, "-m", "1:Ni", "-w", "xray"]
     expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
                          "--method", "debye"], "--method debye sums")
     expect_error(base + ["--xrd", path("bad.xrd"), "--xrd-lambda", "1.5418",
@@ -1007,7 +1052,7 @@ def main():
     expect_error(base + ["--xrd-step", "0.1", path("bad.xrd")], "belong to --xrd")
     expect_error(base + ["--no-lp", path("bad.dat")], "belong to --xrd")
     # the 32000 atom box needs 2.3e10 phase evaluations, over the direct limit
-    expect_error([exe, "-i", ni, "-m", "1:Ni", "-w", "xray", "--method", "direct",
+    expect_error([exe, "static", "-i", ni, "-m", "1:Ni", "-w", "xray", "--method", "direct",
                   "--xrd", path("bad.xrd"), "--xrd-lambda", "1.541838",
                   "--xrd-range", "40", "80"], "phase evaluations")
     print("  ok   %-42s 7 refusals" % "debye, qmin, lambda, range, stray flags")
@@ -1030,7 +1075,7 @@ def main():
     def b2_shell(name, q, weight):
         # a window of +-5e-5 1/A holds the six (or twelve) lattice vectors of
         # one family and nothing else, so the shell average is the family mean
-        run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", weight, "--norm", "mean",
+        run([exe, "static", "-i", b2, "-m", "1:Ni,2:Al", "-w", weight, "--norm", "mean",
              "--qmin", "%.6f" % (q - 5.0e-5), "--qmax", "%.6f" % (q + 5.0e-5),
              "--nq", "1", path(name)])
         return read_matrix(path(name))[0]
@@ -1083,8 +1128,8 @@ def main():
     # The pattern keeps the same signature: the cross column is negative at the
     # odd lines and positive at the even ones, and direct reproduces it all.
     xrd_b2 = ["--xrd-lambda", "1.541838", "--xrd-range", "25", "80", "--xrd-step", "0.2"]
-    run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--xrd", path("b2.xrd"), *xrd_b2])
-    run([exe, "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--method", "direct",
+    run([exe, "static", "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--xrd", path("b2.xrd"), *xrd_b2])
+    run([exe, "static", "-i", b2, "-m", "1:Ni,2:Al", "-w", "xray", "--method", "direct",
          "--xrd", path("b2_direct.xrd"), *xrd_b2])
     b2_xrd = read_matrix(path("b2.xrd"))
     b2_dir = read_matrix(path("b2_direct.xrd"))
@@ -1123,7 +1168,7 @@ def main():
             options = run([sys.executable, helper, source, "--qmax", "6",
                            "--print-options"]).stdout.split()
             nq = int(options[options.index("--nq") + 1])
-            run([exe, "-i", source, *options, path("chosen_q.dat")])
+            run([exe, "static", "-i", source, *options, path("chosen_q.dat")])
             chosen = np.loadtxt(path("chosen_q.dat"))
             if chosen.shape[0] != nq:
                 raise SystemExit("FAIL choose_q (%s): %d rows for nq = %d"
@@ -1146,8 +1191,8 @@ def main():
             raise SystemExit("FAIL choose_q debye nq: %s" % " ".join(options))
         debye_opts = ["-w", "unit", "--method", "debye", "--rmax", "6",
                       "--dr", "0.01", "--qmax", "6"]
-        run([exe, "-i", dump, *debye_opts, "--nq", "40", path("deb_coarse.dat")])
-        run([exe, "-i", dump, *debye_opts, "--nq", "200", path("deb_fine.dat")])
+        run([exe, "static", "-i", dump, *debye_opts, "--nq", "40", path("deb_coarse.dat")])
+        run([exe, "static", "-i", dump, *debye_opts, "--nq", "200", path("deb_fine.dat")])
         coarse = read_matrix(path("deb_coarse.dat"))
         fine = read_matrix(path("deb_fine.dat"))
         idx = 5*np.arange(1, 41) - 3          # coincident shell centres
@@ -1225,19 +1270,20 @@ def main():
           % ("ideal gas partial g(r) -> 1", rdf[mid, 1].mean(), rdf[mid, 2].mean(),
              rdf[mid, 3].mean(), rdf[mid, 4].mean()))
 
-    # --- 11. dynamic structure factor along a q line (--dyn) --------------
-    print("dynamic structure factor (--dyn)")
+    # --- 11. dynamic structure factor along a q line (sqcalc dyn) ----------
+    print("dynamic structure factor along a q line")
     ref_dyn = os.path.join(HERE, "ref_sqw.py")
     dyn_spec = "4,1,4,1,0,0"          # 5 q points, |q| = 1..4 along x
-    dyn_q = ["--dyn", "--dyn-q", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
+    dyn_q = ["--qpoints", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
              "--lag", "1"]
     nq_dyn = 5
     dyn_dump = generate("dyn_ball.dump", natoms=1000, length=20, frames=40, seed=11,
                         mode="ballistic", temperature=1.0, columns="id type xu yu zu")
-    sqcalc(dyn_dump, "dyn_sq.dat", "-w", "unit", "--norm", "mean", *dyn_q,
-           "--sqw", path("dyn_sqw.dat"), "--fqt", path("dyn_fqt.dat"))
+    sqcalc_dyn(dyn_dump, "-w", "unit", "--norm", "mean", *dyn_q,
+               "--sq", path("dyn_sq.dat"), "--sqw", path("dyn_sqw.dat"),
+               "--fqt", path("dyn_fqt.dat"))
     run([sys.executable, ref_dyn, "--input", dyn_dump,
-         "--dyn-q", "line:" + dyn_spec,
+         "--qpoints", "line:" + dyn_spec,
          "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", "unit",
          "--norm", "mean", "--output-fqt", path("dyn_ref_fqt.dat"),
          "--output-sqw", path("dyn_ref_sqw.dat")])
@@ -1260,10 +1306,10 @@ def main():
     # the trajectory, so only the decay rate is a clean observable).
     diff_dump = generate("dyn_diff.dump", natoms=500, length=20, frames=1000, seed=3,
                          mode="diffusive", diffusivity=0.1, columns="id type xu yu zu")
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
-         "--dyn", "--dyn-q", "line:1,2,3,1,0,0", "--dt", "1", "--maxframes", "8",
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--qpoints", "line:1,2,3,1,0,0", "--dt", "1", "--maxframes", "8",
          "--lag", "1",
-         "--fqt", path("dyn_diff_fqt.dat"), path("dyn_diff_sq.dat")])
+         "--fqt", path("dyn_diff_fqt.dat"), "--sq", path("dyn_diff_sq.dat")])
     diff_f = read_matrix(path("dyn_diff_fqt.dat"))
     naxis_d = 9
     f_d = diff_f[:, 4].reshape(2, naxis_d)
@@ -1282,8 +1328,8 @@ def main():
     dyn_wrapped = generate("dyn_ball_wrapped.dump", natoms=1000, length=20, frames=40,
                            seed=11, mode="ballistic", temperature=1.0,
                            columns="id type x y z")
-    sqcalc(dyn_wrapped, "dyn_sq_wrap.dat", "-w", "unit", "--norm", "mean", *dyn_q,
-           "--sqw", path("dyn_sqw_wrap.dat"))
+    sqcalc_dyn(dyn_wrapped, "-w", "unit", "--norm", "mean", *dyn_q,
+               "--sq", path("dyn_sq_wrap.dat"), "--sqw", path("dyn_sqw_wrap.dat"))
     compare(read_matrix(path("dyn_sqw_wrap.dat")), sqw,
             "wrapped dump (reader unwraps) vs xu", rtol=1.0e-9)
 
@@ -1292,17 +1338,17 @@ def main():
     dyn_step = generate("dyn_ball_step.dump", natoms=1000, length=20, frames=40, seed=11,
                         mode="ballistic", temperature=1.0, columns="id type xu yu zu",
                         step=5)
-    run([exe, "-i", dyn_step, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
-         "--dyn", "--dyn-q", "line:" + dyn_spec, "--dt", "0.2", "--maxframes", "20",
+    run([exe, "dyn", "-i", dyn_step, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--qpoints", "line:" + dyn_spec, "--dt", "0.2", "--maxframes", "20",
          "--lag", "1",
-         "--sqw", path("dyn_sqw_step.dat"), path("dyn_sq_step.dat")])
+         "--sqw", path("dyn_sqw_step.dat"), "--sq", path("dyn_sq_step.dat")])
     compare(read_matrix(path("dyn_sqw_step.dat")), sqw,
             "dt = 0.2 over 5 steps equals dt = 1 over 1", rtol=1.0e-9)
 
     # Partial spectra: with unit weights and --norm n the OVITO sum rule
     # S(q,w) = S_aa + 2 S_ab + S_bb holds sample by sample.
-    run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n", *dyn_q,
-         "--sqw", path("dyn_part.dat"), path("dyn_sq_n.dat")])
+    run([exe, "dyn", "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n", *dyn_q,
+         "--sqw", path("dyn_part.dat"), "--sq", path("dyn_sq_n.dat")])
     part = read_matrix(path("dyn_part.dat"))
     worst = float(np.max(np.abs(part[:, 4] - (part[:, 5] + 2.0*part[:, 6] + part[:, 7]))))
     if worst > 1.0e-9:
@@ -1313,10 +1359,12 @@ def main():
     # Chemical weighting: the weighted total follows the same post-processing
     # convention as the static partials (neutron b, X-ray f(q)).
     for weight, norm in (("neutron", "mean"), ("xray", "self")):
-        sqcalc(dyn_dump, "dyn_w_%s.dat" % weight, "-w", weight, "--norm", norm, *dyn_q,
-               "--sqw", path("dyn_w_%s_sqw.dat" % weight))
+        sqcalc_dyn(dyn_dump, "-w", weight, "--norm", norm, *dyn_q,
+                   "-m", "1:Si,2:O",
+                   "--sq", path("dyn_w_%s.dat" % weight),
+                   "--sqw", path("dyn_w_%s_sqw.dat" % weight))
         run([sys.executable, ref_dyn, "--input", dyn_dump,
-             "--dyn-q", "line:" + dyn_spec,
+             "--qpoints", "line:" + dyn_spec,
              "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", weight,
              "--norm", norm, "--mapping", "1:Si,2:O",
              "--output-fqt", path("dyn_w_%s_ref_fqt.dat" % weight),
@@ -1326,12 +1374,12 @@ def main():
                 "%s weighted S(q,w) vs reference" % weight, rtol=1.0e-9)
 
     # --lag thins the time origins; the reference applies the same rule.
-    run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
-         "--dyn", "--dyn-q", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
+    run([exe, "dyn", "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+         "--qpoints", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
          "--lag", "3",
-         "--fqt", path("dyn_lag_fqt.dat"), path("dyn_lag_sq.dat")])
+         "--fqt", path("dyn_lag_fqt.dat"), "--sq", path("dyn_lag_sq.dat")])
     run([sys.executable, ref_dyn, "--input", dyn_dump,
-         "--dyn-q", "line:" + dyn_spec,
+         "--qpoints", "line:" + dyn_spec,
          "--maxframes", "20", "--lag", "3", "--dt", "1", "--weight", "unit",
          "--norm", "mean", "--output-fqt", path("dyn_lag_ref_fqt.dat"),
          "--output-sqw", path("dyn_lag_ref_sqw.dat")])
@@ -1343,12 +1391,12 @@ def main():
     ref_four = os.path.join(HERE, "ref_s4.py")
     s4_spec = "1,2,3,1,0,0"            # 2 q points, |q| = 2 and 3 along x
     s4_cutoff = "0.5"
-    s4_base = ["--dyn", "--dyn-q", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
+    s4_base = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
     s4_q = s4_base + ["--lag", "1"]
-    run([exe, "-i", diff_dump, "-w", "unit", "--norm", "mean", *s4_q,
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--norm", "mean", *s4_q,
          "--s4-cutoff", s4_cutoff, "--s4", path("s4.dat"),
-         "--chi4", path("chi4.dat"), path("s4_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+         "--chi4", path("chi4.dat"), "--sq", path("s4_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
          "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
          "--output-s4", path("s4_ref.dat"), "--output-chi4", path("chi4_ref.dat")])
     s4 = read_matrix(path("s4.dat"))
@@ -1365,45 +1413,46 @@ def main():
     # segments in thread order, so an S4 run cannot depend on the thread
     # count.  The two tables have to be identical, not merely close.
     for threads in ("1", "2"):
-        run([exe, "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
              "--s4-cutoff", s4_cutoff, "--s4", path("s4_scan_t%s.dat" % threads),
-             path("s4_scan_t%s_sq.dat" % threads)], env={"OMP_NUM_THREADS": threads})
+             "--sq", path("s4_scan_t%s_sq.dat" % threads)],
+            env={"OMP_NUM_THREADS": threads})
     compare(read_matrix(path("s4_scan_t1.dat")), read_matrix(path("s4_scan_t2.dat")),
             "S4 is independent of the thread count", rtol=0.0)
 
     # The q = 0 row of the S4 table is the scalar chi4(t).
-    s4_q0 = ["--dyn", "--dyn-q", "line:2,0,2,1,0,0", "--dt", "1", "--maxframes", "8",
+    s4_q0 = ["--qpoints", "line:2,0,2,1,0,0", "--dt", "1", "--maxframes", "8",
              "--lag", "1"]
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_q0, "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_q0.dat"), path("s4_q0_sq.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q0, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_q0.dat"), "--sq", path("s4_q0_sq.dat")])
     compare(read_matrix(path("s4_q0.dat"))[:9, 4].reshape(-1, 1),
             chi4[:, 2].reshape(-1, 1), "S4(q=0,t) = chi4(t)", rtol=1.0e-12)
 
     # --partials must not add S4 columns.
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--partials", *s4_q,
-         "--s4-cutoff", s4_cutoff, "--s4", path("s4_part.dat"), path("s4_part_sq.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "--partials", *s4_q,
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_part.dat"), "--sq", path("s4_part_sq.dat")])
     if read_matrix(path("s4_part.dat")).shape != s4.shape:
         raise SystemExit("FAIL --partials changed the S4 table layout")
     print("  ok   %-42s no partial columns" % "--partials is ignored by S4")
 
     # --chi4 alone must reproduce the chi4 of the combined run.
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-         "--chi4", path("chi4_only.dat"), path("chi4_only_sq.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--chi4", path("chi4_only.dat"), "--sq", path("chi4_only_sq.dat")])
     compare(read_matrix(path("chi4_only.dat")), chi4, "chi4 without --s4", rtol=1.0e-9)
 
-    # --dyn-format overrides the suffix for the dynamic outputs.
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-         "--dyn-format", "text", "--s4", path("s4_forced.h5"),
-         "--chi4", path("chi4_forced.h5"), path("s4_forced_sq.dat")])
-    compare(read_matrix(path("s4_forced.h5")), s4, "S4 --dyn-format text override", rtol=1.0e-9)
-    compare(read_matrix(path("chi4_forced.h5")), chi4, "chi4 --dyn-format text override",
+    # --format overrides the suffix for the dynamic outputs.
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--format", "text", "--s4", path("s4_forced.h5"),
+         "--chi4", path("chi4_forced.h5"), "--sq", path("s4_forced_sq.dat")])
+    compare(read_matrix(path("s4_forced.h5")), s4, "S4 --format text override", rtol=1.0e-9)
+    compare(read_matrix(path("chi4_forced.h5")), chi4, "chi4 --format text override",
             rtol=1.0e-9)
 
     # A run with only --s4/--chi4 must not need the coherent ring buffers;
     # adding --sqw has to leave S4, chi4 and the static S(q) table unchanged.
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
          "--s4", path("s4_coherent.dat"), "--chi4", path("chi4_coherent.dat"),
-         "--sqw", path("s4_coherent_sqw.dat"), path("s4_coherent_sq.dat")])
+         "--sqw", path("s4_coherent_sqw.dat"), "--sq", path("s4_coherent_sq.dat")])
     compare(read_matrix(path("s4_coherent.dat")), s4, "S4-only == S4 with --sqw", rtol=1.0e-9)
     compare(read_matrix(path("chi4_coherent.dat")), chi4, "chi4-only == chi4 with --sqw",
             rtol=1.0e-9)
@@ -1411,13 +1460,13 @@ def main():
             read_table(path("s4_coherent_sq.dat"))[1].reshape(-1, 1),
             "S4-only static S(q) == full", rtol=1.0e-9)
 
-    # --- reciprocal-lattice grid sampling (--dyn-q grid) ------------------
-    print("reciprocal-lattice grid sampling (--dyn-q grid)")
+    # --- reciprocal-lattice grid sampling (--qpoints grid) ------------------
+    print("reciprocal-lattice grid sampling (--qpoints grid)")
     q1 = 2.0*math.pi/20.0              # smallest reciprocal vector of the box
-    grid_base = ["--dyn", "--dyn-q", "grid:%.6f" % (2.0*q1), "--dt", "1",
+    grid_base = ["--qpoints", "grid:%.6f" % (2.0*q1), "--dt", "1",
                  "--maxframes", "8", "--lag", "1"]
-    grid_run = run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--s4-cutoff", s4_cutoff,
-                    "--s4", path("s4_grid.dat"), "--chi4", path("chi4_grid.dat"),
+    grid_run = run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--s4-cutoff", s4_cutoff,
+                    "--s4", path("s4_grid.dat"), "--chi4", path("chi4_grid.dat"), "--sq", 
                     path("s4_grid_sq.dat")])
     grid = read_matrix(path("s4_grid.dat"))
     grid_chi4 = read_matrix(path("chi4_grid.dat"))
@@ -1429,8 +1478,8 @@ def main():
     if np.any(np.abs(shells[:, 0]) > 1.0e-9) or np.any(np.abs(shells[:, 1]) > 1.0e-9):
         raise SystemExit("FAIL grid: the shell rows are not keyed by |q|")
     # The per-mode rows are still available on request.
-    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
-         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_modes.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_modes.dat"), "--sq", 
          path("s4_grid_modes_sq.dat")])
     mode_table = read_matrix(path("s4_grid_modes.dat"))
     modes = np.unique(np.round(mode_table[:, :3], 6), axis=0)
@@ -1450,9 +1499,9 @@ def main():
             grid_chi4[:, 2].reshape(-1, 1), "grid: S4(q=0,t) = chi4(t)", rtol=1.0e-12)
 
     # A lattice mode has to agree with a q line through the same vector.
-    run([exe, "-i", diff_dump, "-w", "unit",
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit",
          *dyn_line("1,0,%.12f,1,0,0" % q1), "--dt", "1", "--maxframes", "8",
-         "--lag", "1", "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_line.dat"),
+         "--lag", "1", "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_line.dat"), "--sq", 
          path("s4_grid_line_sq.dat")])
     compare(rows_at(mode_table, [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
             rows_at(read_matrix(path("s4_grid_line.dat")), [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
@@ -1465,12 +1514,12 @@ def main():
 
     # The mode budget drops whole shells, keeps the two ends of the q range and
     # is reported in the table header.
-    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-modes", "12",
-         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_thin.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--modes", "12",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_thin.dat"), "--sq", 
          path("s4_grid_thin_sq.dat")])
     thin_modes = np.unique(np.round(read_matrix(path("s4_grid_thin.dat"))[:, :3], 6), axis=0)
     if not 1 < thin_modes.shape[0] <= 12:
-        raise SystemExit("FAIL grid: --dyn-modes 12 gave %d modes" % thin_modes.shape[0])
+        raise SystemExit("FAIL grid: --modes 12 gave %d modes" % thin_modes.shape[0])
     if not any("thinned" in line for line in open(path("s4_grid_thin.dat"))):
         raise SystemExit("FAIL grid: the thinning is not reported in the header")
     print("  ok   %-42s %d modes, thinned to %d"
@@ -1480,14 +1529,14 @@ def main():
     # compare them against a q line, which still uses the direct loop.  One
     # vector per axis count: at (1,0,0) only the first factor matters, at
     # (1,1,0) the first two do.
-    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
-         "--fqt", path("fq_grid.dat"), "--fqt-self", path("fs_grid.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--keep-modes",
+         "--fqt", path("fq_grid.dat"), "--fqt-self", path("fs_grid.dat"), "--sq", 
          path("fq_grid_sq.dat")])
     for direction, qvec in (("1,0,0", [q1, 0.0, 0.0]), ("1,1,0", [q1, q1, 0.0])):
-        run([exe, "-i", diff_dump, "-w", "unit",
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit",
              *dyn_line("1,0,%.12f,%s" % (math.sqrt(sum(v*v for v in qvec)), direction)),
              "--dt", "1", "--maxframes", "8", "--lag", "1", "--fqt", path("fq_line.dat"),
-             "--fqt-self", path("fs_line.dat"), path("fq_line_sq.dat")])
+             "--fqt-self", path("fs_line.dat"), "--sq", path("fq_line_sq.dat")])
         for table, label in (("fq", "F(q,t)"), ("fs", "F_s(q,t)")):
             # The two evaluations differ only in the order the atoms are
             # summed, which the 13 significant digits of the table cannot
@@ -1501,20 +1550,20 @@ def main():
     # A budget that only the orbit route can meet must be met, not reported as
     # impossible: three modes are the Gamma point plus two shell
     # representatives, while one whole shell already costs four.
-    tight = run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-modes", "3",
-                 "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_tight.dat"),
+    tight = run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--modes", "3",
+                 "--s4-cutoff", s4_cutoff, "--s4", path("s4_grid_tight.dat"), "--sq", 
                  path("s4_grid_tight_sq.dat")])
     tight_rows = np.unique(np.round(read_matrix(path("s4_grid_tight.dat"))[:, :3], 6), axis=0)
     if tight_rows.shape[0] != 3:
-        raise SystemExit("FAIL grid: --dyn-modes 3 kept %d rows" % tight_rows.shape[0])
+        raise SystemExit("FAIL grid: --modes 3 kept %d rows" % tight_rows.shape[0])
     if "could not be met" in tight.stderr:
-        raise SystemExit("FAIL grid: --dyn-modes 3 was reported as impossible")
+        raise SystemExit("FAIL grid: --modes 3 was reported as impossible")
     print("  ok   %-42s %d rows" % ("grid: the budget ladder reaches the orbit route",
                                     tight_rows.shape[0]))
 
     # A shell with two orbits: |n|^2 = 9 holds six (3,0,0) vectors and twenty
     # four (2,2,1) ones, so a shell average that ignores the multiplicities is
-    # wrong.  Under --dyn-thin orbits one representative per orbit survives and
+    # wrong.  Under --thin orbits one representative per orbit survives and
     # the collapsed row must be their 6:24 weighted mean, which is an algebraic
     # identity and therefore comparable to machine precision.
     def rows_at_q(table, q):
@@ -1526,14 +1575,14 @@ def main():
                     for perm in permutations(miller)
                     for sign in product([1, -1], repeat=3)})
 
-    orbit_run = ["--dyn", "--dyn-q", "grid:%.6f" % (3.1*q1), "--dt", "1",
-                 "--maxframes", "8", "--lag", "1", "--dyn-thin", "orbits",
-                 "--dyn-modes", "10"]
-    run([exe, "-i", diff_dump, "-w", "unit", *orbit_run, "--dyn-keep-modes",
-         "--s4-cutoff", s4_cutoff, "--s4", path("s4_orbit_modes.dat"),
+    orbit_run = ["--qpoints", "grid:%.6f" % (3.1*q1), "--dt", "1",
+                 "--maxframes", "8", "--lag", "1", "--thin", "orbits",
+                 "--modes", "10"]
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *orbit_run, "--keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_orbit_modes.dat"), "--sq", 
          path("s4_orbit_modes_sq.dat")])
-    run([exe, "-i", diff_dump, "-w", "unit", *orbit_run, "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_orbit_avg.dat"), path("s4_orbit_avg_sq.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *orbit_run, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_orbit_avg.dat"), "--sq", path("s4_orbit_avg_sq.dat")])
     shell = rows_at_q(read_matrix(path("s4_orbit_modes.dat")), 3.0*q1)
     vectors = np.unique(np.round(shell[:, :3], 6), axis=0)
     if vectors.shape[0] != 2:
@@ -1559,12 +1608,12 @@ def main():
     print("  ok   %-42s weights %s" % ("grid: two-orbit shell weighting",
                                        weights.astype(int)))
 
-    # --- one reciprocal-lattice vector (--dyn-q single) --------------------
-    print("single reciprocal-lattice vector (--dyn-q single)")
-    single_base = ["--dyn", "--dyn-q", "single:1,0,0", "--dt", "1", "--maxframes", "8",
+    # --- one reciprocal-lattice vector (--qpoints single) --------------------
+    print("single reciprocal-lattice vector (--qpoints single)")
+    single_base = ["--qpoints", "single:1,0,0", "--dt", "1", "--maxframes", "8",
                    "--lag", "1"]
-    run([exe, "-i", diff_dump, "-w", "unit", *single_base, "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_single.dat"), "--chi4", path("chi4_single.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *single_base, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_single.dat"), "--chi4", path("chi4_single.dat"), "--sq", 
          path("s4_single_sq.dat")])
     single_table = read_matrix(path("s4_single.dat"))
     # The row is keyed by |q|, the indices and the vector go into the header.
@@ -1575,14 +1624,14 @@ def main():
     if "n = (1 0 0" not in single_header or "q = (" not in single_header:
         raise SystemExit("FAIL single: the header does not carry n and the q vector")
     # It has to agree, bit for bit, with both existing routes to that vector.
-    run([exe, "-i", diff_dump, "-w", "unit", *dyn_line("1,0,%.12f,1,0,0" % q1),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *dyn_line("1,0,%.12f,1,0,0" % q1),
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_single_line.dat"), path("s4_single_line_sq.dat")])
+         "--s4", path("s4_single_line.dat"), "--sq", path("s4_single_line_sq.dat")])
     compare(rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
             rows_at(read_matrix(path("s4_single_line.dat")), [q1, 0.0, 0.0])[:, 4].reshape(-1, 1),
             "single: matches the q line at that vector", rtol=1.0e-12)
-    run([exe, "-i", diff_dump, "-w", "unit", *grid_base, "--dyn-keep-modes",
-         "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_grid.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *grid_base, "--keep-modes",
+         "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_grid.dat"), "--sq", 
          path("s4_single_grid_sq.dat")])
     grid_row = rows_at(read_matrix(path("s4_single_grid.dat")), [q1, 0.0, 0.0])
     compare(rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
@@ -1594,24 +1643,24 @@ def main():
     # A vector with more than one nonzero index: at (1,0,0) the phase is
     # t_1(1) alone, because every t_j(0) is 1, so that comparison cannot see a
     # mix-up in the other two axes.
-    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:1,1,0", "--dt", "1",
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "single:1,1,0", "--dt", "1",
          "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_single_diag.dat"), path("s4_single_diag_sq.dat")])
+         "--s4", path("s4_single_diag.dat"), "--sq", path("s4_single_diag_sq.dat")])
     compare(rows_at_q(read_matrix(path("s4_single_diag.dat")),
                       math.sqrt(2.0)*q1)[:, 4].reshape(-1, 1),
             rows_at(read_matrix(path("s4_single_grid.dat")), [q1, q1, 0.0])[:, 4].reshape(-1, 1),
             "single: a two-axis vector matches the grid", rtol=1.0e-12)
     # The mirrored indices are the same vector up to a sign, and S4 is even.
-    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:-1,0,0",
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "single:-1,0,0",
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_single_neg.dat"), path("s4_single_neg_sq.dat")])
+         "--s4", path("s4_single_neg.dat"), "--sq", path("s4_single_neg_sq.dat")])
     compare(rows_at_q(read_matrix(path("s4_single_neg.dat")), q1)[:, 4].reshape(-1, 1),
             rows_at_q(single_table, q1)[:, 4].reshape(-1, 1),
             "single: (-1,0,0) agrees with (1,0,0)", rtol=1.0e-12)
     # Gamma is a legal lattice vector, and its row is the scalar chi4(t).
-    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:0,0,0",
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "single:0,0,0",
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_single_gamma.dat"), "--chi4", path("chi4_single_gamma.dat"),
+         "--s4", path("s4_single_gamma.dat"), "--chi4", path("chi4_single_gamma.dat"), "--sq", 
          path("s4_single_gamma_sq.dat")])
     compare(read_matrix(path("s4_single_gamma.dat"))[:, 4].reshape(-1, 1),
             read_matrix(path("chi4_single_gamma.dat"))[:, 2].reshape(-1, 1),
@@ -1619,17 +1668,17 @@ def main():
     # The HDF5 flavour has no header, so the indices have to be attributes:
     # |q| alone cannot tell single:1,0,0 from single:0,1,0.
     if args.h5read:
-        run([exe, "-i", diff_dump, "-w", "unit", *single_base, "--dyn-format", "hdf5",
-             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single.h5"),
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *single_base, "--format", "hdf5",
+             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single.h5"), "--sq", 
              path("s4_single_h5_sq.dat")])
         attrs = {name: run([args.h5read, path("s4_single.h5"), "attr", name]).stdout.strip()
                  for name in ("sampling", "single_n1", "single_n2", "single_n3")}
         if attrs["sampling"] != "single" or \
                 (attrs["single_n1"], attrs["single_n2"], attrs["single_n3"]) != ("1", "0", "0"):
             raise SystemExit("FAIL single: HDF5 attributes are %s" % attrs)
-        run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "single:0,1,0",
-             "--dt", "1", "--maxframes", "8", "--lag", "1", "--dyn-format", "hdf5",
-             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_y.h5"),
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "single:0,1,0",
+             "--dt", "1", "--maxframes", "8", "--lag", "1", "--format", "hdf5",
+             "--s4-cutoff", s4_cutoff, "--s4", path("s4_single_y.h5"), "--sq", 
              path("s4_single_y_h5_sq.dat")])
         if run([args.h5read, path("s4_single_y.h5"), "attr", "single_n2"]).stdout.strip() != "1":
             raise SystemExit("FAIL single: the HDF5 indices do not follow the request")
@@ -1639,8 +1688,8 @@ def main():
     print("  ok   %-42s |q| = %.4f" % ("single lattice vector", q1))
 
     # --buffer-limit is in GB and can be lowered for this small buffer.
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-         "--buffer-limit", "0.001", "--s4", path("s4_limit.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+         "--buffer-limit", "0.001", "--s4", path("s4_limit.dat"), "--sq", 
          path("s4_limit_sq.dat")])
     compare(read_matrix(path("s4_limit.dat"))[:, 4].reshape(-1, 1),
             s4[:, 4].reshape(-1, 1), "S4 with --buffer-limit 0.001", rtol=1.0e-9)
@@ -1648,11 +1697,11 @@ def main():
     # --stride subsamples the S4/chi4 trajectory.  maxframes is rounded
     # down to a multiple of the stride; the coherent window is unchanged.
     for stride in (2, 3):
-        run([exe, "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
              "--s4-cutoff", s4_cutoff, "--stride", str(stride),
-             "--s4", path("stride.dat"), "--chi4", path("chi4_stride.dat"),
+             "--s4", path("stride.dat"), "--chi4", path("chi4_stride.dat"), "--sq", 
              path("stride_sq.dat")])
-        run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+        run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
              "--maxframes", "8", "--lag", "1", "--stride", str(stride), "--dt", "1",
              "--cutoff", s4_cutoff, "--output-s4", path("stride_ref.dat"),
              "--output-chi4", path("chi4_stride_ref.dat")])
@@ -1661,11 +1710,11 @@ def main():
         compare(read_matrix(path("chi4_stride.dat")), read_matrix(path("chi4_stride_ref.dat")),
                 "chi4 stride %d vs reference" % stride, rtol=1.0e-9)
 
-    s4_round = ["--dyn", "--dyn-q", "line:" + s4_spec, "--dt", "1", "--maxframes", "9"]
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_round, "--lag", "1",
+    s4_round = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "9"]
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_round, "--lag", "1",
          "--s4-cutoff", s4_cutoff, "--stride", "2", "--s4", path("s4_round.dat"),
-         "--chi4", path("chi4_round.dat"), path("s4_round_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+         "--chi4", path("chi4_round.dat"), "--sq", path("s4_round_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
          "--maxframes", "9", "--lag", "1", "--stride", "2", "--dt", "1",
          "--cutoff", s4_cutoff, "--output-s4", path("s4_round_ref.dat"),
          "--output-chi4", path("chi4_round_ref.dat")])
@@ -1680,10 +1729,10 @@ def main():
     # --- self intermediate scattering function (--fqt-self) ----------------
     print("self intermediate scattering function (--fqt-self)")
     ref_self = os.path.join(HERE, "ref_fsqt.py")
-    fs_base = ["--dyn", "--dyn-q", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
-    run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
-         "--fqt-self", path("fs.dat"), path("fs_sq.dat")])
-    run([sys.executable, ref_self, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+    fs_base = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+         "--fqt-self", path("fs.dat"), "--sq", path("fs_sq.dat")])
+    run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
          "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
          "--output", path("fs_ref.dat")])
     fs = read_matrix(path("fs.dat"))
@@ -1696,18 +1745,18 @@ def main():
 
     # F_s uses every atom and never the overlap cutoff.
     for cut in ("0.3", "1.5"):
-        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
              "--s4-cutoff", cut, "--s4", path("fs_cut_s4.dat"),
-             "--fqt-self", path("fs_cut.dat"), path("fs_cut_sq.dat")])
+             "--fqt-self", path("fs_cut.dat"), "--sq", path("fs_cut_sq.dat")])
         compare(read_matrix(path("fs_cut.dat")), fs, "F_s cutoff %s invariance" % cut,
                 rtol=1.0e-9)
 
     # F_s with stride and origin lag against the reference.
     for stride in (2, 3):
-        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "3",
-             "--stride", str(stride), "--fqt-self", path("fs_stride.dat"),
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "3",
+             "--stride", str(stride), "--fqt-self", path("fs_stride.dat"), "--sq", 
              path("fs_stride_sq.dat")])
-        run([sys.executable, ref_self, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+        run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
              "--maxframes", "8", "--lag", "3", "--stride", str(stride), "--dt", "1",
              "--output", path("fs_stride_ref.dat")])
         compare(read_matrix(path("fs_stride.dat")), read_matrix(path("fs_stride_ref.dat")),
@@ -1727,9 +1776,9 @@ def main():
     # --- mean squared displacement (--msd) ---------------------------------
     print("mean squared displacement (--msd)")
     ref_msd = os.path.join(HERE, "ref_msd.py")
-    msd_base = ["--dyn", "--dyn-q", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
-         "--msd", path("msd.dat"), path("msd_sq.dat")])
+    msd_base = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+         "--msd", path("msd.dat"), "--sq", path("msd_sq.dat")])
     run([sys.executable, ref_msd, "--input", diff_dump, "--maxframes", "8",
          "--lag", "1", "--stride", "1", "--dt", "1", "--output", path("msd_ref.dat")])
     msd = read_matrix(path("msd.dat"))
@@ -1752,19 +1801,19 @@ def main():
 
     # MSD is unit weighted: -w/--norm, the overlap cutoff and every other
     # output that shares the position buffer leave it untouched.
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
          "--s4-cutoff", "0.5", "--s4", path("msd_s4.dat"), "--chi4", path("msd_chi4.dat"),
          "--fqt-self", path("msd_fs.dat"), "--sqw", path("msd_sqw.dat"),
-         "--msd", path("msd_all.dat"), path("msd_all_sq.dat")])
+         "--msd", path("msd_all.dat"), "--sq", path("msd_all_sq.dat")])
     compare(read_matrix(path("msd_all.dat")), msd, "MSD with S4/chi4/F_s/sqw", rtol=1.0e-9)
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
-         *msd_base, "--lag", "1", "--msd", path("msd_n.dat"), path("msd_n_sq.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
+         *msd_base, "--lag", "1", "--msd", path("msd_n.dat"), "--sq", path("msd_n_sq.dat")])
     compare(read_matrix(path("msd_n.dat")), msd, "MSD --norm n invariance", rtol=1.0e-9)
 
     # stride and origin lag against the reference.
     for stride in (2, 3):
-        run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
-             "--stride", str(stride), "--msd", path("msd_stride.dat"),
+        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
+             "--stride", str(stride), "--msd", path("msd_stride.dat"), "--sq", 
              path("msd_stride_sq.dat")])
         run([sys.executable, ref_msd, "--input", diff_dump, "--maxframes", "8",
              "--lag", "3", "--stride", str(stride), "--dt", "1",
@@ -1772,23 +1821,23 @@ def main():
         compare(read_matrix(path("msd_stride.dat")), read_matrix(path("msd_stride_ref.dat")),
                 "MSD stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
 
-    # --dyn-q - needs no q points and no OUTPUT table; --no-partials drops the
-    # species columns from the text table.
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--dyn", "--dyn-q", "-", "--dt", "1",
+    # Without --qpoints nothing is sampled, so there is no S(q) table at all and the
+    # MSD is the only output; --no-partials drops the species columns.
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "--dt", "1",
          "--maxframes", "8", "--msd", path("msd_none.dat")])
-    compare(read_matrix(path("msd_none.dat")), msd, "MSD with --dyn-q -", rtol=1.0e-9)
-    run([exe, "-i", diff_dump, "-m", "1:Si,2:O", "--no-partials", *msd_base, "--lag", "1",
-         "--msd", path("msd_total.dat"), path("msd_total_sq.dat")])
+    compare(read_matrix(path("msd_none.dat")), msd, "MSD without q points", rtol=1.0e-9)
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "--no-partials", *msd_base, "--lag", "1",
+         "--msd", path("msd_total.dat"), "--sq", path("msd_total_sq.dat")])
     if read_matrix(path("msd_total.dat")).shape[1] != 2:
         raise SystemExit("FAIL --no-partials still wrote MSD species columns")
     print("  ok   %-42s total only" % "--no-partials MSD columns")
 
     # The origin stride is shared with the coherent correlations.
     s4_lag = s4_base + ["--lag", "3"]
-    run([exe, "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_lag.dat"), "--chi4", path("chi4_lag.dat"),
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
+         "--s4", path("s4_lag.dat"), "--chi4", path("chi4_lag.dat"), "--sq", 
          path("s4_lag_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + s4_spec,
+    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
          "--maxframes", "8", "--lag", "3", "--dt", "1", "--cutoff", s4_cutoff,
          "--output-s4", path("s4_lag_ref.dat"), "--output-chi4", path("chi4_lag_ref.dat")])
     compare(read_matrix(path("s4_lag.dat")), read_matrix(path("s4_lag_ref.dat")),
@@ -1831,9 +1880,9 @@ def main():
     slab_x = generate("dyn_slab_x.dump", columns="id type x y z", **slab_kwargs)
     slab_q = dyn_line("2,1,3,0,0,1") + ["--dt", "1", "--maxframes", "5"]
     for dump_file, tag in ((slab_xu, "xu"), (slab_x, "x")):
-        run([exe, "-i", dump_file, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
+        run([exe, "dyn", "-i", dump_file, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
              *slab_q, "--fqt", path("dyn_slab_%s_fqt.dat" % tag),
-             path("dyn_slab_%s_sq.dat" % tag)])
+             "--sq", path("dyn_slab_%s_sq.dat" % tag)])
     compare(read_matrix(path("dyn_slab_x_fqt.dat")),
             read_matrix(path("dyn_slab_xu_fqt.dat")),
             "non-periodic axis: x y z (unwrapped) vs xu", rtol=1.0e-9)
@@ -1849,57 +1898,57 @@ def main():
         print("  ok   %-42s map / spectra / both" % "plot_sqw.py renders")
 
     if args.h5read:
-        run([exe, "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean", *dyn_q,
-             "--sqw", path("dyn_sqw.h5"), "--fqt", path("dyn_fqt.h5"), path("dyn_sq_h5.dat")])
+        run([exe, "dyn", "-i", dyn_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean", *dyn_q,
+             "--sqw", path("dyn_sqw.h5"), "--fqt", path("dyn_fqt.h5"), "--sq", path("dyn_sq_h5.dat")])
         with open(path("dyn_sqw_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("dyn_sqw.h5"), "sqw"]).stdout)
         with open(path("dyn_fqt_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("dyn_fqt.h5"), "fqt"]).stdout)
         compare(read_matrix(path("dyn_sqw_h5.txt")), sqw, "HDF5 S(q,w) vs text", rtol=1.0e-9)
         compare(read_matrix(path("dyn_fqt_h5.txt")), fqt, "HDF5 F(q,t) vs text", rtol=1.0e-9)
-        run([exe, "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
-             "--s4", path("s4.h5"), "--chi4", path("chi4.h5"), path("s4_h5_sq.dat")])
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_q, "--s4-cutoff", s4_cutoff,
+             "--s4", path("s4.h5"), "--chi4", path("chi4.h5"), "--sq", path("s4_h5_sq.dat")])
         with open(path("s4_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("s4.h5"), "s4"]).stdout)
         with open(path("chi4_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("chi4.h5"), "chi4"]).stdout)
         compare(read_matrix(path("s4_h5.txt")), s4, "HDF5 S4(q,t) vs text", rtol=1.0e-9)
         compare(read_matrix(path("chi4_h5.txt")), chi4, "HDF5 chi4 vs text", rtol=1.0e-9)
-        run([exe, "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
-             "--fqt-self", path("fs.h5"), path("fs_h5_sq.dat")])
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
+             "--fqt-self", path("fs.h5"), "--sq", path("fs_h5_sq.dat")])
         with open(path("fs_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("fs.h5"), "fqt_self"]).stdout)
         compare(read_matrix(path("fs_h5.txt")), fs, "HDF5 F_s(q,t) vs text", rtol=1.0e-9)
-        run([exe, "-i", diff_dump, "-m", "1:Si,2:O", *fs_base, "--lag", "1",
-             "--msd", path("msd.h5"), path("msd_h5_sq.dat")])
+        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *fs_base, "--lag", "1",
+             "--msd", path("msd.h5"), "--sq", path("msd_h5_sq.dat")])
         with open(path("msd_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("msd.h5"), "msd"]).stdout)
         compare(read_matrix(path("msd_h5.txt")), msd, "HDF5 MSD vs text", rtol=1.0e-9)
 
-    # --- the q sampling modes of --dyn-q ----------------------------------
-    print("--dyn-q sampling modes")
+    # --- the q sampling modes of --qpoints --------------------------------------
+    print("--qpoints sampling modes")
 
     # Without q points only the scalar overlap is left: chi4 must come out
     # exactly as it does on a q line, and there is no S(q) table at all.
-    no_q = ["--dyn", "--dyn-q", "-", "--dt", "1", "--maxframes", "8", "--lag", "1"]
-    run([exe, "-i", diff_dump, "-w", "unit", *no_q, "--s4-cutoff", s4_cutoff,
+    no_q = ["--dt", "1", "--maxframes", "8", "--lag", "1"]
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *no_q, "--s4-cutoff", s4_cutoff,
          "--chi4", path("noq_chi4.dat")])
     compare(read_matrix(path("noq_chi4.dat")), chi4, "chi4 without q points", rtol=1.0e-12)
-    result = subprocess.run([exe, "-i", diff_dump, "-w", "unit", *no_q,
+    result = subprocess.run([exe, "dyn", "-i", diff_dump, "-w", "unit", *no_q,
                              "--s4-cutoff", s4_cutoff, "--chi4", path("noq_c.dat"), "-"],
                             capture_output=True, text=True)
     if result.returncode == 0:
-        raise SystemExit("FAIL --dyn-q - accepted a positional S(q) table")
-    print("  ok   %-42s rejected" % "--dyn-q - with an OUTPUT argument")
+        raise SystemExit("FAIL dyn accepted a positional S(q) table")
+    print("  ok   %-42s rejected" % "dyn with a positional argument")
 
     # A shell is one |q| averaged over every direction: all the tables hold a
     # single q row, whose value is the Lebedev average.
     shell_spec = "shell:2.5,medium"
-    shell_base = ["--dyn", "--dyn-q", shell_spec, "--dt", "1", "--maxframes", "8"]
-    run([exe, "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
+    shell_base = ["--qpoints", shell_spec, "--dt", "1", "--maxframes", "8"]
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
          "--s4-cutoff", s4_cutoff, "--sqw", path("shell_sqw.dat"),
          "--fqt", path("shell_fqt.dat"), "--fqt-self", path("shell_fs.dat"),
-         "--s4", path("shell_s4.dat"), "--chi4", path("shell_chi4.dat"),
+         "--s4", path("shell_s4.dat"), "--chi4", path("shell_chi4.dat"), "--sq", 
          path("shell_sq.dat")])
     shell_q, shell_s = read_table(path("shell_sq.dat"))
     shell_fqt = read_matrix(path("shell_fqt.dat"))
@@ -1925,9 +1974,9 @@ def main():
         raise SystemExit("FAIL shell F_s(q,0) != 1")
     print("  ok   %-42s S(q)=%.6f" % ("shell row and sum rules", shell_s[0]))
     if args.h5read:
-        run([exe, "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
              "--s4-cutoff", s4_cutoff, "--sqw", path("shell_sqw.h5"),
-             "--fqt-self", path("shell_fs.h5"), "--s4", path("shell_s4.h5"),
+             "--fqt-self", path("shell_fs.h5"), "--s4", path("shell_s4.h5"), "--sq", 
              path("shell_h5_sq.dat")])
         with open(path("shell_sqw_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("shell_sqw.h5"), "sqw"]).stdout)
@@ -1964,7 +2013,7 @@ def main():
     except ImportError:
         have_scipy = False
     if have_scipy:
-        run([sys.executable, ref_dyn, "--input", diff_dump, "--dyn-q", shell_spec,
+        run([sys.executable, ref_dyn, "--input", diff_dump, "--qpoints", shell_spec,
              "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
              "--norm", "mean", "--output-fqt", path("shell_ref_fqt.dat"),
              "--output-sqw", path("shell_ref_sqw.dat")])
@@ -1972,12 +2021,12 @@ def main():
                 "shell F(q,t) vs scipy reference", rtol=1.0e-9)
         compare(shell_sqw, read_matrix(path("shell_ref_sqw.dat")),
                 "shell S(q,w) vs scipy reference", rtol=1.0e-9)
-        run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", shell_spec,
+        run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", shell_spec,
              "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
              "--output-s4", path("shell_ref_s4.dat")])
         compare(read_matrix(path("shell_s4.dat")), read_matrix(path("shell_ref_s4.dat")),
                 "shell S4(q,t) vs scipy reference", rtol=1.0e-9)
-        run([sys.executable, ref_self, "--input", diff_dump, "--dyn-q", shell_spec,
+        run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", shell_spec,
              "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
              "--output", path("shell_ref_fs.dat")])
         compare(shell_fs, read_matrix(path("shell_ref_fs.dat")),
@@ -1991,22 +2040,22 @@ def main():
     # same identity the grid uses, but on a single axis.  A line switches to
     # it from phase_min_modes = 16 points on, which is longer than every other
     # line in this suite, so this is the only coverage of the line tables.
-    print("separable q line (--dyn-q line, 16 points or more)")
+    print("separable q line (--qpoints line, 16 points or more)")
     long_spec = "20,2,3,1,0,0"         # 21 q points from 2 to 3 along x
-    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "line:" + long_spec,
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "line:" + long_spec,
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
          "--s4", path("s4_long.dat"), "--chi4", path("chi4_long.dat"),
          "--fqt", path("fq_long.dat"), "--fqt-self", path("fs_long.dat"),
-         "--sqw", path("sqw_long.dat"), path("s4_long_sq.dat")])
+         "--sqw", path("sqw_long.dat"), "--sq", path("s4_long_sq.dat")])
     # The references sum the line directly, so they pin the factor tables and
     # the base term of the first axis independently of the recurrence.
-    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + long_spec,
          "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
          "--output-s4", path("s4_long_ref.dat")])
-    run([sys.executable, ref_self, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+    run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + long_spec,
          "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
          "--output", path("fs_long_ref.dat")])
-    run([sys.executable, ref_dyn, "--input", diff_dump, "--dyn-q", "line:" + long_spec,
+    run([sys.executable, ref_dyn, "--input", diff_dump, "--qpoints", "line:" + long_spec,
          "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
          "--norm", "mean", "--output-fqt", path("fq_long_ref.dat"),
          "--output-sqw", path("sqw_long_ref.dat")])
@@ -2027,34 +2076,55 @@ def main():
                 rows_at(long_s4, [q_value, 0.0, 0.0])[:, 4].reshape(-1, 1),
                 "separable line: direct vs separable at |q| = %g" % q_value, rtol=1.0e-11)
     # A line through Gamma turns the base term off; it has to agree too.
-    run([exe, "-i", diff_dump, "-w", "unit", "--dyn", "--dyn-q", "line:20,0,4,1,0,0",
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "line:20,0,4,1,0,0",
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
-         "--s4", path("s4_long0.dat"), path("s4_long0_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--dyn-q", "line:20,0,4,1,0,0",
+         "--s4", path("s4_long0.dat"), "--sq", path("s4_long0_sq.dat")])
+    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:20,0,4,1,0,0",
          "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
          "--output-s4", path("s4_long0_ref.dat")])
     compare(read_matrix(path("s4_long0.dat")), read_matrix(path("s4_long0_ref.dat")),
             "separable line: s0 = 0 vs reference", rtol=1.0e-9)
     print("  ok   %-42s 21 points, base on and off" % "separable q line")
 
-    # option validation
-    bad = [
-        (dyn_line(dyn_spec) + ["--maxframes", "20"], "--dyn without --dt"),
-        (dyn_line(dyn_spec) + ["--dt", "1"], "--dyn without --maxframes"),
+    # The short alias and the long spelling name the same option.
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "-q", "line:2,0.5,2,1,0,0",
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--sq", path("alias_short.dat")])
+    run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "line:2,0.5,2,1,0,0",
+         "--dt", "1", "--maxframes", "8", "--lag", "1", "--sq", path("alias_long.dat")])
+    compare(read_matrix(path("alias_short.dat")), read_matrix(path("alias_long.dat")),
+            "-q is an alias of --qpoints", rtol=0.0)
+
+    # option validation: a flag of the other subcommand, and a dyn run that
+    # cannot mean anything, both have to be refused.
+    bad_static = [
+        (["--qpoints", "line:4,1,4,1,0,0", "--dt", "1", "--maxframes", "8"],
+         "--qpoints in static"),
+        (["-q", "line:4,1,4,1,0,0"], "-q in static"),
+        (["--sqw", "w.dat"], "--sqw in static"),
+        (["--fqt-self", "f.dat"], "--fqt-self in static"),
+        (["--msd", "m.dat"], "--msd in static"),
+        (["--s4", "s.dat", "--s4-cutoff", "0.5"], "--s4 in static"),
+        (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
+        (["--method", "debye", "--s2-accum", "a.dat"],
+         "--s2-accum without --pair-entropy"),
+    ]
+    bad_dyn = [
+        (dyn_line(dyn_spec) + ["--maxframes", "20"], "dyn without --dt"),
+        (dyn_line(dyn_spec) + ["--dt", "1"], "dyn without --maxframes"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "20", "--grid", "g.dat"],
-         "--dyn with --grid"),
-        (["--sqw", "x.dat"], "--sqw without --dyn"),
+         "--grid in dyn"),
+        (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "20", "--rmax", "4"],
+         "--rmax in dyn"),
         (dyn_line("0,1,4,1,0,0") + ["--dt", "1", "--maxframes", "20"],
-         "--dyn-q line without intervals"),
+         "--qpoints line without intervals"),
         (dyn_line("4,4,1,1,0,0") + ["--dt", "1", "--maxframes", "20"],
-         "--dyn-q line with S1 <= S0"),
+         "--qpoints line with S1 <= S0"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "20", "--s4", "s.dat"],
          "--s4 without --s4-cutoff"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "20", "--s4-cutoff", "0.5"],
          "--s4-cutoff without --s4/--chi4"),
-        (["--s4", "s.dat", "--s4-cutoff", "0.5"], "--s4 without --dyn"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "20", "--s4-cutoff", "0.5",
-          "--dyn-format", "bogus", "--s4", "s.dat"], "--dyn-format bogus"),
+          "--format", "bogus", "--s4", "s.dat"], "--format bogus"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "100000000",
           "--s4-cutoff", "0.5", "--s4", "s.dat"], "S4 position buffer too large"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
@@ -2069,60 +2139,60 @@ def main():
           "--stride", "0", "--s4", "s.dat"], "--stride zero"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "8", "--stride", "2"],
          "--stride without S4/chi4/F_s"),
-        (["--fqt-self", "f.dat"], "--fqt-self without --dyn"),
-        (["--msd", "m.dat"], "--msd without --dyn"),
         (dyn_line(dyn_spec) + ["--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5",
           "--fqt-self", "f.dat"], "--s4-cutoff with --fqt-self but no S4/chi4"),
-        (["--dyn", dyn_spec, "--dt", "1", "--maxframes", "8"],
-         "--dyn with a value (the old syntax)"),
-        (["--dyn", "--dyn-q", "bogus", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q with an unknown spec"),
-        (["--dyn", "--dyn-q", "shell:2.5,bogus", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q shell with an unknown accuracy"),
-        (["--dyn", "--dyn-q", "shell:0,low", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q shell with a zero radius"),
-        (["--dyn", "--dyn-q", "line:4,1,4,1,0,0,7", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q line with too many fields"),
-        (["--dyn", "--dt", "1", "--maxframes", "8", "--sqw", "w.dat"],
+        (["--qpoints", "bogus", "--dt", "1", "--maxframes", "8"],
+         "--qpoints with an unknown spec"),
+        (["--qpoints", "shell:2.5,bogus", "--dt", "1", "--maxframes", "8"],
+         "--qpoints shell with an unknown accuracy"),
+        (["--qpoints", "shell:0,low", "--dt", "1", "--maxframes", "8"],
+         "--qpoints shell with a zero radius"),
+        (["--qpoints", "line:4,1,4,1,0,0,7", "--dt", "1", "--maxframes", "8"],
+         "--qpoints line with too many fields"),
+        (["--dt", "1", "--maxframes", "8", "--sqw", "w.dat"],
          "--sqw without a q sampling"),
-        (["--dyn", "--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5", "--s4", "s.dat"],
+        (["--dt", "1", "--maxframes", "8", "--s4-cutoff", "0.5", "--s4", "s.dat"],
          "--s4 without a q sampling"),
-        (["--dyn", "--dyn-q", "-", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q - without --chi4/--msd"),
-        (["--dyn-q", "line:4,1,4,1,0,0", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q without --dyn"),
-        (["--dyn", "--dyn-q", "grid:0", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q grid with a zero qmax"),
-        (["--dyn", "--dyn-q", "line:4,1,4,1,0,0", "--dyn-modes", "4",
+        (["--qpoints", "-", "--dt", "1", "--maxframes", "8"],
+         "--qpoints - is not a spec"),
+        (["--dt", "1", "--maxframes", "8"],
+         "dyn without a q sampling and without --chi4/--msd"),
+        (["--qpoints", "grid:0", "--dt", "1", "--maxframes", "8"],
+         "--qpoints grid with a zero qmax"),
+        (["--qpoints", "line:4,1,4,1,0,0", "--modes", "4",
           "--dt", "1", "--maxframes", "8"],
-         "--dyn-modes with a q line"),
-        (["--dyn", "--dyn-q", "line:4,1,4,1,0,0", "--dyn-thin", "orbits",
+         "--modes with a q line"),
+        (["--qpoints", "line:4,1,4,1,0,0", "--thin", "orbits",
           "--dt", "1", "--maxframes", "8"],
-         "--dyn-thin with a q line"),
-        (["--dyn", "--dyn-q", "grid:1", "--dyn-thin", "diagonal",
+         "--thin with a q line"),
+        (["--qpoints", "grid:1", "--thin", "diagonal",
           "--dt", "1", "--maxframes", "8"],
-         "--dyn-thin with an unknown policy"),
-        (["--dyn", "--dyn-q", "single:1,0", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q single with two indices"),
-        (["--dyn", "--dyn-q", "single:1,0,0,0", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q single with four indices"),
-        (["--dyn", "--dyn-q", "single:1.5,0,0", "--dt", "1", "--maxframes", "8"],
-         "--dyn-q single with a non-integer index"),
-        (["--dyn", "--dyn-q", "single:1,0,0", "--dyn-modes", "4",
+         "--thin with an unknown policy"),
+        (["--qpoints", "single:1,0", "--dt", "1", "--maxframes", "8"],
+         "--qpoints single with two indices"),
+        (["--qpoints", "single:1,0,0,0", "--dt", "1", "--maxframes", "8"],
+         "--qpoints single with four indices"),
+        (["--qpoints", "single:1.5,0,0", "--dt", "1", "--maxframes", "8"],
+         "--qpoints single with a non-integer index"),
+        (["--qpoints", "single:1,0,0", "--modes", "4",
           "--dt", "1", "--maxframes", "8"],
-         "--dyn-modes with a single q"),
-        (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
-        (["--method", "debye", "--s2-accum", "a.dat"],
-         "--s2-accum without --pair-entropy"),
+         "--modes with a single q"),
     ]
     rejected = 0
-    for options, label in bad:
-        result = subprocess.run([exe, "-i", dyn_dump] + options + ["-"],
+    for options, label in bad_static:
+        result = subprocess.run([exe, "static", "-i", dyn_dump] + options + ["-"],
                                 capture_output=True, text=True)
         if result.returncode == 0:
             raise SystemExit("FAIL %s was accepted" % label)
         rejected += 1
-    print("  ok   %-42s %d cases rejected" % ("--dyn option validation", rejected))
+    for options, label in bad_dyn:
+        result = subprocess.run([exe, "dyn", "-i", dyn_dump] + options,
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            raise SystemExit("FAIL %s was accepted" % label)
+        rejected += 1
+    print("  ok   %-42s %d cases rejected"
+          % ("subcommand and option validation", rejected))
 
     # A trajectory that changes its atom count or its atom order cannot be
     # unwrapped index by index: the reader has to say so instead of running
@@ -2141,8 +2211,8 @@ def main():
                 for index in order:
                     handle.write("%d 1 %.6f %.6f %.6f\n" % (index, (index % 10)*1.0,
                                                             (index % 7)*1.3, (index % 5)*1.7))
-        result = subprocess.run([exe, "-i", broken, "-w", "unit", *dyn_line(dyn_spec),
-                                 "--dt", "1", "--maxframes", "20", "-"],
+        result = subprocess.run([exe, "dyn", "-i", broken, "-w", "unit", *dyn_line(dyn_spec),
+                                 "--dt", "1", "--maxframes", "20"],
                                 capture_output=True, text=True)
         if result.returncode == 0:
             raise SystemExit("FAIL %s was accepted" % label)

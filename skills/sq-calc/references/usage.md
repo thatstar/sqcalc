@@ -1,16 +1,23 @@
 # sqcalc command line usage
 
 ```
-sqcalc -i DUMP [options] OUTPUT
+sqcalc static [global options] [options] OUTPUT
+sqcalc dyn    [global options] [options]
 ```
 
-`OUTPUT` is the shell averaged $S(q)$ table and `-` writes it to stdout.  `-i`
-is the only required option, and a `--dyn` run with `--dyn-q -` (the default
-there) takes no `OUTPUT` argument at all, because it computes no $S(q)$.  The
-table goes to `OUTPUT` and progress goes to stderr, so `-q`/`--quiet` keeps
-logs clean.
+`sqcalc static` averages the frames: `OUTPUT` is the shell averaged $S(q)$
+table and `-` writes it to stdout, and the run can add $g(r)$ and a powder XRD
+pattern.  `sqcalc dyn` keeps the time axis and writes $S(q,\omega)$, $F(q,t)$,
+$S_4(q,t)$, the mean squared displacement and the overlap into the files named
+by its options; it takes **no positional argument**, so the $S(q)$ table of a
+`--qpoints` run goes to `--sq FILE`.  `-i` is required in either case, and progress
+goes to stderr, so `--quiet` keeps logs clean.
 
-## Options
+A flag that belongs to the other subcommand is refused by name, and
+`sqcalc -h`, `sqcalc static -h` and `sqcalc dyn -h` print the global options
+followed by the options of the subcommand that was asked about.
+
+## Global options
 
 | option | meaning |
 | --- | --- |
@@ -18,50 +25,59 @@ logs clean.
 | `-m, --mapping LIST` | LAMMPS type id to element or species, e.g. `1:Si,2:O` or `1:Si4+,2:O2-` |
 | `-w, --weight SCHEME` | `unit` (default), `neutron` or `xray` |
 | `-t, --threads N` | OpenMP threads (default: all available) |
+| `--norm NAME` | `mean` (default), `self` or `n` (see below) |
+| `--partials`, `--no-partials` | write / omit the partial structure factor columns (default: on) |
+| `--format NAME` | `text` (default) or `hdf5` for the files that offer both: the reciprocal grid, the XRD pattern, the Debye $g(r)$ and pair entropy, and the dynamic tables.  The $S(q)$ table itself is always text; without `--format` a `.h5`/`.hdf5` name means hdf5 |
+| `--quiet` | suppress the progress output on stderr |
+| `-h, --help` | the options of the subcommand |
+| `-v, --version` | program version |
+
+## `sqcalc static` options
+
+| option | meaning |
+| --- | --- |
+| `--method NAME` | `nufft` (default), `direct` ($O(N N_{\text{modes}})$ reference) or `debye` (real space pair histograms) |
 | `--qmin`, `--qmax`, `--nq` | $q$ range [1/A] and number of shells (defaults 0, 20, 500) |
+| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path); below 1e-9 the transform switches to the higher memory kernel, see below |
+| `--device NAME` | `cpu` (default) or `gpu` (CUDA builds only) |
+| `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
+| `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
 | `--grid FILE` | also write $S(q)$ on every reciprocal lattice point |
-| `--grid-format NAME` | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5 |
 | `--xrd FILE` | also write a powder XRD pattern; a `.h5`/`.hdf5` name implies hdf5 |
 | `--xrd-lambda VALUE` | incident wavelength of `--xrd`, in the dump length unit |
 | `--xrd-range MIN MAX` | two-theta range of `--xrd` in degrees (default `1 179`) |
 | `--xrd-step DEG` | two-theta bin width in degrees (default: from the box, see below) |
 | `--lp`, `--no-lp` | apply (default) or drop the Lorentz-polarization factor of `--xrd` |
-| `--method NAME` | `nufft` (default), `direct` ($O(N N_{\text{modes}})$ reference) or `debye` (real space pair histograms) |
-| `--device NAME` | `cpu` (default) or `gpu` (CUDA builds only) |
-| `--gpu-id N` | CUDA device to use when `--device gpu` (default 0) |
-| `--precision NAME` | `double` (default) or `single` (float32, GPU only) |
-| `--norm NAME` | `mean` (default), `self` or `n` (see below) |
-| `--eps VALUE` | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path); below 1e-9 the transform switches to the higher memory kernel, see below |
-| `--partials`, `--no-partials` | write / omit the partial structure factor columns (default: on) |
 | `-fz, --faber-ziman` | report the partials in the Faber-Ziman normalization |
 | `--rmax VALUE` | Debye pair cutoff [A] (default: half the smallest periodic box side, or all pairs without periodicity) |
 | `--dr VALUE` | Debye radial bin width [A] (default 0.01, reliable up to $q \sim \pi/(2\,dr)$) |
 | `--skin VALUE` | Debye Verlet skin for reusing the pair list [A] (default 1.0, `0` rebuilds every frame) |
-| `--rdf FILE` | total and partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`) |
+| `--rdf FILE` | total and partial $g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`, or with `--format hdf5`) |
 | `--pair-entropy FILE` | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$ |
 | `--s2-accum FILE` | $S_2(r)$ accumulation curve for tail extrapolation |
 | `--no-cutoff-correction` | disable the Debye cut-off density correction (applied by default when at least one direction is periodic) |
-| `--dyn` | keep the time axis: dynamic structure factor, four-point structure factor, overlap and mean squared displacement (see below) |
-| `--dyn-q SPEC` | $q$ sampling of `--dyn`: `-` (default, no $q$ points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` |
-| `--dyn-modes N` | mode budget of `--dyn-q grid`: 0 = unlimited (default) |
-| `--dyn-thin KIND` | order of the mode thinning: `shells` (default) or `orbits` |
-| `--dyn-keep-modes` | write the grid rows per lattice vector instead of the `\|q\|` shell average |
-| `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required by `--dyn` |
-| `--maxframes L` | correlation window in frames (the largest lag kept), required by `--dyn` |
+
+## `sqcalc dyn` options
+
+| option | meaning |
+| --- | --- |
+| `-q, --qpoints SPEC` | $q$ sampling; without it no $q$ is sampled: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` |
+| `--sq FILE` | the shell averaged $S(q)$ table of a `--qpoints` run |
+| `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required |
+| `--maxframes L` | correlation window in frames (the largest lag kept), required |
 | `--lag N` | frames between two consecutive time origins (default 1) |
+| `--modes N` | mode budget of `--qpoints grid`: 0 = unlimited (default) |
+| `--thin KIND` | order of the mode thinning: `shells` (default) or `orbits` |
+| `--keep-modes` | write the grid rows per lattice vector instead of the `\|q\|` shell average |
 | `--sqw FILE` | the $S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`) |
 | `--fqt FILE` | the coherent intermediate scattering function $F(q,t)$ |
 | `--fqt-self FILE` | the self intermediate scattering function $F_s(q,t)$ |
-| `--dyn-format NAME` | `text` (default) or `hdf5` for all dynamic outputs |
 | `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
 | `--chi4 FILE` | the average overlap $Q(t)$ and dynamic susceptibility $\chi_4(t)$ |
 | `--msd FILE` | the mean squared displacement $\text{MSD}(t)$, plus per-species columns with `--partials` |
 | `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
 | `--buffer-limit GB` | position buffer limit for S4/chi4/F_s/MSD (default 2.0; GB = $10^9$ bytes) |
 | `--stride N` | use every N-th dump frame for S4/chi4/F_s/MSD (default 1) |
-| `-q, --quiet` | suppress the progress output on stderr |
-| `-h, --help` | option summary |
-| `-v, --version` | program version |
 
 ## What the options mean
 
@@ -259,10 +275,10 @@ scale the pattern by the density of states.
 
 ```sh
 # Cu Kalpha, 40 to 80 degrees, bins from the box; S(q) still written
-sqcalc -i traj.dump -m 1:Ni -w xray --xrd ni.xrd --xrd-lambda 1.541838 \
+sqcalc static -i traj.dump -m 1:Ni -w xray --xrd ni.xrd --xrd-lambda 1.541838 \
        --xrd-range 40 80 S_q.dat
 # an XRD-only run, HDF5, an instrument-like 0.02 degree step
-sqcalc -i traj.dump -m 1:Si,2:O --xrd pattern.h5 --xrd-lambda 1.5406 \
+sqcalc static -i traj.dump -m 1:Si,2:O --xrd pattern.h5 --xrd-lambda 1.5406 \
        --xrd-range 10 120 --xrd-step 0.02
 ```
 
@@ -320,31 +336,31 @@ while the default (OVITO) partials tend to the concentrations $x_a$ and hide
 the structure behind the composition.  Every method accumulates the columns,
 `nufft` (CPU or CUDA), `direct` and `debye` alike.
 
-### The dynamic run (`--dyn`, `--dyn-q`)
+### The dynamic run (`sqcalc dyn`)
 
 The other methods average the snapshots as an unordered ensemble and return
-$S(q)$; `--dyn` keeps the time axis instead.  It is a plain flag: `--dt` and
-`--maxframes` set the time axis, and `--dyn-q SPEC` chooses how reciprocal
+$S(q)$; the `dyn` subcommand keeps the time axis instead.  `--dt` and
+`--maxframes` set the time axis, and `-q`/`--qpoints SPEC` chooses how reciprocal
 space is sampled,
 
-| `--dyn-q` | q points | outputs |
+| `-q, --qpoints` | q points | outputs |
 | --- | --- | --- |
-| `-` (default) | none | only `--chi4` ($Q(t)$, $\chi_4(t)$) and `--msd` |
+| left out | none | only `--chi4` ($Q(t)$, $\chi_4(t)$) and `--msd` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
 | `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
 | `single:N1,N2,N3` | one reciprocal-lattice vector of the box | all |
 
-Without q points there is no $S(q)$ at all: the run takes no `OUTPUT` table,
-and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the
-cheapest way to get $Q(t)$, $\chi_4(t)$ and $\text{MSD}(t)$, which only need
-the displaced positions.
+Without `--qpoints` there is no $S(q)$ at all: the run writes no `--sq` table and
+`--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the cheapest
+way to get $Q(t)$, $\chi_4(t)$ and $\text{MSD}(t)$, which only need the
+displaced positions.
 
 #### A q line
 
 `line:NINT,S0,S1,DX,DY,DZ` are `NINT` intervals (so `NINT+1` q points) with the
 scale running from `S0` to `S1` in 1/A along the direction `(DX,DY,DZ)`; every
-line passes through the Gamma point.  `--dyn-q line:100,0.5,20,1,1,0` is
+line passes through the Gamma point.  `--qpoints line:100,0.5,20,1,1,0` is
 therefore 101 q points from 0.5 to 20 1/A along (1,1,0).  Off-lattice $q$ is
 the point of the method: it is what an experiment at that $q$ measures, and
 the reciprocal grid methods cannot reach it.  The constant scale step makes a
@@ -370,8 +386,8 @@ $S_4(q,t)$ and $F_s(q,t)$ are all shell averages; each is written as a single
 row at $q = (0,0,Q)$, and the static table is labelled by $|q| = Q$.  The
 average is taken over the *normalized* $S(q)$ of every direction, which matters
 for `-w xray`, where the form factor and hence the denominator depend on $q$
-even at fixed $|q|$.  The rule is invariant under $q \to -q$ with the same
-weights and every averaged quantity is even in $q$, so one vector of each
+even at fixed $|q|$.  The rule is invariant under $\mathbf q \to -\mathbf q$
+with the same weights and every averaged quantity is even in $q$, so one vector of each
 $\pm$ pair is accumulated with twice its weight: a shell run costs half the
 modes (25, 55 or 97) and the run summary says so.
 
@@ -394,14 +410,15 @@ and the Gamma row is the $q \to 0$ limit, i.e. $\chi_4(\tau)$.
 
 The modes are reduced in three steps, in this order:
 
-* `W(-q) = conjg(W(q))` because the overlap weights are real, so one vector of
-  every $\pm$ pair is kept; this halves the work and loses nothing;
+* the overlap weights are real, so $W(-\mathbf q)$ is the complex conjugate of
+  $W(\mathbf q)$ and one vector of every $\pm$ pair is kept; this halves the
+  work and loses nothing;
 * vectors that are related by the point group of the periodic lattice have the
-  same expectation for an isotropic system, so `--dyn-thin orbits` may keep one
+  same expectation for an isotropic system, so `--thin orbits` may keep one
   representative per orbit.  The orbit multiplicity is kept, because a shell
   can hold several orbits (for $|\mathbf n|^2 = 9$, a 6-fold $(3,0,0)$ orbit and
   a 24-fold $(2,2,1)$ one);
-* `--dyn-thin shells`, the default, drops whole shells instead, which leaves the
+* `--thin shells`, the default, drops whole shells instead, which leaves the
   remaining shells complete and therefore costs no accuracy in the points that
   survive.  The kept shells are spread evenly over the q range and always
   include its two ends.
@@ -412,7 +429,7 @@ weighted by their orbit multiplicities.  That is the object an
 Ornstein-Zernike fit and a powder average want, and the code does the weighting
 because a reader of the table cannot: the multiplicity of a vector such as
 $(1,2,2)$ follows from the point group of the cell, not from the row.
-`--dyn-keep-modes` writes one row per lattice vector instead, which is what a
+`--keep-modes` writes one row per lattice vector instead, which is what a
 directional analysis and the verification below need.
 
 These shells are the exact ones, i.e. all lattice vectors of one $|\mathbf q|$.
@@ -420,12 +437,12 @@ The static grid under `--method nufft` bins $|\mathbf q|$ uniformly instead,
 with a width the user sets through `--nq`, because it reads the whole transform
 at once and has no per-mode cost to control.
 
-`--dyn-modes N` caps how many modes the run pays for; without it the cell sets
+`--modes N` caps how many modes the run pays for; without it the cell sets
 the count, which grows as $|q_{\max} L|^3$.  The budget is a target rather than
 a hard limit: when even the two end shells need more modes than it allows, they
 are kept anyway and the run summary says so.  Both the shell and the orbit
 reduction assume that the system is isotropic and in equilibrium.  The cheapest
-way to check that is built in: a `--dyn-q grid` run with `--s4` prints an
+way to check that is built in: a `--qpoints grid` run with `--s4` prints an
 `isotropy` line in its summary with the spread of the modes of the smallest
 shell at the lag of the $\chi_4$ peak, next to their mean value.  Compare that
 spread with the run-to-run scatter of a single mode (a second run with a
@@ -434,7 +451,7 @@ far above it, and that does not shrink when the box is enlarged, means the
 trajectory is not equilibrated or the system is not isotropic, and then
 neither the orbit reduction nor an isotropic correlation length may be
 trusted.  The per-mode numbers behind it are in the `S4` table of a
-`--dyn-keep-modes` run.
+`--keep-modes` run.
 
 #### One lattice vector
 
@@ -452,7 +469,7 @@ lattice stops being independent of the choice of the periodic images.  The
 table has one row, labelled by $|\mathbf q|$, while the header carries the
 indices and the vector.  `single:0,0,0` is the Gamma point, whose $S_4$ row is
 $\chi_4(t)$; a run that wants only $Q(t)$ and $\chi_4(t)$ is cheaper with
-`--dyn-q -` and `--chi4`.
+no `--qpoints` at all and `--chi4`.
 
 The dynamics come from the same density amplitudes $\rho_a(q,t)$, evaluated by
 direct summation at the sampled $q$ and correlated in time with a multi-origin
@@ -476,9 +493,10 @@ keep `--dt` and the interpretation consistent.
 
 The transform uses the one-sided folding $S(q,-\omega) = S(q,\omega)$ and the
 normalization $W(q)$ of the static table, so the zeroth moment is exact:
-$\int S(q,\omega)\,d\omega = F(q,0) = S(q)$, the value in `OUTPUT`.  Chemical
-weighting (`-w neutron`/`xray`, `--norm`) is applied to the partial correlation
-functions exactly as for the static partials, so the same conventions hold.
+$\int S(q,\omega)\,d\omega = F(q,0) = S(q)$, the value in the `--sq` table.
+Chemical weighting (`-w neutron`/`xray`, `--norm`) is applied to the partial
+correlation functions exactly as for the static partials, so the same
+conventions hold.
 
 ### Four-point structure factor (`--s4`, `--chi4`)
 
@@ -576,30 +594,30 @@ that happens.  `--lag` is still counted in dump frames, so with stride $N$,
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
-static `OUTPUT` table is still written.  A run with only `--sqw`/`--fqt` does
+`--sq` table is still written.  A run with only `--sqw`/`--fqt` does
 not allocate the S4 position buffer.  `--fqt-self` allocates that shared
 position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers, and
-`--msd` does the same.  With `--dyn-q -` there are no density amplitudes at
-all, so only `--chi4` and `--msd` are left and no `OUTPUT` table is taken.
+`--msd` does the same.  Without `--qpoints` there are no density amplitudes at
+all, so only `--chi4` and `--msd` are left and no `--sq` table is written.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
-sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
+sqcalc dyn -i traj.dump -w unit --qpoints line:20,0.5,4,1,1,0 \
        --dt 0.005 --maxframes 400 \
-       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
+       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat --sq S_q.dat
 
 # the same overlap dynamics without any q points, and no S(q) table
-sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
+sqcalc dyn -i traj.dump -w unit --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --chi4 chi4.dat
 
 # the mean squared displacement of the same trajectory, no cutoff needed
-sqcalc -i traj.dump -w unit --dyn --dyn-q - --dt 0.005 --maxframes 400 \
+sqcalc dyn -i traj.dump -w unit --dt 0.005 --maxframes 400 \
        --msd msd.dat
 
 # the isotropic average on one shell: the 110 point rule at |q| = 2.5 1/A,
 # halved to 55 modes by the +- merge
-sqcalc -i traj.dump -w unit --dyn --dyn-q shell:2.5,medium \
-       --dt 0.005 --maxframes 400 --sqw S_qw.dat S_q.dat
+sqcalc dyn -i traj.dump -w unit --qpoints shell:2.5,medium \
+       --dt 0.005 --maxframes 400 --sqw S_qw.dat --sq S_q.dat
 ```
 
 ### Self intermediate scattering function (`--fqt-self`)
@@ -668,8 +686,8 @@ $$
 $$
 
 Unlike the reciprocal outputs, `--msd` works without any q points, so it is
-accepted by `--dyn-q -` (the default) alongside `--chi4`, and such a run takes
-no `OUTPUT` table.  In three dimensions the long-time slope gives the
+accepted without `--qpoints` alongside `--chi4`, and such a run takes
+no `--sq` table.  In three dimensions the long-time slope gives the
 diffusion coefficient, $D = \text{slope}/6$.
 
 With `--partials` (the default) the table also carries one column per species,
@@ -703,7 +721,7 @@ with one extra column per type pair when partials are written, e.g.
 
 `--grid FILE` writes every reciprocal lattice vector of the requested range as
 `# qx qy qz S(q)` (text), excluding the trivial $q = 0$ mode in both tables.
-With a `.h5`/`.hdf5` name or `--grid-format hdf5` the result is HDF5 instead:
+With a `.h5`/`.hdf5` name or `--format hdf5` the result is HDF5 instead:
 one one-dimensional dataset per quantity (`/shell/q`, `/shell/S`,
 `/shell/count`, `/grid/qx`, `/grid/qy`, `/grid/qz`, `/grid/h`, `/grid/k`,
 `/grid/l`, `/grid/S`), partials under `/shell/S_partial/<pair>` with the labels
@@ -728,7 +746,7 @@ accumulation file, `r`, `S2_curve` and `S2_total_curve`.
 `--sqw FILE` (dynamic method) holds one row per $(q,\omega)$ sample,
 `# qx qy qz omega S(q,w) S(a-a) ...`, and `--fqt FILE` the intermediate
 scattering function with `tau` in place of `omega` and the same columns.  Both
-accept a `.h5`/`.hdf5` name (or `--dyn-format hdf5`) for HDF5, where the
+accept a `.h5`/`.hdf5` name (or `--format hdf5`) for HDF5, where the
 datasets are `/sqw/q` (one row per q: `qx qy qz |q|`), `/sqw/omega`,
 `/sqw/S`, `/sqw/count` (the time origins actually accumulated per lag),
 `/sqw/pairs` and `/sqw/S_partial/<pair>`, with the same layout under `/fqt`.
@@ -739,7 +757,7 @@ which the method does not separate, so `-fz` applies to the static table only.
 `--s4 FILE` (dynamic method) holds one row per $(q,\tau)$ sample,
 `# qx qy qz tau S4(q,t)`, with no partial columns.  `--chi4 FILE` is the
 scalar time series `# tau Q(t) chi4(t)`.  Both accept a `.h5`/`.hdf5` name (or
-`--dyn-format hdf5`) for HDF5, where the datasets are `/s4/q`, `/s4/tau`,
+`--format hdf5`) for HDF5, where the datasets are `/s4/q`, `/s4/tau`,
 `/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`, `/chi4/chi4`,
 `/chi4/count`, with the overlap cutoff in the `overlap` attribute.  The count
 is the number of time origins at each lag; a lag with a single origin has no
@@ -747,7 +765,7 @@ measurable fluctuation and is written as zero.
 
 `--msd FILE` (dynamic method) is the time series `# tau MSD(t)` with a species
 column per type when `--partials` is on.  It accepts a `.h5`/`.hdf5` name (or
-`--dyn-format hdf5`) for HDF5, where the datasets are `/msd/tau`, `/msd/MSD`,
+`--format hdf5`) for HDF5, where the datasets are `/msd/tau`, `/msd/MSD`,
 `/msd/count` and, with `--partials`, `/msd/pairs` and
 `/msd/MSD_partial/<species>`.
 
@@ -762,24 +780,24 @@ helper `h5read`.
 
 ```sh
 # unit weights, stdout, 4 threads
-sqcalc -i traj.dump -t 4 - > S_q.dat
+sqcalc static -i traj.dump -t 4 - > S_q.dat
 
 # neutron weighting of a two component glass, plus the reciprocal grid table
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
+sqcalc static -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
        --grid S_q_grid.dat S_q.dat
 
 # X-ray weighting (q dependent form factors), cross-checked by direct summation
-sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
+sqcalc static -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
 
 # Debye method with partial g(r), and a GPU transform
-sqcalc -i traj.dump -m 1:Si,2:O --method debye --rmax 12 --rdf g_of_r.dat S_q.dat
-sqcalc -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
+sqcalc static -i traj.dump -m 1:Si,2:O --method debye --rmax 12 --rdf g_of_r.dat S_q.dat
+sqcalc static -i traj.dump -m 1:Si,2:O --device gpu --precision single S_q_gpu.dat
 
 # dynamic structure factor along (1,1,0), 101 q points, dumped every 10 steps
 # of dt = 0.005 (frame interval 0.05), window 400 frames
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
-       --dyn --dyn-q line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
-       --sqw S_qw.dat S_q.dat
+sqcalc dyn -i traj.dump -m 1:Si,2:O -w neutron \
+       --qpoints line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat --sq S_q.dat
 ```
 
 ## Limits and pitfalls
@@ -796,7 +814,7 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
   internally.  The dynamic method always needs *unwrapped* coordinates: it
   prefers `xu yu zu` and otherwise reconstructs them from `x y z` while
   reading, which requires the atom order (`id`) to be stable between frames.
-* `--dyn` needs a dump written at a constant timestep interval, and enough of
+* `sqcalc dyn` needs a dump written at a constant timestep interval, and enough of
   them: the frame interval sets the highest frequency the spectrum can see
   ($\omega_{\max} = \pi/\Delta t_{\text{frame}}$), so a trajectory dumped every
   100 MD steps resolves far less than one dumped every 10.  sqcalc prints the
@@ -808,7 +826,7 @@ sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
   the states that would work; `-w unit` needs no mapping and labels the
   partials by type id instead.
 * The `OUTPUT` table reports 0 for the grid shells the box cannot sample (the
-  `--dyn-q shell:` average is a single shell and is never empty).  Pick
+  `--qpoints shell:` average is a single shell and is never empty).  Pick
   `--qmin` and `--nq` with `scripts/choose_q.py` before trusting the low-$q$
   end, and read the Faber-Ziman partials (`-fz`) when comparing partials across
   concentrations.

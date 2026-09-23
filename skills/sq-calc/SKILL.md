@@ -15,18 +15,18 @@ and a real space Debye pair histogram, which can also write $g(r)$.
 With `--xrd FILE` it writes a powder diffraction pattern instead of, or next
 to, the $S(q)$ table, in the convention of LAMMPS's `compute xrd`.
 
-With `--dyn` it instead keeps the time axis, and `--dyn-q` chooses the
-reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
+The `dyn` subcommand (`sqcalc dyn`) instead keeps the time axis, and its `--qpoints`
+chooses the reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
 `shell:Q,low|medium|high` for the isotropic average over the sphere $|q| = Q$,
 `grid:QMAX` for every reciprocal-lattice vector up to $|q| = Q_{\max}$, or
-`single:N1,N2,N3` for one lattice vector of the box; `-` (the default) samples
+`single:N1,N2,N3` for one lattice vector of the box; leaving `--qpoints` out samples
 no q points.  Any of the q samplings supports the dynamic
 structure factor $S(q,\omega)$ (`--sqw`), the coherent intermediate scattering
 function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
 the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q
 points computes only the average overlap and dynamic susceptibility $Q(t)$,
 $\chi_4(t)$ (`--chi4`) and the mean squared displacement $\text{MSD}(t)$
-(`--msd`), and takes no `OUTPUT` table.  `--s4` and `--chi4` need the overlap
+(`--msd`), and writes no `--sq` table.  `--s4` and `--chi4` need the overlap
 cutoff `--s4-cutoff`; `--msd` needs none.
 
 It is one self-contained binary with no data files, plugins or environment
@@ -35,7 +35,7 @@ sqcalc` is the check that it resolves.  Nothing else has to be located to run a
 calculation:
 
 ```sh
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
+sqcalc static -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
 ```
 
 ## Documents
@@ -82,7 +82,7 @@ reciprocal methods need because their q grid is the lattice of that box:
 ```sh
 python3 scripts/choose_q.py traj.dump --qmax 15            # report
 python3 scripts/choose_q.py traj.dump --qmax 15 --print-options
-sqcalc -i traj.dump $(python3 scripts/choose_q.py traj.dump --qmax 15 --print-options) S_q.dat
+sqcalc static -i traj.dump $(python3 scripts/choose_q.py traj.dump --qmax 15 --print-options) S_q.dat
 ```
 
 It needs numpy, reads only the first frame, and prints `--qmin/--qmax/--nq`
@@ -136,8 +136,8 @@ and `--dr` instead of the box sets the usable q range.
   $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
   always includes every atom and never applies `--s4-cutoff`.  `--msd` shares
   the same buffer and schedule and also uses unit weights.
-* `--dyn-q -` (the default) samples no q at all, so `--chi4` and `--msd` are
-  the only outputs it accepts, no `OUTPUT` table is written, and `--s4` needs
+* Without `--qpoints` no q is sampled, so `--chi4` and `--msd` are
+  the only outputs it accepts, no `--sq` table is written, and `--s4` needs
   a line or a shell.  `--msd` writes one species column per type unless
   `--no-partials` is given.
   A shell costs half the rule's directions per frame - 25, 55 or 97 modes once
@@ -149,7 +149,8 @@ and `--dr` instead of the box sets the usable q range.
   `--dr` Richardson extrapolation and the tail/multi-box fits.  $S_2$ is
   treated as a qualitative/trend quantity, so no statistical error is
   reported.
-* The table goes to `OUTPUT` and progress to stderr, so `-q` keeps logs clean.
+* The table goes to `OUTPUT` (`sqcalc static`) or `--sq FILE` (`sqcalc dyn`)
+  and progress to stderr, so `--quiet` keeps logs clean.
 * The tables are plain text, so `scripts/plot_sq.py` (or any column reader)
   plots them without further tooling.
 

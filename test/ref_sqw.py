@@ -4,12 +4,12 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Independent numpy reference for the sqcalc dynamic structure factor (--dyn).
+"""Independent numpy reference for the sqcalc dynamic structure factor (`sqcalc dyn`).
 
 This is deliberately a second implementation: it parses the dump itself,
 accumulates the multi-origin time correlation with its own loops and performs
 the Fourier transform itself, so that the Fortran results can be cross checked
-on the same trajectory.  The conventions are the ones documented for --dyn:
+on the same trajectory.  The conventions are the ones of the dyn subcommand:
 
   C_ab(q,l) = <rho_a(q,t+l) rho_b*(q,t)>          with the count per lag
   F(q,tau)  = sum_ab w_a w_b C_ab(q,tau) / W(q)
@@ -119,7 +119,7 @@ def spectrum(f, dt):
 
 
 def parse_dyn_q(spec):
-    """q vectors of a --dyn-q specification, with their quadrature weights.
+    """q vectors of a --qpoints specification, with their quadrature weights.
 
     Returns (qvec, weights, radius): the weights are all 1 on a q line, and a
     shell returns its Lebedev weights plus the radius it belongs to.  The
@@ -138,12 +138,12 @@ def parse_dyn_q(spec):
         try:
             from scipy.integrate import lebedev_rule
         except ImportError as exc:  # pragma: no cover - depends on the host
-            raise SystemExit("--dyn-q shell needs scipy.integrate.lebedev_rule: %s" % exc)
+            raise SystemExit("--qpoints shell needs scipy.integrate.lebedev_rule: %s" % exc)
         radius, accuracy = spec[6:].split(",")
         orders = {"low": 11, "medium": 17, "high": 23}
         x, w = lebedev_rule(orders[accuracy.strip().lower()])
         return float(radius) * x.T, w, float(radius)
-    raise SystemExit("unsupported --dyn-q specification %r" % spec)
+    raise SystemExit("unsupported --qpoints specification %r" % spec)
 
 
 def shell_average(values, weights):
@@ -154,7 +154,7 @@ def shell_average(values, weights):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
-    parser.add_argument("--dyn-q", required=True, dest="dyn_q",
+    parser.add_argument("--qpoints", required=True, dest="dyn_q",
                         help='"-", "line:NINT,S0,S1,DX,DY,DZ" or "shell:Q,low|medium|high"')
     parser.add_argument("--maxframes", type=int, required=True)
     parser.add_argument("--lag", type=int, default=1)

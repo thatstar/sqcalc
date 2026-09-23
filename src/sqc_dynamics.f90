@@ -32,6 +32,7 @@
 !! which is the primary consistency test of the method.
 module sqc_dynamics
    use sqc_kinds
+   use sqc_output, only: format_text, format_hdf5
    use sqc_dump, only: frame_t
    use sqc_weights, only: weight_scheme_t
    use sqc_structure_factor, only: structure_factor_t, sf_shared_setup, sf_alloc_partials, &
@@ -50,19 +51,15 @@ module sqc_dynamics
    implicit none
    private
 
-   public :: dynamics_structure_factor_t, dyn_format_text, dyn_format_hdf5, &
+   public :: dynamics_structure_factor_t, &
              dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
 
-   !> q sampling modes of a dynamic run (`--dyn-q`).
+   !> q sampling modes of a dynamic run (`--qpoints`).
    integer, parameter :: dyn_q_none = 0
    integer, parameter :: dyn_q_line = 1
    integer, parameter :: dyn_q_shell = 2
    integer, parameter :: dyn_q_grid = 3
    integer, parameter :: dyn_q_single = 4
-
-   !> Output flavours of the two optional files.
-   integer, parameter :: dyn_format_text = 0
-   integer, parameter :: dyn_format_hdf5 = 1
 
    !> Which quantity a writer is asked for.
    integer, parameter :: dyn_sqw = 1
@@ -122,7 +119,7 @@ module sqc_dynamics
       !! the mode sums of a lag never share a partial result with another lag.
       complex(c_double_complex), allocatable :: acc_thread(:, :)
       complex(c_double_complex), allocatable :: fs_thread(:, :, :), rho_thread(:, :, :)
-      !> Single lattice vector sampling (`--dyn-q single`): the Miller indices
+      !> Single lattice vector sampling (`--qpoints single`): the Miller indices
       !! and the q vector they build.
       integer :: single_index(3) = 0
       real(rk) :: single_q(3) = 0.0_rk
@@ -145,9 +142,9 @@ module sqc_dynamics
       real(rk), allocatable :: mode_weight(:)
       !> Optional output files (empty = not written) and their format.
       character(len=:), allocatable :: sqw_path, fqt_path, fqt_self_path
-      integer :: sqw_format = dyn_format_text
-      integer :: fqt_format = dyn_format_text
-      integer :: fqt_self_format = dyn_format_text
+      integer :: sqw_format = format_text
+      integer :: fqt_format = format_text
+      integer :: fqt_self_format = format_text
       !> Self intermediate scattering function F_s(q,t).
       logical :: fqt_self_enabled = .false.
       !> Four-point structure factor and average overlap / chi4.
@@ -156,12 +153,12 @@ module sqc_dynamics
       real(rk) :: s4_cutoff = 0.0_rk
       real(rk) :: s4_cutoff2 = 0.0_rk
       character(len=:), allocatable :: s4_path, chi4_path
-      integer :: s4_format = dyn_format_text
-      integer :: chi4_format = dyn_format_text
+      integer :: s4_format = format_text
+      integer :: chi4_format = format_text
       !> Mean squared displacement MSD(tau) and its per-species split.
       logical :: msd_enabled = .false.
       character(len=:), allocatable :: msd_path
-      integer :: msd_format = dyn_format_text
+      integer :: msd_format = format_text
       !> True when F(q,t)/S(q,w) buffers and transforms are needed.
       logical :: coherent_enabled = .true.
       !> Position buffer limit [GB, 10^9 bytes] for --s4/--chi4.
@@ -257,13 +254,13 @@ contains
       case (dyn_q_line)
          if (self%nintervals < 1) then
             ierr = 1
-            message = '--dyn-q line needs at least one interval on the q line'
+            message = '--qpoints line needs at least one interval on the q line'
             return
          end if
          norm_u = sqrt(sum(self%direction**2))
          if (norm_u <= 0.0_rk) then
             ierr = 1
-            message = '--dyn-q line needs a non-zero direction, e.g. 1,1,0'
+            message = '--qpoints line needs a non-zero direction, e.g. 1,1,0'
             return
          end if
          u = self%direction/norm_u
@@ -306,7 +303,7 @@ contains
          if (npts < 1) then
             ierr = 1
             write (message, '(a,i0,a)') 'unsupported Lebedev order ', self%shell_order, &
-               ' for --dyn-q shell (use low, medium or high)'
+               ' for --qpoints shell (use low, medium or high)'
             return
          end if
          self%nmodes = npts
@@ -504,7 +501,7 @@ contains
 
       ! Weight of every species at every q, applied when the results are
       ! assembled (never inside the per frame sum).
-      ! A run without q points (--dyn-q -) has no c0sum and no rho at all.
+      ! A run without --qpoints has no c0sum and no rho at all.
       if (self%nmodes > 0) then
          allocate (self%amp(self%nmodes, self%nspecies))
          if (self%q_dependent) then
@@ -1148,7 +1145,7 @@ contains
       ! Every downstream use of a grid wants the isotropic average: the OZ fit
       ! of S4(q,t), the powder average of F(q,t), the isotropic S(q,w).  A run
       ! that needs the individual lattice vectors asks for them with
-      ! --dyn-keep-modes.
+      ! --keep-modes.
       if (self%q_mode == dyn_q_grid .and. .not. self%keep_modes) call dyn_collapse_shells(self)
       ! A single lattice vector is accumulated at its true q, which is what the
       ! density amplitude needs; its rows are labelled by |q| instead, with the
@@ -1164,7 +1161,7 @@ contains
    !! 6-fold `(3,0,0)` orbit has to count six times against the 24-fold
    !! `(2,2,1)` one.  After the `+-` reduction every orbit keeps half of its
    !! members, so the weights are uniform and the row is the plain mean; with
-   !! `--dyn-thin orbits` one representative per orbit survives and it carries
+   !! `--thin orbits` one representative per orbit survives and it carries
    !! the full multiplicity of its orbit.  Either way the result estimates the
    !! same isotropic shell average.
    !!
@@ -1747,7 +1744,7 @@ contains
 
       ierr = 0
       message = ''
-      if (format == dyn_format_hdf5) then
+      if (format == format_hdf5) then
 #ifdef SQC_HAVE_HDF5
          allocate (q4(self%nmodes, 4), labels(self%nspecies))
          do im = 1, int(self%nmodes)
@@ -1764,7 +1761,7 @@ contains
          deallocate (q4, labels)
 #else
          ierr = 1
-         message = 'this build has no HDF5 support; use --dyn-format text'
+         message = 'this build has no HDF5 support; use --format text'
 #endif
          return
       end if
@@ -1836,14 +1833,14 @@ contains
 
       ierr = 0
       message = ''
-      if (format == dyn_format_hdf5) then
+      if (format == format_hdf5) then
 #ifdef SQC_HAVE_HDF5
          call hdf5_write_chi4(path, self%sample_tau, self%overlap, self%chi4, self%sample_cnt(1, :), &
                               self%nframes, self%frame_dt, self%maxframes, self%lag_stride, &
                               self%s4_cutoff, self%stride, self%effective_maxframes, ierr, message)
 #else
          ierr = 1
-         message = 'this build has no HDF5 support; use --dyn-format text'
+         message = 'this build has no HDF5 support; use --format text'
 #endif
          return
       end if
@@ -1886,7 +1883,7 @@ contains
 
       ierr = 0
       message = ''
-      if (format == dyn_format_hdf5) then
+      if (format == format_hdf5) then
 #ifdef SQC_HAVE_HDF5
          allocate (labels(self%nspecies))
          do isp = 1, self%nspecies
@@ -1899,7 +1896,7 @@ contains
          deallocate (labels)
 #else
          ierr = 1
-         message = 'this build has no HDF5 support; use --dyn-format text'
+         message = 'this build has no HDF5 support; use --format text'
 #endif
          return
       end if
@@ -1959,7 +1956,7 @@ contains
 
       ierr = 0
       message = ''
-      if (format == dyn_format_hdf5) then
+      if (format == format_hdf5) then
 #ifdef SQC_HAVE_HDF5
          call dyn_write_hdf5(self, scheme, path, kind, axis_name, axis, spec, part, ierr, message)
 #else

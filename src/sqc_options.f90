@@ -6,10 +6,11 @@
 !> Command line handling for sqcalc.
 module sqc_options
    use sqc_kinds
+   use sqc_output, only: format_text, format_hdf5
    use sqc_weights, only: weight_scheme_t, weight_unit, weight_neutron, weight_xray, &
                           scheme_from_name
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
-                            norm_self, norm_natom, method_dynamic
+                            norm_self, norm_natom
    use sqc_debye, only: debye_default_dr, debye_default_skin
    use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
    use sqc_modes, only: thin_none, thin_shells, thin_orbits
@@ -19,7 +20,17 @@ module sqc_options
    private
 
    public :: options_t, parse_options, print_usage, program_version, device_cpu, device_gpu, &
-             precision_double, precision_single, grid_format_text, grid_format_hdf5
+             precision_double, precision_single, cmd_none, cmd_static, cmd_dyn
+
+   !> Which subcommand the run belongs to; cmd_none is a bare -h/--version.
+   integer, parameter :: cmd_none = -1
+   integer, parameter :: cmd_static = 0
+   integer, parameter :: cmd_dyn = 1
+
+   !> Which subcommands accept an option (bit set), see flag_scope.
+   integer, parameter :: scope_static = 1
+   integer, parameter :: scope_dyn = 2
+   integer, parameter :: scope_both = 3
 
    !> Where the NUFFT transforms run.
    integer, parameter :: device_cpu = 0
@@ -28,10 +39,6 @@ module sqc_options
    !> Precision of the GPU transform.
    integer, parameter :: precision_double = 0
    integer, parameter :: precision_single = 1
-
-   !> Format of the reciprocal grid table.
-   integer, parameter :: grid_format_text = 0
-   integer, parameter :: grid_format_hdf5 = 1
 
    character(len=*), parameter :: program_version = 'sqcalc 0.1.0'
 
@@ -46,7 +53,6 @@ module sqc_options
       character(len=:), allocatable :: grid_output
       integer :: threads = 0
       integer :: method = method_nufft
-      logical :: method_given = .false.
       integer :: norm = norm_mean
       integer :: device = device_cpu
       integer :: gpu_id = 0
@@ -79,8 +85,7 @@ module sqc_options
       logical :: nq_given = .false.
       real(rk) :: eps = 1.0e-9_rk
       logical :: want_grid = .false.
-      integer :: grid_format = grid_format_text
-      logical :: grid_format_given = .false.
+      integer :: grid_format = format_text
       !> Powder XRD output (--xrd FILE) and the settings it needs: the
       !! wavelength [dump length unit], the two-theta range [deg], the bin
       !! width [deg, 0 = derive from the box] and the LP/weight switches.
@@ -92,7 +97,7 @@ module sqc_options
       logical :: xrd_range_given = .false.
       real(rk) :: xrd_step = 0.0_rk
       logical :: xrd_step_given = .false.
-      integer :: xrd_format = grid_format_text
+      integer :: xrd_format = format_text
       logical :: lp = .true.
       logical :: lp_given = .false.
       !> True when -w was given; --xrd implies the x-ray weights otherwise.
@@ -100,42 +105,44 @@ module sqc_options
       logical :: quiet = .false.
       logical :: show_help = .false.
       logical :: show_version = .false.
-      !> Dynamic run (--dyn) and the q sampling that feeds it (--dyn-q).
-      logical :: dynamic = .false.
-      integer :: dyn_q_mode = dyn_q_none
-      logical :: dyn_q_given = .false.
+      !> Subcommand: cmd_static, cmd_dyn, or cmd_none for a bare -h/--version.
+      integer :: command = cmd_none
+      !> The q sampling of the dyn subcommand.
+      integer :: q_mode = dyn_q_none
       !> line: NINT intervals, scale from S0 to S1 along (DX, DY, DZ).
-      integer :: dyn_intervals = 0
-      real(rk) :: dyn_s0 = 0.0_rk
-      real(rk) :: dyn_s1 = 0.0_rk
-      real(rk) :: dyn_dir(3) = 0.0_rk
+      integer :: q_intervals = 0
+      real(rk) :: q_s0 = 0.0_rk
+      real(rk) :: q_s1 = 0.0_rk
+      real(rk) :: q_dir(3) = 0.0_rk
       !> shell: |q| radius and the order of the Lebedev rule it selects.
-      real(rk) :: dyn_shell_q = 0.0_rk
-      integer :: dyn_shell_order = 0
+      real(rk) :: shell_q = 0.0_rk
+      integer :: shell_order = 0
       !> grid: the upper bound of |q|, the mode budget and the thinning policy.
-      real(rk) :: dyn_grid_qmax = 0.0_rk
+      real(rk) :: grid_qmax = 0.0_rk
       !> single: the Miller indices of the one lattice vector to sample.
-      integer :: dyn_single(3) = 0
-      integer :: dyn_modes = 0
-      integer :: dyn_thin = thin_none
-      logical :: dyn_modes_given = .false.
-      logical :: dyn_thin_given = .false.
-      logical :: dyn_keep_modes = .false.
+      integer :: single_index(3) = 0
+      integer :: modes = 0
+      integer :: thin = thin_none
+      logical :: modes_given = .false.
+      logical :: thin_given = .false.
+      logical :: keep_modes = .false.
       !> MD time step [time units] and the correlation window settings.
       real(rk) :: dt = 0.0_rk
       integer :: maxframes = 0
       integer :: lag_stride = 1
       logical :: lag_given = .false.
       !> Optional dynamic outputs.
+      character(len=:), allocatable :: sq_output
       character(len=:), allocatable :: sqw_output
       character(len=:), allocatable :: fqt_output
       character(len=:), allocatable :: fqt_self_output
-      !> Unified format override; otherwise each file infers from its suffix.
-      integer :: dyn_format = grid_format_text
-      logical :: dyn_format_given = .false.
-      integer :: sqw_format = grid_format_text
-      integer :: fqt_format = grid_format_text
-      integer :: fqt_self_format = grid_format_text
+      !> --format override, for every table the run writes; otherwise each
+      !! file infers the format from its suffix.
+      integer :: output_format = format_text
+      logical :: output_format_given = .false.
+      integer :: sqw_format = format_text
+      integer :: fqt_format = format_text
+      integer :: fqt_self_format = format_text
       !> Four-point structure factor and average overlap / chi4 outputs.
       character(len=:), allocatable :: s4_output, chi4_output
       !> Mean squared displacement output (--msd).
@@ -146,9 +153,9 @@ module sqc_options
       logical :: buffer_limit_given = .false.
       integer :: stride = 1
       logical :: stride_given = .false.
-      integer :: s4_format = grid_format_text
-      integer :: chi4_format = grid_format_text
-      integer :: msd_format = grid_format_text
+      integer :: s4_format = format_text
+      integer :: chi4_format = format_text
+      integer :: msd_format = format_text
       type(weight_scheme_t) :: scheme
    end type options_t
 
@@ -167,7 +174,34 @@ contains
       message = ''
       npos = 0
       nargs = command_argument_count()
-      i = 1
+
+      ! --- the subcommand is the first argument ----------------------------
+      if (nargs < 1) then
+         ierr = 1
+         message = 'expected a subcommand: "sqcalc static ..." or "sqcalc dyn ..."'
+         return
+      end if
+      call get_command_argument(1, arg)
+      arg = trim(adjustl(arg))
+      select case (arg)
+      case ('static')
+         self%command = cmd_static
+      case ('dyn')
+         self%command = cmd_dyn
+      case ('-h', '--help')
+         self%show_help = .true.
+         return
+      case ('-v', '--version')
+         self%show_version = .true.
+         return
+      case default
+         ierr = 1
+         message = 'expected a subcommand as the first argument, got "'//trim(arg)// &
+            '"; use "sqcalc static ..." or "sqcalc dyn ..." (see sqcalc -h)'
+         return
+      end select
+
+      i = 2
       do while (i <= nargs)
          call get_command_argument(i, arg)
          arg = trim(adjustl(arg))
@@ -189,6 +223,21 @@ contains
                has_inline = .false.
             end if
 
+            ! A flag of the other subcommand is refused here, so the message
+            ! can name the subcommand that does take it.
+            if (iand(flag_scope(trim(name)), &
+                     merge(scope_static, scope_dyn, self%command == cmd_static)) == 0) then
+               ierr = 1
+               if (self%command == cmd_static) then
+                  message = trim(name)//' is not a static option; it belongs to '// &
+                     '"sqcalc dyn"'
+               else
+                  message = trim(name)//' is not a dyn option; it belongs to '// &
+                     '"sqcalc static"'
+               end if
+               return
+            end if
+
             needs_value = .true.
             select case (trim(name))
             case ('-h', '--help')
@@ -197,17 +246,8 @@ contains
             case ('-v', '--version')
                self%show_version = .true.
                needs_value = .false.
-            case ('-q', '--quiet')
+            case ('--quiet')
                self%quiet = .true.
-               needs_value = .false.
-            case ('--dyn')
-               if (has_inline) then
-                  ierr = 1
-                  message = '--dyn takes no value; pick the q sampling with --dyn-q, e.g. '// &
-                     '--dyn-q line:100,0.5,20,1,1,0'
-                  return
-               end if
-               self%dynamic = .true.
                needs_value = .false.
             case ('--no-cutoff-correction')
                self%no_cutoff_correction = .true.
@@ -232,19 +272,19 @@ contains
                self%partials = .false.
                self%partials_given = .true.
                needs_value = .false.
-            case ('--dyn-keep-modes')
-               self%dyn_keep_modes = .true.
+            case ('--keep-modes')
+               self%keep_modes = .true.
                needs_value = .false.
             case ('-i', '--input', '--mapping', '-m', '-w', '--weight', '-t', '--threads', &
                   '--qmin', '--qmax', '--nq', '--eps', '--method', '--norm', '--grid', &
-                  '--device', '--gpu-id', '--precision', '--grid-format', &
+                  '--device', '--gpu-id', '--precision', &
                   '--xrd', '--xrd-lambda', '--xrd-range', '--xrd-step', &
                   '--rmax', '--dr', '--skin', '--rdf', &
                   '--pair-entropy', '--s2-accum', &
-                  '--dyn-q', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--dyn-format', &
+                  '-q', '--qpoints', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--format', &
                   '--fqt-self', '--s4', '--chi4', '--msd', '--s4-cutoff', '--buffer-limit', &
                   '--stride', &
-                  '--dyn-modes', '--dyn-thin')
+                  '--modes', '--thin', '--sq')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
                      ierr = 1
@@ -354,7 +394,6 @@ contains
                      message = 'unknown method "'//trim(value)//'" (use nufft, direct or debye)'
                      return
                   end select
-                  self%method_given = .true.
                case ('--rmax')
                   read (value, *, iostat=ierr) self%rmax
                   if (ierr /= 0 .or. self%rmax <= 0.0_rk) then
@@ -385,29 +424,29 @@ contains
                   self%pair_entropy_output = trim(value)
                case ('--s2-accum')
                   self%s2_accum_output = trim(value)
-               case ('--dyn-q')
-                  call parse_dyn_q(self, trim(value), ierr, message)
+               case ('-q', '--qpoints')
+                  call parse_q_sampling(self, trim(value), ierr, message)
                   if (ierr /= 0) return
-               case ('--dyn-modes')
-                  read (value, *, iostat=ierr) self%dyn_modes
-                  if (ierr /= 0 .or. self%dyn_modes < 0) then
+               case ('--modes')
+                  read (value, *, iostat=ierr) self%modes
+                  if (ierr /= 0 .or. self%modes < 0) then
                      ierr = 1
-                     message = '--dyn-modes must be a non-negative integer'
+                     message = '--modes must be a non-negative integer'
                      return
                   end if
-                  self%dyn_modes_given = .true.
-               case ('--dyn-thin')
+                  self%modes_given = .true.
+               case ('--thin')
                   select case (trim(value))
                   case ('shells')
-                     self%dyn_thin = thin_shells
+                     self%thin = thin_shells
                   case ('orbits')
-                     self%dyn_thin = thin_orbits
+                     self%thin = thin_orbits
                   case default
                      ierr = 1
-                     message = '--dyn-thin wants "shells" or "orbits"'
+                     message = '--thin wants "shells" or "orbits"'
                      return
                   end select
-                  self%dyn_thin_given = .true.
+                  self%thin_given = .true.
                case ('--dt')
                   read (value, *, iostat=ierr) self%dt
                   if (ierr /= 0 .or. self%dt <= 0.0_rk) then
@@ -436,18 +475,8 @@ contains
                   self%fqt_output = trim(value)
                case ('--fqt-self')
                   self%fqt_self_output = trim(value)
-               case ('--dyn-format')
-                  select case (trim(value))
-                  case ('text', 'txt', 'ascii')
-                     self%dyn_format = grid_format_text
-                  case ('hdf5', 'h5', 'hdf')
-                     self%dyn_format = grid_format_hdf5
-                  case default
-                     ierr = 1
-                     message = 'unknown dynamic format "'//trim(value)//'" (use text or hdf5)'
-                     return
-                  end select
-                  self%dyn_format_given = .true.
+               case ('--sq')
+                  self%sq_output = trim(value)
                case ('--s4')
                   self%s4_output = trim(value)
                case ('--chi4')
@@ -512,18 +541,18 @@ contains
                case ('--grid')
                   self%want_grid = .true.
                   self%grid_output = trim(value)
-               case ('--grid-format')
+               case ('--format')
                   select case (trim(value))
                   case ('text', 'txt', 'ascii')
-                     self%grid_format = grid_format_text
+                     self%output_format = format_text
                   case ('hdf5', 'h5', 'hdf')
-                     self%grid_format = grid_format_hdf5
+                     self%output_format = format_hdf5
                   case default
                      ierr = 1
-                     message = 'unknown grid format "'//trim(value)//'" (use text or hdf5)'
+                     message = 'unknown format "'//trim(value)//'" (use text or hdf5)'
                      return
                   end select
-                  self%grid_format_given = .true.
+                  self%output_format_given = .true.
                case ('--xrd')
                   self%xrd_output = trim(value)
                case ('--xrd-lambda')
@@ -566,18 +595,6 @@ contains
       end do
 
       if (self%show_help .or. self%show_version) return
-      ! A stray value after --dyn is the old command line, which carried the q
-      ! line itself; name the replacement instead of treating it as OUTPUT.
-      if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
-         do i = 1, npos
-            if (index(positional(i), ',') > 0) then
-               ierr = 1
-               message = '--dyn takes no value; pick the q sampling with --dyn-q, e.g. '// &
-                  '--dyn-q line:'//trim(positional(i))
-               return
-            end if
-         end do
-      end if
       if (.not. allocated(self%input)) then
          ierr = 1
          message = 'missing input dump file (-i)'
@@ -590,11 +607,6 @@ contains
       end if
       ! --- powder XRD output ------------------------------------------------
       if (allocated(self%xrd_output)) then
-         if (self%dynamic) then
-            ierr = 1
-            message = '--xrd is a static output; it cannot be combined with --dyn'
-            return
-         end if
          if (self%method == method_debye) then
             ierr = 1
             message = '--method debye sums the orientation-averaged Debye intensity, which is a '// &
@@ -647,31 +659,15 @@ contains
          message = 'single precision is only available on the GPU path (--device gpu)'
          return
       end if
-      if (self%dynamic) then
-         if (self%method_given) then
-            ierr = 1
-            message = '--dyn selects the dynamic method; do not pass --method as well'
-            return
-         end if
-         self%method = method_dynamic
+      if (self%command == cmd_dyn) then
          if (self%dt <= 0.0_rk) then
             ierr = 1
-            message = '--dyn needs --dt DT, the time step of the trajectory'
+            message = 'sqcalc dyn needs --dt DT, the time step of the trajectory'
             return
          end if
          if (self%maxframes < 1) then
             ierr = 1
-            message = '--dyn needs --maxframes L, the correlation window in frames'
-            return
-         end if
-         if (self%want_grid) then
-            ierr = 1
-            message = 'the dynamic method samples a q line or shell; --grid is not available'
-            return
-         end if
-         if (self%device == device_gpu) then
-            ierr = 1
-            message = 'the dynamic method runs on the CPU; use --device cpu'
+            message = 'sqcalc dyn needs --maxframes L, the correlation window in frames'
             return
          end if
          if (allocated(self%s4_output) .or. allocated(self%chi4_output) .or. &
@@ -699,158 +695,152 @@ contains
                '--fqt-self or --msd'
             return
          end if
-         if ((self%dyn_modes_given .or. self%dyn_thin_given) .and. &
-             self%dyn_q_mode /= dyn_q_grid) then
+         if ((self%modes_given .or. self%thin_given) .and. &
+             self%q_mode /= dyn_q_grid) then
             ierr = 1
-            message = '--dyn-modes and --dyn-thin need --dyn-q grid:QMAX'
+            message = '--modes and --thin need --qpoints grid:QMAX'
             return
          end if
-         if (self%dyn_keep_modes .and. self%dyn_q_mode /= dyn_q_grid) then
+         if (self%keep_modes .and. self%q_mode /= dyn_q_grid) then
             ierr = 1
-            message = '--dyn-keep-modes needs --dyn-q grid:QMAX'
-            return
-         end if
-      else if (self%dyn_q_given) then
-         ierr = 1
-         message = '--dyn-q belongs to --dyn; add --dyn to the command line'
-         return
-      else if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
-               allocated(self%fqt_self_output) .or. allocated(self%s4_output) .or. &
-               allocated(self%chi4_output) .or. allocated(self%msd_output)) then
-         ierr = 1
-         message = '--sqw, --fqt, --fqt-self, --s4, --chi4 and --msd belong to --dyn'
-         return
-      else if (self%dt > 0.0_rk .or. self%maxframes > 0 .or. self%lag_given .or. &
-               self%dyn_format_given .or. self%s4_cutoff_given .or. &
-               self%buffer_limit_given .or. self%stride_given .or. &
-               self%dyn_modes_given .or. self%dyn_thin_given .or. self%dyn_keep_modes) then
-         ierr = 1
-         message = '--dt, --maxframes, --lag, --dyn-format, --s4-cutoff, --buffer-limit '// &
-            'and --stride, --dyn-modes and --dyn-thin belong to --dyn'
-         return
-      end if
-      if (self%method == method_debye) then
-         if (self%want_grid) then
-            ierr = 1
-            message = 'the Debye method evaluates S(q) directly; --grid is not available'
-            return
-         end if
-         if (self%device == device_gpu) then
-            ierr = 1
-            message = 'the Debye method runs on the CPU; use --device cpu'
-            return
-         end if
-         if (allocated(self%s2_accum_output) .and. .not. allocated(self%pair_entropy_output)) then
-            ierr = 1
-            message = '--s2-accum needs --pair-entropy'
+            message = '--keep-modes needs --qpoints grid:QMAX'
             return
          end if
       else
-         if (self%rmax_given .or. self%dr_given .or. self%skin_given .or. &
-             allocated(self%rdf_output) .or. allocated(self%pair_entropy_output) .or. &
-             allocated(self%s2_accum_output)) then
-            ierr = 1
-            message = '--rmax, --dr, --skin, --rdf, --pair-entropy and --s2-accum '// &
-               'belong to --method debye'
-            return
+         ! --- the static subcommand -----------------------------------------
+         if (self%method == method_debye) then
+            if (self%want_grid) then
+               ierr = 1
+               message = 'the Debye method evaluates S(q) directly; --grid is not available'
+               return
+            end if
+            if (self%device == device_gpu) then
+               ierr = 1
+               message = 'the Debye method runs on the CPU; use --device cpu'
+               return
+            end if
+            if (allocated(self%s2_accum_output) .and. .not. &
+                allocated(self%pair_entropy_output)) then
+               ierr = 1
+               message = '--s2-accum needs --pair-entropy'
+               return
+            end if
+         else
+            if (self%rmax_given .or. self%dr_given .or. self%skin_given .or. &
+                allocated(self%rdf_output) .or. allocated(self%pair_entropy_output) .or. &
+                allocated(self%s2_accum_output)) then
+               ierr = 1
+               message = '--rmax, --dr, --skin, --rdf, --pair-entropy and --s2-accum '// &
+                  'belong to --method debye'
+               return
+            end if
          end if
       end if
 
-      ! The positional S(q) table is judged once the flags are consistent: a
-      ! run without q points has nothing to tabulate.
-      if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
-         if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
-             allocated(self%fqt_self_output) .or. allocated(self%s4_output)) then
-            ierr = 1
-            message = '--sqw, --fqt, --fqt-self and --s4 need a q sampling; add '// &
-               '--dyn-q line:... or --dyn-q shell:...'
-            return
+      ! The shell averaged S(q) table is the positional argument of static and
+      ! --sq of dyn; a dyn run without q points tabulates nothing.
+      if (self%command == cmd_dyn) then
+         if (self%q_mode == dyn_q_none) then
+            if (allocated(self%sqw_output) .or. allocated(self%fqt_output) .or. &
+                allocated(self%fqt_self_output) .or. allocated(self%s4_output)) then
+               ierr = 1
+               message = '--sqw, --fqt, --fqt-self and --s4 need a q sampling; add '// &
+                  '--qpoints line:... or --qpoints shell:...'
+               return
+            end if
+            if (allocated(self%sq_output)) then
+               ierr = 1
+               message = '--sq needs a q sampling; add --qpoints line:... or --qpoints shell:...'
+               return
+            end if
+            if (.not. allocated(self%chi4_output) .and. .not. allocated(self%msd_output)) then
+               ierr = 1
+               message = 'a run without a q sampling computes only --chi4 and --msd; '// &
+                  'add --chi4 or --msd FILE, or a q sampling'
+               return
+            end if
          end if
-         if (.not. allocated(self%chi4_output) .and. .not. allocated(self%msd_output)) then
+         if (allocated(self%sq_output)) self%output = self%sq_output
+         if (npos > 0) then
             ierr = 1
-            message = '--dyn-q - computes only --chi4 and --msd; add --chi4 or --msd FILE, '// &
-               'or a q sampling'
-            return
-         end if
-      end if
-      if (npos > 1) then
-         ierr = 1
-         message = 'only one output argument is allowed'
-         return
-      end if
-      if (npos == 0) then
-         ! Only a run that writes some other table can do without the S(q)
-         ! table: a dynamic run without a q sampling, or an XRD-only run.
-         if (.not. (self%dynamic .and. self%dyn_q_mode == dyn_q_none) .and. &
-             .not. allocated(self%xrd_output)) then
-            ierr = 1
-            message = 'missing output argument (use - for stdout)'
+            message = 'the dyn subcommand takes no positional argument; write the S(q) '// &
+               'table with --sq FILE'
             return
          end if
       else
-         if (self%dynamic .and. self%dyn_q_mode == dyn_q_none) then
+         if (npos > 1) then
             ierr = 1
-            message = '--dyn-q - computes no S(q) table; drop the OUTPUT argument'
+            message = 'only one output argument is allowed'
             return
          end if
-         self%output = trim(positional(1))
+         if (npos == 0) then
+            ! Only a run that writes some other table can do without the S(q)
+            ! table: an XRD-only run.
+            if (.not. allocated(self%xrd_output)) then
+               ierr = 1
+               message = 'missing output argument (use - for stdout)'
+               return
+            end if
+         else
+            self%output = trim(positional(1))
+         end if
       end if
       if (.not. self%want_grid) self%grid_output = ''
-      ! Default the grid format from the file name.
-      if (self%want_grid .and. .not. self%grid_format_given) then
-         if (ends_with(self%grid_output, '.h5') .or. ends_with(self%grid_output, '.hdf5')) then
-            self%grid_format = grid_format_hdf5
-         end if
-      end if
-      ! The XRD table infers its format from the file name as well.
-      if (allocated(self%xrd_output)) then
-         if (ends_with(self%xrd_output, '.h5') .or. ends_with(self%xrd_output, '.hdf5')) then
-            self%xrd_format = grid_format_hdf5
-         end if
-      end if
-      if (self%dyn_format_given) then
-         self%sqw_format = self%dyn_format
-         self%fqt_format = self%dyn_format
-         self%fqt_self_format = self%dyn_format
-         self%s4_format = self%dyn_format
-         self%chi4_format = self%dyn_format
-         self%msd_format = self%dyn_format
+      ! --format names the format of every table the run writes; without it
+      ! each file infers the format from its suffix.
+      if (self%output_format_given) then
+         self%grid_format = self%output_format
+         self%xrd_format = self%output_format
+         self%sqw_format = self%output_format
+         self%fqt_format = self%output_format
+         self%fqt_self_format = self%output_format
+         self%s4_format = self%output_format
+         self%chi4_format = self%output_format
+         self%msd_format = self%output_format
       else
+         if (self%want_grid) then
+            if (ends_with(self%grid_output, '.h5') .or. ends_with(self%grid_output, '.hdf5')) &
+               self%grid_format = format_hdf5
+         end if
+         if (allocated(self%xrd_output)) then
+            if (ends_with(self%xrd_output, '.h5') .or. ends_with(self%xrd_output, '.hdf5')) &
+               self%xrd_format = format_hdf5
+         end if
          if (allocated(self%sqw_output)) then
             if (ends_with(self%sqw_output, '.h5') .or. ends_with(self%sqw_output, '.hdf5')) &
-               self%sqw_format = grid_format_hdf5
+               self%sqw_format = format_hdf5
          end if
          if (allocated(self%fqt_output)) then
             if (ends_with(self%fqt_output, '.h5') .or. ends_with(self%fqt_output, '.hdf5')) &
-               self%fqt_format = grid_format_hdf5
+               self%fqt_format = format_hdf5
          end if
          if (allocated(self%fqt_self_output)) then
             if (ends_with(self%fqt_self_output, '.h5') .or. &
-                ends_with(self%fqt_self_output, '.hdf5')) self%fqt_self_format = grid_format_hdf5
+                ends_with(self%fqt_self_output, '.hdf5')) self%fqt_self_format = format_hdf5
          end if
          if (allocated(self%s4_output)) then
             if (ends_with(self%s4_output, '.h5') .or. ends_with(self%s4_output, '.hdf5')) &
-               self%s4_format = grid_format_hdf5
+               self%s4_format = format_hdf5
          end if
          if (allocated(self%chi4_output)) then
             if (ends_with(self%chi4_output, '.h5') .or. ends_with(self%chi4_output, '.hdf5')) &
-               self%chi4_format = grid_format_hdf5
+               self%chi4_format = format_hdf5
          end if
          if (allocated(self%msd_output)) then
             if (ends_with(self%msd_output, '.h5') .or. ends_with(self%msd_output, '.hdf5')) &
-               self%msd_format = grid_format_hdf5
+               self%msd_format = format_hdf5
          end if
       end if
    end subroutine parse_options
 
-   !> Parse the q sampling of a dynamic run (`--dyn-q SPEC`).
+   !> Parse the q sampling of the dyn subcommand (`--qpoints SPEC`).
    !!
-   !! `-` keeps the time axis without sampling q at all, so only the scalar
-   !! overlap Q(t) and chi4(t) can be computed.  `line:NINT,S0,S1,DX,DY,DZ` is
-   !! the density amplitude along a line in reciprocal space through Gamma, and
-   !! `shell:Q,ACC` averages every direction of the shell |q| = Q on a Lebedev
-   !! grid of the requested accuracy.
-   subroutine parse_dyn_q(self, spec, ierr, message)
+   !! `line:NINT,S0,S1,DX,DY,DZ` is the density amplitude along a line in
+   !! reciprocal space through Gamma, and `shell:Q,ACC` averages every
+   !! direction of the shell |q| = Q on a Lebedev grid of the requested
+   !! accuracy.  Leaving `--qpoints` out samples no q at all, which leaves only the
+   !! scalar overlap Q(t) and chi4(t).
+   subroutine parse_q_sampling(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
@@ -858,34 +848,31 @@ contains
 
       ierr = 0
       message = ''
-      if (trim(spec) == '-') then
-         self%dyn_q_mode = dyn_q_none
-      else if (starts_with(spec, 'line:')) then
-         call parse_dyn_line(self, spec(6:), ierr, message)
+      if (starts_with(spec, 'line:')) then
+         call parse_q_line(self, spec(6:), ierr, message)
          if (ierr /= 0) return
       else if (starts_with(spec, 'shell:')) then
-         call parse_dyn_shell(self, spec(7:), ierr, message)
+         call parse_q_shell(self, spec(7:), ierr, message)
          if (ierr /= 0) return
       else if (starts_with(spec, 'grid:')) then
-         call parse_dyn_grid(self, spec(6:), ierr, message)
+         call parse_q_grid(self, spec(6:), ierr, message)
          if (ierr /= 0) return
       else if (starts_with(spec, 'single:')) then
-         call parse_dyn_single(self, spec(8:), ierr, message)
+         call parse_q_single(self, spec(8:), ierr, message)
          if (ierr /= 0) return
       else
          ierr = 1
-         message = '--dyn-q wants "-", "line:NINT,S0,S1,DX,DY,DZ" or '// &
+         message = '--qpoints wants "line:NINT,S0,S1,DX,DY,DZ", '// &
             '"shell:Q,low|medium|high", "grid:QMAX" or "single:N1,N2,N3"'
          return
       end if
-      self%dyn_q_given = .true.
-   end subroutine parse_dyn_q
+   end subroutine parse_q_sampling
 
-   !> Parse "NINT,S0,S1,DX,DY,DZ" of `--dyn-q line`.
+   !> Parse "NINT,S0,S1,DX,DY,DZ" of `--qpoints line`.
    !!
    !! NINT is the number of intervals of the q line (so NINT+1 q points), S0/S1
    !! the range of its scale in 1/A, and DX,DY,DZ the (unnormalized) direction.
-   subroutine parse_dyn_line(self, spec, ierr, message)
+   subroutine parse_q_line(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
@@ -901,45 +888,45 @@ contains
       call split_fields(spec, fields, n)
       if (n /= 6) then
          ierr = 1
-         message = '--dyn-q line wants NINT,S0,S1,DX,DY,DZ, e.g. '// &
-            '--dyn-q line:100,0.5,20,1,1,0'
+         message = '--qpoints line wants NINT,S0,S1,DX,DY,DZ, e.g. '// &
+            '--qpoints line:100,0.5,20,1,1,0'
          return
       end if
       do j = 1, 6
          read (fields(j), *, iostat=ierr) values(j)
          if (ierr /= 0) then
             ierr = 1
-            message = 'cannot read "'//trim(fields(j))//'" as a number in --dyn-q line'
+            message = 'cannot read "'//trim(fields(j))//'" as a number in --qpoints line'
             return
          end if
       end do
-      self%dyn_intervals = nint(values(1))
-      self%dyn_s0 = values(2)
-      self%dyn_s1 = values(3)
-      self%dyn_dir = values(4:6)
-      if (self%dyn_intervals < 1) then
+      self%q_intervals = nint(values(1))
+      self%q_s0 = values(2)
+      self%q_s1 = values(3)
+      self%q_dir = values(4:6)
+      if (self%q_intervals < 1) then
          ierr = 1
-         message = '--dyn-q line needs at least one interval on the q line'
+         message = '--qpoints line needs at least one interval on the q line'
          return
       end if
-      if (self%dyn_s1 <= self%dyn_s0 .or. self%dyn_s0 < 0.0_rk) then
+      if (self%q_s1 <= self%q_s0 .or. self%q_s0 < 0.0_rk) then
          ierr = 1
-         message = '--dyn-q line needs 0 <= S0 < S1 for the scale of the q line'
+         message = '--qpoints line needs 0 <= S0 < S1 for the scale of the q line'
          return
       end if
-      if (sum(self%dyn_dir**2) <= 0.0_rk) then
+      if (sum(self%q_dir**2) <= 0.0_rk) then
          ierr = 1
-         message = '--dyn-q line needs a non-zero direction, e.g. 1,1,0'
+         message = '--qpoints line needs a non-zero direction, e.g. 1,1,0'
          return
       end if
-      self%dyn_q_mode = dyn_q_line
-   end subroutine parse_dyn_line
+      self%q_mode = dyn_q_line
+   end subroutine parse_q_line
 
-   !> Parse "Q,ACC" of `--dyn-q shell`.
+   !> Parse "Q,ACC" of `--qpoints shell`.
    !!
    !! Q is the radius of the shell in 1/A and ACC one of the accuracy names of
    !! the Lebedev rules: low, medium or high.
-   subroutine parse_dyn_shell(self, spec, ierr, message)
+   subroutine parse_q_shell(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
@@ -954,42 +941,42 @@ contains
       call split_fields(spec, fields, n)
       if (n /= 2) then
          ierr = 1
-         message = '--dyn-q shell wants Q,low|medium|high, e.g. '// &
-            '--dyn-q shell:2.5,medium'
+         message = '--qpoints shell wants Q,low|medium|high, e.g. '// &
+            '--qpoints shell:2.5,medium'
          return
       end if
       read (fields(1), *, iostat=ierr) radius
       if (ierr /= 0) then
          ierr = 1
-         message = 'cannot read "'//trim(fields(1))//'" as the |q| of --dyn-q shell'
+         message = 'cannot read "'//trim(fields(1))//'" as the |q| of --qpoints shell'
          return
       end if
       if (radius <= 0.0_rk) then
          ierr = 1
-         message = '--dyn-q shell needs a positive |q| radius'
+         message = '--qpoints shell needs a positive |q| radius'
          return
       end if
       order = lebedev_order_from_name(trim(fields(2)))
       if (order < 0) then
          ierr = 1
-         message = 'unknown --dyn-q shell accuracy "'//trim(fields(2))// &
+         message = 'unknown --qpoints shell accuracy "'//trim(fields(2))// &
             '" (use low, medium or high)'
          return
       end if
-      self%dyn_shell_q = radius
-      self%dyn_shell_order = order
-      self%dyn_q_mode = dyn_q_shell
-   end subroutine parse_dyn_shell
+      self%shell_q = radius
+      self%shell_order = order
+      self%q_mode = dyn_q_shell
+   end subroutine parse_q_shell
 
-   !> Parse "QMAX" of `--dyn-q grid`.
+   !> Parse "QMAX" of `--qpoints grid`.
    !!
    !! QMAX is the upper bound of |q| in 1/A.  Every reciprocal-lattice vector
    !! with 0 < |q| <= QMAX is sampled, together with the Gamma point.  Only
    !! lattice vectors carry a density amplitude that is independent of how the
    !! periodic images are chosen, so a grid is free of the box-form-factor
    !! contamination of the off-lattice Lebedev shell; its mode count follows
-   !! from the cell and can be capped with `--dyn-modes`.
-   subroutine parse_dyn_grid(self, spec, ierr, message)
+   !! from the cell and can be capped with `--modes`.
+   subroutine parse_q_grid(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
@@ -1001,19 +988,19 @@ contains
       read (spec, *, iostat=ierr) qmax
       if (ierr /= 0) then
          ierr = 1
-         message = 'cannot read "'//trim(spec)//'" as the qmax of --dyn-q grid'
+         message = 'cannot read "'//trim(spec)//'" as the qmax of --qpoints grid'
          return
       end if
       if (qmax <= 0.0_rk) then
          ierr = 1
-         message = '--dyn-q grid needs a positive qmax'
+         message = '--qpoints grid needs a positive qmax'
          return
       end if
-      self%dyn_grid_qmax = qmax
-      self%dyn_q_mode = dyn_q_grid
-   end subroutine parse_dyn_grid
+      self%grid_qmax = qmax
+      self%q_mode = dyn_q_grid
+   end subroutine parse_q_grid
 
-   !> Parse "N1,N2,N3" of `--dyn-q single`.
+   !> Parse "N1,N2,N3" of `--qpoints single`.
    !!
    !! The three integers are the Miller indices of one reciprocal-lattice
    !! vector of the dump box,
@@ -1024,7 +1011,7 @@ contains
    !! what S4 needs: a hand written |q| would sit a few ulps away, the density
    !! amplitude would stop being independent of the periodic images, and the
    !! box form factor would come back.
-   subroutine parse_dyn_single(self, spec, ierr, message)
+   subroutine parse_q_single(self, spec, ierr, message)
       type(options_t), intent(inout) :: self
       character(len=*), intent(in) :: spec
       integer, intent(out) :: ierr
@@ -1038,25 +1025,25 @@ contains
       call split_fields(spec, fields, n)
       if (n /= 3) then
          ierr = 1
-         message = '--dyn-q single wants N1,N2,N3, e.g. --dyn-q single:1,0,0'
+         message = '--qpoints single wants N1,N2,N3, e.g. --qpoints single:1,0,0'
          return
       end if
       do i = 1, 3
          if (.not. is_integer_field(fields(i))) then
             ierr = 1
-            message = 'cannot read "'//trim(fields(i))//'" as an integer of --dyn-q single'
+            message = 'cannot read "'//trim(fields(i))//'" as an integer of --qpoints single'
             return
          end if
          read (fields(i), *, iostat=ierr) values(i)
          if (ierr /= 0) then
             ierr = 1
-            message = 'the index "'//trim(fields(i))//'" of --dyn-q single is out of range'
+            message = 'the index "'//trim(fields(i))//'" of --qpoints single is out of range'
             return
          end if
       end do
-      self%dyn_single = values
-      self%dyn_q_mode = dyn_q_single
-   end subroutine parse_dyn_single
+      self%single_index = values
+      self%q_mode = dyn_q_single
+   end subroutine parse_q_single
 
    !> True when `text` is an optionally signed integer and nothing else.
    !!
@@ -1122,7 +1109,31 @@ contains
       end do
    end subroutine split_fields
 
-   !> Case sensitive prefix test for the `--dyn-q` keywords.
+   !> Which subcommands accept an option.
+   !!
+   !! Unknown options are reported as accepted by both, so that the caller
+   !! can still name them in its "unknown option" message.
+   pure integer function flag_scope(name) result(scope)
+      character(len=*), intent(in) :: name
+
+      select case (trim(name))
+      case ('--method', '--qmin', '--qmax', '--nq', '--eps', &
+            '--device', '--gpu-id', '--precision', '--grid', &
+            '--xrd', '--xrd-lambda', '--xrd-range', '--xrd-step', &
+            '--lp', '--no-lp', '-fz', '--faber-ziman', &
+            '--rmax', '--dr', '--skin', '--rdf', '--pair-entropy', &
+            '--s2-accum', '--no-cutoff-correction')
+         scope = scope_static
+      case ('-q', '--qpoints', '--dt', '--maxframes', '--lag', '--modes', '--thin', &
+            '--keep-modes', '--sq', '--sqw', '--fqt', '--fqt-self', &
+            '--s4', '--chi4', '--msd', '--s4-cutoff', '--buffer-limit', '--stride')
+         scope = scope_dyn
+      case default
+         scope = scope_both
+      end select
+   end function flag_scope
+
+   !> Case sensitive prefix test for the `--qpoints` keywords.
    pure logical function starts_with(text, prefix) result(found)
       character(len=*), intent(in) :: text, prefix
       integer :: n
@@ -1142,87 +1153,133 @@ contains
       found = n >= m .and. text(n - m + 1:n) == suffix
    end function ends_with
 
-   subroutine print_usage(unit)
+   !> Print the option summary.
+   !!
+   !! Without COMMAND the subcommand list and the global options are printed;
+   !! with cmd_static or cmd_dyn the global options come first and the options
+   !! of that subcommand follow, so nothing is listed that the subcommand
+   !! would refuse.
+   subroutine print_usage(unit, command)
       integer, intent(in) :: unit
+      integer, intent(in), optional :: command
+      integer :: cmd
+
+      cmd = cmd_none
+      if (present(command)) cmd = command
+
       write (unit, '(a)') program_version
       write (unit, '(a)') ''
       write (unit, '(a)') 'Total structure factor S(q) from LAMMPS dump files.'
       write (unit, '(a)') ''
-      write (unit, '(a)') 'usage: sqcalc -i DUMP [options] OUTPUT'
-      write (unit, '(a)') ''
-      write (unit, '(a)') 'OUTPUT is the shell averaged S(q) table, use - for stdout.'
-      write (unit, '(a)') ''
-      write (unit, '(a)') 'options:'
+      if (cmd == cmd_none) then
+         write (unit, '(a)') 'usage: sqcalc static [global options] [options] OUTPUT'
+         write (unit, '(a)') '       sqcalc dyn    [global options] [options]'
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'subcommands:'
+         write (unit, '(a)') '  static           the quantities averaged over the frames: the'
+         write (unit, '(a)') '                   shell averaged S(q) table, g(r) and the'
+         write (unit, '(a)') '                   powder XRD pattern'
+         write (unit, '(a)') '  dyn              the time axis is kept: S(q,w), F(q,t),'
+         write (unit, '(a)') '                   S4(q,t), the overlap Q(t)/chi4(t) and the MSD'
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'Run "sqcalc static -h" or "sqcalc dyn -h" for the options of'
+         write (unit, '(a)') 'one subcommand.'
+         write (unit, '(a)') ''
+      else if (cmd == cmd_static) then
+         write (unit, '(a)') 'usage: sqcalc static [global options] [options] OUTPUT'
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'OUTPUT is the shell averaged S(q) table, use - for stdout.'
+         write (unit, '(a)') ''
+      else
+         write (unit, '(a)') 'usage: sqcalc dyn [global options] [options]'
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'dyn takes no positional argument; every table is named by'
+         write (unit, '(a)') 'an option.'
+         write (unit, '(a)') ''
+      end if
+
+      write (unit, '(a)') 'global options:'
       write (unit, '(a)') '  -i, --input FILE    LAMMPS dump trajectory (required)'
       write (unit, '(a)') '  -m, --mapping LIST  LAMMPS type id to element or species, e.g.'
       write (unit, '(a)') '                      1:Si,2:O or 1:Si4+,2:O2- (ions, see the skill docs)'
       write (unit, '(a)') '  -w, --weight SCHEME unit (default), neutron or xray'
       write (unit, '(a)') '  -t, --threads N     OpenMP threads (default: all available)'
-      write (unit, '(a)') '      --qmin VALUE    smallest |q| in the output [1/A] (default 0)'
-      write (unit, '(a)') '      --qmax VALUE    largest |q| in the output [1/A] (default 20)'
-      write (unit, '(a)') '      --nq N          number of q shells (default 500)'
-      write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
-      write (unit, '(a)') '      --grid-format NAME  text (default) or hdf5 (.h5/.hdf5 implies hdf5)'
-      write (unit, '(a)') '      --xrd FILE      also write a powder XRD pattern (.h5 = HDF5):'
-      write (unit, '(a)') '                      I(2theta) = sum over the reciprocal lattice points'
-      write (unit, '(a)') '                      in each bin of |rho(q)|^2 LP(2theta), per atom'
-      write (unit, '(a)') '      --xrd-lambda VALUE  incident wavelength [dump length unit]'
-      write (unit, '(a)') '      --xrd-range MIN MAX two-theta range [deg] (default 1 179)'
-      write (unit, '(a)') '      --xrd-step VALUE    two-theta bin width [deg] (default: from'
-      write (unit, '(a)') '                      the box, at most as coarse as the 2theta ='
-      write (unit, '(a)') '                      120 deg spacing, so that no bin is empty)'
-      write (unit, '(a)') '      --lp, --no-lp   apply (default) or drop the Lorentz-polarization'
-      write (unit, '(a)') '                      factor of the XRD pattern'
-      write (unit, '(a)') '      --method NAME   nufft (default) or direct'
-      write (unit, '(a)') '                      debye: real space pair histograms'
-      write (unit, '(a)') '      --rmax VALUE    Debye pair cutoff [A] (default: half the'
-      write (unit, '(a)') '                      smallest periodic box side)'
-      write (unit, '(a)') '      --dr VALUE      Debye radial bin width [A] (default 0.01)'
-      write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [A] (default 1.0)'
-      write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
-      write (unit, '(a)') '      --pair-entropy FILE  total and partial pair entropy S2/kB'
-      write (unit, '(a)') '      --s2-accum FILE  S2(r) accumulation curve for tail extrapolation'
-      write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
-      write (unit, '(a)') '      --dyn           keep the time axis: dynamic structure factor and'
-      write (unit, '(a)') '                      the four-point structure factor and overlap'
-      write (unit, '(a)') '      --dyn-q SPEC    q sampling of --dyn; default "-" (no q points):'
-      write (unit, '(a)') '                      -   no q points: only --chi4 and --msd are available'
-      write (unit, '(a)') '                      line:NINT,S0,S1,DX,DY,DZ  q line through Gamma,'
-      write (unit, '(a)') '                      NINT intervals, scale S0..S1 [1/A], direction'
-      write (unit, '(a)') '                      shell:Q,low|medium|high  Lebedev average on |q| = Q'
-      write (unit, '(a,i0,a,i0,a,i0,a)') '                      (low, medium and high are the ', &
-         lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
-         lebedev_points(lebedev_high), ' point rules)'
-      write (unit, '(a)') '                      grid:QMAX  every reciprocal lattice vector |q| <= QMAX'
-      write (unit, '(a)') '                      single:N1,N2,N3  one lattice vector of the box'
-      write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (with --dyn)'
-      write (unit, '(a)') '      --dyn-modes N   mode budget of grid:QMAX, 0 = unlimited (default)'
-      write (unit, '(a)') '      --dyn-thin NAME order of the grid thinning: shells (default) or orbits'
-      write (unit, '(a)') '      --dyn-keep-modes  write the grid rows per lattice vector instead of'
-      write (unit, '(a)') '                      the |q| shell average (for diagnostics)'
-      write (unit, '(a)') '      --maxframes N   correlation window in frames (with --dyn)'
-      write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'
-      write (unit, '(a)') '      --sqw FILE      S(q,w) spectra, one row per (q,w) (.h5 = HDF5)'
-      write (unit, '(a)') '      --fqt FILE      coherent F(q,t) intermediate scattering function'
-      write (unit, '(a)') '      --fqt-self FILE self F_s(q,t) intermediate scattering function'
-      write (unit, '(a)') '      --dyn-format NAME  text (default) or hdf5 for all dynamic outputs'
-      write (unit, '(a)') '      --s4 FILE       S4(q,t) four-point structure factor (.h5 = HDF5)'
-      write (unit, '(a)') '      --chi4 FILE     Q(t) and chi4(t) average overlap / susceptibility'
-      write (unit, '(a)') '      --msd FILE      MSD(t) mean squared displacement (.h5 = HDF5)'
-      write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
-      write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s/MSD (default 2.0)'
-      write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s/MSD (default 1)'
-      write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
+      write (unit, '(a)') '      --norm NAME     mean (default), self or n'
       write (unit, '(a)') '      --partials      write the partial structure factor columns (default)'
       write (unit, '(a)') '      --no-partials   do not write partial structure factor columns'
-      write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
-      write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
-      write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'
-      write (unit, '(a)') '      --norm NAME     mean (default), self or n'
-      write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'
-      write (unit, '(a)') '  -q, --quiet         do not write progress information to stderr'
+      write (unit, '(a)') '      --format NAME   text (default) or hdf5 for the files that offer'
+      write (unit, '(a)') '                      both: the grid, the XRD pattern, g(r), the pair'
+      write (unit, '(a)') '                      entropy and the dynamic tables (the S(q) table'
+      write (unit, '(a)') '                      itself is always text); without it a .h5/.hdf5'
+      write (unit, '(a)') '                      name means hdf5'
+      write (unit, '(a)') '      --quiet         do not write progress information to stderr'
       write (unit, '(a)') '  -h, --help          show this help'
       write (unit, '(a)') '  -v, --version       show the program version'
+
+      if (cmd == cmd_none) return
+
+      if (cmd == cmd_static) then
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'static options:'
+         write (unit, '(a)') '      --method NAME   nufft (default) or direct'
+         write (unit, '(a)') '                      debye: real space pair histograms'
+         write (unit, '(a)') '      --qmin VALUE    smallest |q| in the output [1/A] (default 0)'
+         write (unit, '(a)') '      --qmax VALUE    largest |q| in the output [1/A] (default 20)'
+         write (unit, '(a)') '      --nq N          number of q shells (default 500)'
+         write (unit, '(a)') '      --eps VALUE     NUFFT tolerance (default 1e-9)'
+         write (unit, '(a)') '      --device NAME   cpu (default) or gpu (cufinufft + cuFFT)'
+         write (unit, '(a)') '      --gpu-id N      CUDA device to use (default 0)'
+         write (unit, '(a)') '      --precision NAME  double (default) or single (float32 GPU)'
+         write (unit, '(a)') '      --grid FILE     also write S(q) on every reciprocal lattice point'
+         write (unit, '(a)') '      --xrd FILE      also write a powder XRD pattern (.h5 = HDF5):'
+         write (unit, '(a)') '                      I(2theta) = sum over the reciprocal lattice points'
+         write (unit, '(a)') '                      in each bin of |rho(q)|^2 LP(2theta), per atom'
+         write (unit, '(a)') '      --xrd-lambda VALUE  incident wavelength [dump length unit]'
+         write (unit, '(a)') '      --xrd-range MIN MAX two-theta range [deg] (default 1 179)'
+         write (unit, '(a)') '      --xrd-step VALUE    two-theta bin width [deg] (default: from'
+         write (unit, '(a)') '                      the box, at most as coarse as the 2theta ='
+         write (unit, '(a)') '                      120 deg spacing, so that no bin is empty)'
+         write (unit, '(a)') '      --lp, --no-lp   apply (default) or drop the Lorentz-polarization'
+         write (unit, '(a)') '                      factor of the XRD pattern'
+         write (unit, '(a)') '      --rmax VALUE    Debye pair cutoff [A] (default: half the'
+         write (unit, '(a)') '                      smallest periodic box side)'
+         write (unit, '(a)') '      --dr VALUE      Debye radial bin width [A] (default 0.01)'
+         write (unit, '(a)') '      --skin VALUE    Verlet skin for the pair list [A] (default 1.0)'
+         write (unit, '(a)') '      --rdf FILE      total and partial g(r) in one file (.h5 = HDF5)'
+         write (unit, '(a)') '      --pair-entropy FILE  total and partial pair entropy S2/kB'
+         write (unit, '(a)') '      --s2-accum FILE  S2(r) accumulation curve for tail extrapolation'
+         write (unit, '(a)') '      --no-cutoff-correction  disable the Debye cut-off density correction'
+         write (unit, '(a)') '  -fz, --faber-ziman  partials in the Faber-Ziman normalization'
+      else
+         write (unit, '(a)') ''
+         write (unit, '(a)') 'dyn options:'
+         write (unit, '(a)') '  -q, --qpoints SPEC  q sampling, without it no q is sampled:'
+         write (unit, '(a)') '                      line:NINT,S0,S1,DX,DY,DZ  q line through Gamma,'
+         write (unit, '(a)') '                      NINT intervals, scale S0..S1 [1/A], direction'
+         write (unit, '(a)') '                      shell:Q,low|medium|high  Lebedev average on |q| = Q'
+         write (unit, '(a,i0,a,i0,a,i0,a)') '                      (low, medium and high are the ', &
+            lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
+            lebedev_points(lebedev_high), ' point rules)'
+         write (unit, '(a)') '                      grid:QMAX  every reciprocal lattice vector |q| <= QMAX'
+         write (unit, '(a)') '                      single:N1,N2,N3  one lattice vector of the box'
+         write (unit, '(a)') '      --sq FILE       the shell averaged S(q) table of a --qpoints run'
+         write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (required)'
+         write (unit, '(a)') '      --maxframes N   correlation window in frames (required)'
+         write (unit, '(a)') '      --lag N         frames between consecutive time origins (default 1)'
+         write (unit, '(a)') '      --modes N       mode budget of --qpoints grid:QMAX, 0 = unlimited (default)'
+         write (unit, '(a)') '      --thin NAME     order of the grid thinning: shells (default) or orbits'
+         write (unit, '(a)') '      --keep-modes    write the grid rows per lattice vector instead of'
+         write (unit, '(a)') '                      the |q| shell average (for diagnostics)'
+         write (unit, '(a)') '      --sqw FILE      S(q,w) spectra, one row per (q,w) (.h5 = HDF5)'
+         write (unit, '(a)') '      --fqt FILE      coherent F(q,t) intermediate scattering function'
+         write (unit, '(a)') '      --fqt-self FILE self F_s(q,t) intermediate scattering function'
+         write (unit, '(a)') '      --s4 FILE       S4(q,t) four-point structure factor (.h5 = HDF5)'
+         write (unit, '(a)') '      --chi4 FILE     Q(t) and chi4(t) average overlap / susceptibility'
+         write (unit, '(a)') '      --msd FILE      MSD(t) mean squared displacement (.h5 = HDF5)'
+         write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
+         write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s/MSD (default 2.0)'
+         write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s/MSD (default 1)'
+      end if
    end subroutine print_usage
 
 end module sqc_options

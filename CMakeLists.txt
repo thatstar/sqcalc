@@ -138,6 +138,7 @@ add_library(
   src/sqc_element_data.f90
   src/sqc_elements.f90
   src/sqc_cell.f90
+  src/sqc_output.f90
   src/sqc_modes.f90
   src/sqc_phase.f90
   src/sqc_dump.f90

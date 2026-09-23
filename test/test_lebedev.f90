@@ -3,7 +3,7 @@
 !
 ! SPDX-License-Identifier: GPL-3.0-or-later
 
-!> Validation of the embedded Lebedev rules (`--dyn-q shell`).
+!> Validation of the embedded Lebedev rules (`--qpoints shell`).
 !!
 !! The rules have to be a quadrature of the unit sphere: `lebedev_points`
 !! points, no duplicates, weights summing to 4 pi, and an exact result for

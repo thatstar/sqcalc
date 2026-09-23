@@ -63,7 +63,7 @@ def self_function(frames, qvec, maxframes, lag, stride):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
-    parser.add_argument("--dyn-q", required=True, dest="dyn_q",
+    parser.add_argument("--qpoints", required=True, dest="dyn_q",
                         help='"-", "line:NINT,S0,S1,DX,DY,DZ" or "shell:Q,low|medium|high"')
     parser.add_argument("--maxframes", type=int, required=True)
     parser.add_argument("--lag", type=int, default=1)

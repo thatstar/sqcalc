@@ -23,6 +23,7 @@
 !! Debye sum); see B. E. Warren, "X-ray Diffraction".
 module sqc_debye
    use sqc_kinds
+   use sqc_output, only: format_infer, output_wants_hdf5
    use sqc_dump, only: frame_t
    use sqc_weights, only: weight_scheme_t
    use sqc_neighbour_list, only: neighbour_list_t
@@ -58,6 +59,9 @@ module sqc_debye
       !> Optional pair-entropy outputs ('' = none).
       character(len=:), allocatable :: pair_entropy_path
       character(len=:), allocatable :: s2_accum_path
+      !> Container of those tables; --format sets it, otherwise the file name
+      !! decides (format_infer).
+      integer :: output_format = format_infer
       !> Apply the cut-off density correction (debyer's add_cutoff_correction).
       logical :: correct_cutoff = .true.
       !> Type id of each atom and number of atoms per type id.
@@ -386,7 +390,7 @@ contains
          end do
       end if
 
-      if (index(path, '.h5') > 0 .or. index(path, '.hdf5') > 0) then
+      if (output_wants_hdf5(self%output_format, path)) then
          call write_rdf_hdf5(self, labels, path, r, g_total, g_partial, ierr, message)
       else
          open (newunit=u, file=trim(path), status='replace', action='write', iostat=ierr)
@@ -537,7 +541,7 @@ contains
          end do
       end do
 
-      hdf5_out = index(path, '.h5') > 0 .or. index(path, '.hdf5') > 0
+      hdf5_out = output_wants_hdf5(self%output_format, path)
       if (hdf5_out) then
 #ifdef SQC_HAVE_HDF5
          call hdf5_write_pair_entropy(path, r, s2_partial, total, s2_curve, s2_total_curve, &
@@ -545,7 +549,8 @@ contains
                                       self%rmax, self%dr, .false., ierr, message)
 #else
          ierr = 1
-         message = 'this build has no HDF5 support; use a text file name for --pair-entropy'
+         message = 'this build has no HDF5 support; use --format text (or a text file name) '// &
+               'for --pair-entropy'
 #endif
          if (ierr /= 0) return
       else
@@ -573,7 +578,7 @@ contains
       end if
 
       if (len_trim(accum_path) > 0) then
-         hdf5_out = index(accum_path, '.h5') > 0 .or. index(accum_path, '.hdf5') > 0
+         hdf5_out = output_wants_hdf5(self%output_format, accum_path)
          if (hdf5_out) then
 #ifdef SQC_HAVE_HDF5
             call hdf5_write_pair_entropy(accum_path, r, s2_partial, total, s2_curve, &
@@ -581,7 +586,8 @@ contains
                                          self%nframes, self%rmax, self%dr, .true., ierr, message)
 #else
             ierr = 1
-            message = 'this build has no HDF5 support; use a text file name for --s2-accum'
+            message = 'this build has no HDF5 support; use --format text (or a text file name) '// &
+               'for --s2-accum'
 #endif
             if (ierr /= 0) return
          else
@@ -629,7 +635,8 @@ contains
       call hdf5_write_rdf(path, r, g_total, g_partial, labels, ierr, message)
 #else
       ierr = 1
-      message = 'this build has no HDF5 support; use a text file name for --rdf'
+      message = 'this build has no HDF5 support; use --format text (or a text file name) '// &
+               'for --rdf'
 #endif
    end subroutine write_rdf_hdf5
 

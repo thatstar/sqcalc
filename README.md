@@ -8,18 +8,19 @@ CUDA GPU with cuFFT, which averages $|\rho(q)|^2$, and the real space Debye
 pair-histogram method.  The table also carries the partial structure factors
 $S_{ab}(q)$, one column per pair of LAMMPS types.
 
-With `--dyn` the time axis is kept instead of being averaged away.  `--dyn-q`
-chooses what is sampled in reciprocal space - a line, a single spherical shell,
-or nothing at all - and the run writes the dynamic structure factor
-$S(q,\omega)$, optionally with the intermediate scattering function $F(q,t)$.
-The same dynamic run can also write the four-point structure factor $S_4(q,t)$,
-the average overlap $Q(t)$ and the dynamic susceptibility $\chi_4(t)$ with
-`--s4` and `--chi4`, and the mean squared displacement $\text{MSD}(t)$ with
-`--msd`.  That method correlates the density amplitudes (or the overlap field)
-in time rather than averaging their squares.
+The `sqcalc dyn` subcommand keeps the time axis instead of averaging it away.
+Its `--qpoints` option chooses what is sampled in reciprocal space - a line, a single
+spherical shell, a reciprocal-lattice grid, one lattice vector, or nothing at
+all - and the run writes the dynamic structure factor $S(q,\omega)$, optionally
+with the intermediate scattering function $F(q,t)$.  The same run can write the
+four-point structure factor $S_4(q,t)$, the average overlap $Q(t)$ and the
+dynamic susceptibility $\chi_4(t)$ with `--s4` and `--chi4`, and the mean
+squared displacement $\text{MSD}(t)$ with `--msd`.  That method correlates the
+density amplitudes (or the overlap field) in time rather than averaging their
+squares.
 
 ```
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
+sqcalc static -i traj.dump -m 1:Si,2:O -w neutron -t 8 S_q.dat
 ```
 
 ## Building
@@ -63,10 +64,17 @@ consumer cards whose FP64 rate is low.
 ## Usage
 
 ```
-sqcalc -i DUMP [options] OUTPUT
+sqcalc static [global options] [options] OUTPUT
+sqcalc dyn    [global options] [options]
 ```
 
-`OUTPUT` is the shell averaged $S(q)$ table; use `-` to write it to stdout.  The
+`sqcalc static` averages the frames and `sqcalc dyn` keeps the time axis; a
+flag of the other subcommand is refused by name, and `sqcalc -h`,
+`sqcalc static -h` and `sqcalc dyn -h` print the global options followed by the
+options of the subcommand that was asked about.
+
+`OUTPUT` is the shell averaged $S(q)$ table of `sqcalc static`; use `-` to
+write it to stdout.  The
 shell table is text, `# q S(q)`; `--grid FILE` additionally writes every
 reciprocal lattice vector, in text (`# qx qy qz S(q)`) or as a one dimensional
 array per quantity in HDF5 when the file name ends in `.h5`/`.hdf5`.  Both
@@ -75,15 +83,28 @@ as one extra column per type pair, labelled with the species of `-m`
 (e.g. `# q S(q) S(Si-Si) S(Si-O) S(O-O)`) or, without a mapping, with the
 LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 
+These options are global to both subcommands:
+
 | option                           | meaning                                                                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `-i, --input FILE`             | LAMMPS dump trajectory (required)                                                                                                |
 | `-m, --mapping LIST`           | LAMMPS type id to element or species, e.g.`1:Si,2:O` or `1:Si4+,2:O2-`                                                    |
 | `-w, --weight SCHEME`          | `unit` (default), `neutron` or `xray`                                                                                      |
 | `-t, --threads N`              | OpenMP threads (default: all available)                                                                                          |
+| `--norm NAME`                  | `mean` (default), `self` or `n`                                                                                            |
+| `--partials`                   | append the partial structure factor columns (default: on)                                                                        |
+| `--no-partials`                | do not append the partial columns                                                                                                |
+| `--format NAME`                | `text` (default) or `hdf5` for the files that offer both (grid, XRD, g(r), pair entropy, dynamic tables); the S(q) table is always text, and a `.h5`/`.hdf5` name implies hdf5 |
+| `--quiet`                      | suppress progress output on stderr                                                                                               |
+| `-h, --help`                   | show the options of the subcommand                                                                                               |
+| `-v, --version`                | print the program version                                                                                                        |
+
+These options belong to `sqcalc static`:
+
+| static option                    | meaning                                                                                                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `--qmin`, `--qmax`, `--nq` | $q$ range and number of shells (defaults 0, 20 1/A, 500)                                                                       |
 | `--grid FILE`                  | also write$S(q)$ on every reciprocal lattice point                                                                             |
-| `--grid-format NAME`           | `text` (default) or `hdf5`; a `.h5`/`.hdf5` name implies hdf5                                                            |
 | `--xrd FILE`                   | also write a powder XRD pattern;`.h5`/`.hdf5` implies HDF5                                                              |
 | `--xrd-lambda VALUE`           | incident wavelength of`--xrd`, in the dump length unit                                                                    |
 | `--xrd-range MIN MAX`          | two-theta range of`--xrd` in degrees (default `1 179`)                                                                    |
@@ -94,14 +115,8 @@ LAMMPS type ids (`# q S(q) S(1-1) S(1-2) S(2-2)`).
 | `--device NAME`                | `cpu` (default) or `gpu` (needs `-DSQC_ENABLE_CUDA=ON`)                                                                    |
 | `--gpu-id N`                   | CUDA device to use when`--device gpu` (default 0)                                                                              |
 | `--precision NAME`             | `double` (default) or `single` (float32, GPU only)                                                                           |
-| `--norm NAME`                  | `mean` (default), `self` or `n`                                                                                            |
 | `--eps VALUE`                  | NUFFT tolerance (default 1e-9; 1e-5 for the float32 GPU path)                                                                    |
-| `--partials`                   | append the partial structure factor columns (default: on)                                                                        |
-| `--no-partials`                | do not append the partial columns                                                                                                |
 | `-fz, --faber-ziman`           | report the partials in the Faber-Ziman normalization                                                                             |
-| `-q, --quiet`                  | suppress progress output on stderr                                                                                               |
-| `-h, --help`                   | show the option summary                                                                                                          |
-| `-v, --version`                | print the program version                                                                                                        |
 
 With `--method debye` these options select the pair histogram:
 
@@ -110,27 +125,28 @@ With `--method debye` these options select the pair histogram:
 | `--rmax VALUE`           | pair cutoff [A]; default: half of the smallest periodic box side (minimum image convention, so no self images), or all pairs when the box is not periodic |
 | `--dr VALUE`             | radial bin width (default 0.01 A, reliable up to$q \sim \pi/(2\,dr)$; ~150 1/A at the default)                                                          |
 | `--skin VALUE`           | Verlet skin for reusing the pair list (default 1.0 A,`0` rebuilds every frame)                                                                          |
-| `--rdf FILE`             | total and all partial$g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5`)                                                                           |
+| `--rdf FILE`             | total and all partial$g(r)$ in one file (text, or HDF5 for `.h5`/`.hdf5` or `--format hdf5`)                                                                           |
 | `--pair-entropy FILE`    | total and partial pair entropy $S_2/k_B$ from the Debye $g(r)$                                                                                     |
 | `--s2-accum FILE`        | the $S_2(r)$ accumulation curve for tail extrapolation                                                                                              |
 | `--no-cutoff-correction` | disable the cut-off density correction (for comparison; applied by default when at least one direction is periodic)                                       |
 
-With `--dyn` these options select the $q$ sampling and the correlation window:
+These options belong to `sqcalc dyn` and select the $q$ sampling and the
+correlation window.  `dyn` takes no positional argument: the shell averaged
+$S(q)$ table of a `--qpoints` run goes to `--sq FILE`.
 
-| dynamic option                | meaning                                                                     |
+| dyn option                    | meaning                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `--dyn`                     | keep the time axis: dynamic structure factor, S4, overlap and MSD (see below) |
-| `--dyn-q SPEC`              | q sampling: `-` (default, no q points), `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC` or `grid:QMAX` |
-| `--dyn-modes N`             | mode budget of `--dyn-q grid` (0 = unlimited, the default)                  |
-| `--dyn-thin KIND`           | order of the grid thinning: `shells` (default) or `orbits`                  |
-| `--dyn-keep-modes`          | write the grid rows per lattice vector instead of the $\|q\|$ shell average  |
-| `--dt VALUE`                | time step of the trajectory (the LAMMPS`timestep`), required by `--dyn` |
-| `--maxframes L`             | correlation window in frames (largest lag kept), required by`--dyn`       |
+| `-q, --qpoints SPEC`              | q sampling: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` (without it no q is sampled) |
+| `--sq FILE`                 | the shell averaged $S(q)$ table of a `--qpoints` run                              |
+| `--modes N`                 | mode budget of `--qpoints grid` (0 = unlimited, the default)                  |
+| `--thin KIND`               | order of the grid thinning: `shells` (default) or `orbits`                  |
+| `--keep-modes`              | write the grid rows per lattice vector instead of the $\|q\|$ shell average  |
+| `--dt VALUE`                | time step of the trajectory (the LAMMPS`timestep`), required |
+| `--maxframes L`             | correlation window in frames (largest lag kept), required       |
 | `--lag N`                   | frames between consecutive time origins (default 1)                         |
 | `--sqw FILE`                | the$S(q,\omega)$ spectra (text, or HDF5 for `.h5`/`.hdf5`)            |
 | `--fqt FILE`                | the coherent intermediate scattering function$F(q,t)$                     |
 | `--fqt-self FILE`           | the self intermediate scattering function$F_s(q,t)$                       |
-| `--dyn-format NAME`         | `text` (default) or `hdf5` for all dynamic outputs                      |
 | `--s4 FILE`                 | the total four-point structure factor$S_4(q,t)$                           |
 | `--chi4 FILE`               | the average overlap$Q(t)$ and the susceptibility $\chi_4(t)$            |
 | `--msd FILE`                | the mean squared displacement $\text{MSD}(t)$ and its species columns      |
@@ -148,38 +164,38 @@ Examples
 
 ```sh
 # unit weights, stdout, 4 threads
-sqcalc -i traj.dump -t 4 - > S_q.dat
+sqcalc static -i traj.dump -t 4 - > S_q.dat
 
 # neutron weighting of a two component glass, plus the reciprocal grid table
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
+sqcalc static -i traj.dump -m 1:Si,2:O -w neutron --qmax 25 --nq 1000 \
        --grid S_q_grid.dat S_q.dat
 
 # X-ray weighting (q dependent form factors) and a cross check with the
 # brute force implementation
-sqcalc -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
+sqcalc static -i traj.dump -m 1:Si,2:O -w xray --method direct --qmax 6 S_q_direct.dat
 
 # the same calculation on the GPU, and the real space Debye method with g(r)
-sqcalc -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron --method debye \
+sqcalc static -i traj.dump -m 1:Si,2:O -w unit --device gpu --qmax 20 -t 4 S_q_gpu.dat
+sqcalc static -i traj.dump -m 1:Si,2:O -w neutron --method debye \
        --rmax 12 --dr 0.01 --skin 1.0 --rdf g_of_r.dat S_q.dat
 
 # dynamic structure factor along (1,1,0): 101 q points from 0.5 to 20 1/A,
 # frames every 10 steps of dt = 0.005, a 400 frame correlation window
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
-       --dyn --dyn-q line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
-       --sqw S_qw.dat S_q.dat
+sqcalc dyn -i traj.dump -m 1:Si,2:O -w neutron \
+       --qpoints line:100,0.5,20,1,1,0 --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat --sq S_q.dat
 
 # the same run averaged over a spherical shell of |q| = 2.5 1/A
-sqcalc -i traj.dump -m 1:Si,2:O -w neutron \
-       --dyn --dyn-q shell:2.5,medium --dt 0.005 --maxframes 400 \
-       --sqw S_qw.dat S_q.dat
+sqcalc dyn -i traj.dump -m 1:Si,2:O -w neutron \
+       --qpoints shell:2.5,medium --dt 0.005 --maxframes 400 \
+       --sqw S_qw.dat --sq S_q.dat
 
 # and the overlap dynamics alone: no q points, no S(q) table
-sqcalc -i traj.dump -w unit --dyn --dt 0.005 --maxframes 400 \
+sqcalc dyn -i traj.dump -w unit --dt 0.005 --maxframes 400 \
        --s4-cutoff 1.0 --chi4 chi4.dat
 
 # the mean squared displacement, also without q points
-sqcalc -i traj.dump -m 1:Si,2:O --dyn --dyn-q - --dt 0.005 --maxframes 400 \
+sqcalc dyn -i traj.dump -m 1:Si,2:O --dt 0.005 --maxframes 400 \
        --msd msd.dat
 ```
 
@@ -284,12 +300,12 @@ entropy; use the NUFFT/direct $S(q)$ for that.
 
 ### Dynamic structure factor
 
-`--dyn` keeps the time axis instead of averaging the snapshots away.  The
-reciprocal space sampling is a separate choice, `--dyn-q`:
+`sqcalc dyn` keeps the time axis instead of averaging the snapshots away.  The
+reciprocal space sampling is a separate choice, `-q`/`--qpoints`:
 
-| `--dyn-q` | q points | outputs |
+| `-q, --qpoints` | q points | outputs |
 | --- | --- | --- |
-| `-` (default) | none | `--chi4`: the overlap $Q(t)$, $\chi_4(t)$; `--msd` |
+| left out | none | `--chi4`: the overlap $Q(t)$, $\chi_4(t)$; `--msd` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
 | `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
@@ -303,7 +319,7 @@ the tables hold one row per lattice shell at $q = (0,0,|q|)$, averaged over the
 lattice vectors of that $|q|$ with their orbit multiplicities, the $\Gamma$ row
 is $\chi_4(t)$, and a run with `--s4` also reports the spread of the symmetry
 related modes of the smallest shell, which is the isotropy assumption behind
-the reduction.  Add `--dyn-keep-modes` for the per-vector rows.
+the reduction.  Add `--keep-modes` for the per-vector rows.
 
 With `single:N1,N2,N3` the run samples exactly one reciprocal-lattice vector,
 $\mathbf q = N_1\mathbf b_1 + N_2\mathbf b_2 + N_3\mathbf b_3$, with integer
@@ -313,11 +329,11 @@ sit a few ulps away and the box form factor would come back.  The single table
 row is labelled by $|\mathbf q|$ and the header carries the indices and the
 vector, so nothing is lost.
 
-A run without q points computes no $S(q)$ at all: it takes no `OUTPUT` table,
-and `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected, which leaves the
+A run without `--qpoints` computes no $S(q)$ at all: it writes no `--sq` table, and
+`--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected, which leaves the
 cheapest route to $Q(t)$ and $\chi_4(t)$.
 
-With a q line, `--dyn` follows the recipe used by the dynasor and MDANSE
+With a q line, `sqcalc dyn` follows the recipe used by the dynasor and MDANSE
 packages: pick a line in reciprocal space, evaluate the density amplitudes
 there, correlate them in time and Fourier transform the correlation.  With
 $q_i = s_i\,\hat{u}$ and
@@ -343,7 +359,7 @@ $$
 with the same $\rho$, $w$ and $W(q)$ as the static calculation, so the
 normalization conventions (`--weight`, `--norm`) carry over unchanged and the
 zeroth moment is exact: $\int S(q,\omega)\,d\omega = F(q,0) = S(q)$ of the
-`OUTPUT` table.
+`--sq` table.
 
 The average over time origins accumulates a sum *and* a count for every lag,
 which is what makes the estimator exact for a trajectory that is not a whole
@@ -362,7 +378,7 @@ the scattering angle, not by the simulation box) and it is why the amplitudes
 are summed directly instead of being transformed on a grid: for the ~100 q
 points of a line scan the direct sum costs $O(N\,n_q)$ per frame, far less
 than transforming the $(q_{\max}L)^3$ grid.  Off-lattice $q$ requires
-unwrapped coordinates, which `--dyn` reconstructs while reading if the dump
+unwrapped coordinates, which `sqcalc dyn` reconstructs while reading if the dump
 carries only wrapped `x y z` (preferring `xu yu zu` when available).
 
 Because the scale steps by a constant, a line is also separable: writing
@@ -373,7 +389,7 @@ times the $i$-th power of one factor, exactly as for a lattice mode.  A line of
 shorter one - where the table build would cost more than it saves - with a
 sine and cosine per (mode, atom) pair.
 
-With `--dyn-q shell:Q,ACC` the quantity is instead the isotropic average over
+With `--qpoints shell:Q,ACC` the quantity is instead the isotropic average over
 the sphere of radius $Q$,
 
 $$
@@ -473,7 +489,7 @@ and the chi4 table is a single time series,
 # tau Q(t) chi4(t)
 ```
 
-Both accept a `.h5`/`.hdf5` name or `--dyn-format hdf5`.  The HDF5 layout is
+Both accept a `.h5`/`.hdf5` name or `--format hdf5`.  The HDF5 layout is
 `/s4/q`, `/s4/tau`, `/s4/S4`, `/s4/count` and `/chi4/tau`, `/chi4/Q`,
 `/chi4/chi4`, `/chi4/count`, with the overlap cutoff in the `overlap`
 attribute.  The count is the number of time origins at each lag; a lag with a
@@ -531,7 +547,7 @@ $$
 and its long-time slope gives the diffusion coefficient, $D =
 \text{slope}/6$ in three dimensions.  Like S4 and $F_s$ it reuses the shared
 position buffer and the `--stride`/`--lag` schedule, and it is available
-without any q sampling (`--dyn-q -`), where a run writes no `OUTPUT` table.
+without any q sampling (no `--qpoints`, no `--sq`), where a run writes no S(q) table.
 
 The table carries one species column per LAMMPS type when `--partials` is on
 (the default), with the same $1/N$ normalization as the $F_s$ columns, so the
@@ -545,24 +561,24 @@ tends to $6 D_a t$,
 ```
 
 `--no-partials` leaves only the total column.  A `.h5`/`.hdf5` name or
-`--dyn-format hdf5` selects HDF5, with `/msd/tau`, `/msd/MSD`, `/msd/count`
+`--format hdf5` selects HDF5, with `/msd/tau`, `/msd/MSD`, `/msd/count`
 and, with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`.
 
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
-static `OUTPUT` table is still written.  Conversely, a run with only
+`--sq` table is still written.  Conversely, a run with only
 `--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`
 and `--msd` allocate that shared buffer but not the coherent
-$F(q,t)/S(q,\omega)$ buffers.  With `--dyn-q -` there are no density
-amplitudes at all, so `--chi4` and `--msd` are the only outputs and no
-`OUTPUT` table is taken.
+$F(q,t)/S(q,\omega)$ buffers.  Without `--qpoints` there are no density amplitudes
+at all, so `--chi4` and `--msd` are the only outputs and no `--sq` table is
+written.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
-sqcalc -i traj.dump -w unit --dyn --dyn-q line:20,0.5,4,1,1,0 \
+sqcalc dyn -i traj.dump -w unit --qpoints line:20,0.5,4,1,1,0 \
        --dt 0.005 --maxframes 400 \
-       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat S_q.dat
+       --s4-cutoff 1.0 --s4 S4.dat --chi4 chi4.dat --sq S_q.dat
 ```
 
 ### Partial structure factors
@@ -711,7 +727,7 @@ components under terms that do not otherwise combine:
 * **FFTW3** (GPLv2 or later) is what FINUFFT transforms with, unless FINUFFT is
   built against DUCC0 instead, so a normally built `sqcalc` binary links a GPL
   library.
-* **HDF5** (BSD-3-Clause) backs `--grid-format hdf5`, and the OpenMP runtime
+* **HDF5** (BSD-3-Clause) backs `--format hdf5`, and the OpenMP runtime
   does the threading.
 * **CUDA / cuFFT**, used only by the optional `-DSQC_ENABLE_CUDA=ON` build (and
   `--device gpu`), is under NVIDIA's terms.

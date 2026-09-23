@@ -3,7 +3,7 @@
 !
 ! SPDX-License-Identifier: GPL-3.0-or-later
 
-!> Lebedev quadrature on the unit sphere, used by `--dyn-q shell:Q,ACC`.
+!> Lebedev quadrature on the unit sphere, used by `--q shell:Q,ACC`.
 !!
 !! A Lebedev rule integrates the spherical harmonics exactly up to its order,
 !! so averaging a quantity that varies smoothly over a spherical shell in
@@ -26,7 +26,7 @@ module sqc_lebedev
              lebedev_low, lebedev_medium, lebedev_high, lebedev_max_points, &
              lebedev_reduce_pairs
 
-   !> Accuracy names of `--dyn-q shell:Q,ACC` and the order they select.
+   !> Accuracy names of `--q shell:Q,ACC` and the order they select.
    integer, parameter :: lebedev_low = 11
    integer, parameter :: lebedev_medium = 17
    integer, parameter :: lebedev_high = 23
