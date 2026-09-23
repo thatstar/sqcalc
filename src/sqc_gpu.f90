@@ -216,9 +216,9 @@ contains
       type(weight_scheme_t), intent(in) :: scheme
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
-      real(rk) :: s(3), amp, value, pi
+      real(rk) :: s(3), amp, pi
       integer(c_int) :: istat, ier
-      integer :: i, im, isp, sh, base
+      integer :: i, im, isp, base
       integer(lk) :: g
       complex(c_double_complex) :: total
 
