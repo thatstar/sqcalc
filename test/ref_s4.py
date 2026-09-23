@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ref_sqw import read_dump, unwrap_frames, parse_dyn_q, shell_average  # noqa: E402
+from ref_sqw import load_frames, parse_dyn_q, shell_average  # noqa: E402
 
 
 def four_point(frames, qvec, cutoff, maxframes, lag, stride):
@@ -110,7 +110,7 @@ def main():
 
     qvec, weights, radius = parse_dyn_q(args.dyn_q)
 
-    frames = unwrap_frames(list(read_dump(args.input)))
+    frames = load_frames(args.input)
     nsteps = args.maxframes // args.stride
     s4, overlap, chi4, _ = four_point(frames, qvec, args.cutoff, args.maxframes, args.lag,
                                       args.stride)

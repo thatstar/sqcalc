@@ -81,6 +81,23 @@ def unwrap_frames(frames):
     return out
 
 
+_FRAME_CACHE = {}
+
+
+def load_frames(path):
+    """Parsed, unwrapped frames of a dump, read at most once per process.
+
+    The reference scripts are what makes the dynamic checks independent of the
+    Fortran reader, but every one of them used to parse the whole trajectory
+    again.  ref_batch.py runs several cases in one process, and this cache is
+    what lets them share a single parse.
+    """
+    key = os.path.abspath(path)
+    if key not in _FRAME_CACHE:
+        _FRAME_CACHE[key] = unwrap_frames(list(read_dump(key)))
+    return _FRAME_CACHE[key]
+
+
 def correlation(frames, qvec, nspecies, species_of, maxframes, lag):
     """Multi-origin C_ab(q,l) with the count of origins per lag."""
     nq = len(qvec)
@@ -168,8 +185,7 @@ def main():
 
     qvec, weights, radius = parse_dyn_q(args.dyn_q)
 
-    frames = list(read_dump(args.input))
-    frames = unwrap_frames(frames)
+    frames = load_frames(args.input)
     types = frames[0][1]
     natoms = len(types)
     mapping = parse_mapping(args.mapping) if args.mapping else {}

@@ -19,6 +19,7 @@ command line error cases.
 """
 
 import argparse
+import json
 import math
 import os
 import subprocess
@@ -30,7 +31,40 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def run(cmd, env=None):
+# Threads used by an sqcalc invocation unless a case asks for another count.
+#
+# Almost every call in this suite is small: the trajectory it reads costs more
+# than the transform it runs, and the per-frame OpenMP regions then cost more
+# than the parallel work they distribute.  On an 8 thread host a trivial
+# `dyn` run on the 1000 frame diffusion trajectory takes 0.57 s with one
+# thread and 1.15 s with eight, so the cheap cases ask for one thread and the
+# few that really are compute bound (the powder sweeps, the 110 point shell
+# average and the direct XRD runs on the large boxes) ask for all of them.
+THREADS_ONE = 1
+
+try:
+    THREADS_ALL = max(len(os.sched_getaffinity(0)), 1)
+except AttributeError:  # not Linux
+    THREADS_ALL = max(os.cpu_count() or 1, 1)
+
+# The executable under test, set by main(); run() uses it to insert the
+# thread option without every call site having to spell it out.
+SQEXE = None
+
+
+def run(cmd, env=None, threads=THREADS_ONE):
+    """Run a command and fail on a non zero exit status.
+
+    `threads` is the OpenMP thread count handed to the sqcalc driver; it is
+    inserted after the subcommand unless the command already carries -t or
+    --threads.  Pass threads=None to keep the process default (the checks that
+    drive the thread count through OMP_NUM_THREADS do that).
+    """
+    if (threads is not None and SQEXE is not None and len(cmd) > 2
+            and os.path.abspath(cmd[0]) == SQEXE
+            and cmd[1] in ("static", "dyn")
+            and "-t" not in cmd and "--threads" not in cmd):
+        cmd = [cmd[0], cmd[1], "-t", str(threads)] + list(cmd[2:])
     if env is not None:
         env = dict(os.environ, **env)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -87,6 +121,7 @@ def dyn_line(spec):
 
 
 def main():
+    global SQEXE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True)
     parser.add_argument("--workdir", required=True)
@@ -96,6 +131,7 @@ def main():
                         help="path of the h5read helper (enables the HDF5 checks)")
     args = parser.parse_args()
     exe = os.path.abspath(args.executable)
+    SQEXE = exe
     work = os.path.abspath(args.workdir)
     os.makedirs(work, exist_ok=True)
 
@@ -118,6 +154,24 @@ def main():
     def sqcalc_dyn(dump, *options):
         cmd = [exe, "dyn", "-i", dump, *options]
         return run(cmd)
+
+    # The numpy references parse the trajectory themselves, so a case per
+    # process pays for the same dump over and over.  Queue them instead and
+    # let test/ref_batch.py run the whole queue in one process, where the
+    # frame cache in ref_sqw parses each dump once.
+    ref_jobs = []
+
+    def ref(case, *argv):
+        ref_jobs.append({"case": case, "args": [str(value) for value in argv]})
+
+    def flush_refs():
+        if not ref_jobs:
+            return
+        job_file = path("ref_jobs.json")
+        with open(job_file, "w") as handle:
+            json.dump(ref_jobs, handle)
+        run([sys.executable, os.path.join(HERE, "ref_batch.py"), "--jobs", job_file])
+        del ref_jobs[:]
 
     common = ["--qmax", "6", "--nq", "120", "--eps", "1e-10"]
     failures = 0
@@ -625,7 +679,6 @@ def main():
         run([sys.executable, tool, "--s2", path("s2.dat"), "--rdf", path("s2.rdf"),
              "--accum", path("s2acc.dat"), "--s2-smooth", "--fit", "power",
              "--r-fit-min", "4", "--r-fit-max", "8", "--json", path("s2_tool.json")])
-        import json
         with open(path("s2_tool.json")) as handle:
             data = json.load(handle)
         if "tail_fit" not in data or "gcv_smooth" not in data:
@@ -993,7 +1046,7 @@ def main():
     run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--xrd", path("wide_direct.xrd"),
          *cross])
     run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
-         "--xrd", path("wide_nufft.xrd"), *cross])
+         "--xrd", path("wide_nufft.xrd"), *cross], threads=THREADS_ALL)
     xrd_direct = read_matrix(path("wide_direct.xrd"))
     xrd_nufft = read_matrix(path("wide_nufft.xrd"))
     if xrd_direct.shape != xrd_nufft.shape:
@@ -1013,7 +1066,7 @@ def main():
 
     # --no-partials still drops them
     run([exe, "static", "-i", wide, "-m", "1:Ni", "-w", "xray", "--method", "direct",
-         "--no-partials", "--xrd", path("wide_plain.xrd"), *cross])
+         "--no-partials", "--xrd", path("wide_plain.xrd"), *cross], threads=THREADS_ALL)
     if read_matrix(path("wide_plain.xrd")).shape[1] != 2:
         raise SystemExit("FAIL xrd: direct --no-partials left pair columns")
     print("  ok   %-42s direct writes the total only" % "--no-partials")
@@ -1272,21 +1325,32 @@ def main():
 
     # --- 11. dynamic structure factor along a q line (sqcalc dyn) ----------
     print("dynamic structure factor along a q line")
-    ref_dyn = os.path.join(HERE, "ref_sqw.py")
     dyn_spec = "4,1,4,1,0,0"          # 5 q points, |q| = 1..4 along x
     dyn_q = ["--qpoints", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
              "--lag", "1"]
     nq_dyn = 5
     dyn_dump = generate("dyn_ball.dump", natoms=1000, length=20, frames=40, seed=11,
                         mode="ballistic", temperature=1.0, columns="id type xu yu zu")
+    # The reference cases of this trajectory are queued and written before the
+    # comparisons below read them.
+    ref("sqw", "--input", dyn_dump, "--qpoints", "line:" + dyn_spec,
+        "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", "unit",
+        "--norm", "mean", "--output-fqt", path("dyn_ref_fqt.dat"),
+        "--output-sqw", path("dyn_ref_sqw.dat"))
+    for weight, norm in (("neutron", "mean"), ("xray", "self")):
+        ref("sqw", "--input", dyn_dump, "--qpoints", "line:" + dyn_spec,
+            "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", weight,
+            "--norm", norm, "--mapping", "1:Si,2:O",
+            "--output-fqt", path("dyn_w_%s_ref_fqt.dat" % weight),
+            "--output-sqw", path("dyn_w_%s_ref_sqw.dat" % weight))
+    ref("sqw", "--input", dyn_dump, "--qpoints", "line:" + dyn_spec,
+        "--maxframes", "20", "--lag", "3", "--dt", "1", "--weight", "unit",
+        "--norm", "mean", "--output-fqt", path("dyn_lag_ref_fqt.dat"),
+        "--output-sqw", path("dyn_lag_ref_sqw.dat"))
+    flush_refs()
     sqcalc_dyn(dyn_dump, "-w", "unit", "--norm", "mean", *dyn_q,
                "--sq", path("dyn_sq.dat"), "--sqw", path("dyn_sqw.dat"),
                "--fqt", path("dyn_fqt.dat"))
-    run([sys.executable, ref_dyn, "--input", dyn_dump,
-         "--qpoints", "line:" + dyn_spec,
-         "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", "unit",
-         "--norm", "mean", "--output-fqt", path("dyn_ref_fqt.dat"),
-         "--output-sqw", path("dyn_ref_sqw.dat")])
     fqt = read_matrix(path("dyn_fqt.dat"))
     sqw = read_matrix(path("dyn_sqw.dat"))
     compare(fqt, read_matrix(path("dyn_ref_fqt.dat")), "F(q,t) vs numpy reference", rtol=1.0e-9)
@@ -1306,6 +1370,69 @@ def main():
     # the trajectory, so only the decay rate is a clean observable).
     diff_dump = generate("dyn_diff.dump", natoms=500, length=20, frames=1000, seed=3,
                          mode="diffusive", diffusivity=0.1, columns="id type xu yu zu")
+
+    # The specs the rest of the dynamic section uses, and the whole list of
+    # numpy reference cases it needs.  The references are queued here and run
+    # by a single process before the first comparison: they are deterministic
+    # functions of these two trajectories, so one process can hand every case
+    # the same parsed frames instead of re-reading dyn_diff.dump per case.
+    s4_spec = "1,2,3,1,0,0"            # 2 q points, |q| = 2 and 3 along x
+    s4_cutoff = "0.5"
+    shell_spec = "shell:2.5,medium"
+    long_spec = "20,2,3,1,0,0"         # 21 q points from 2 to 3 along x
+    try:
+        from scipy.integrate import lebedev_rule  # noqa: F401
+        have_lebedev = True
+    except ImportError:
+        have_lebedev = False
+
+    ref("s4", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+        "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+        "--output-s4", path("s4_ref.dat"), "--output-chi4", path("chi4_ref.dat"))
+    for stride in (2, 3):
+        ref("s4", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+            "--maxframes", "8", "--lag", "1", "--stride", str(stride), "--dt", "1",
+            "--cutoff", s4_cutoff, "--output-s4", path("stride_ref_%d.dat" % stride),
+            "--output-chi4", path("chi4_stride_ref_%d.dat" % stride))
+        ref("fsqt", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+            "--maxframes", "8", "--lag", "3", "--stride", str(stride), "--dt", "1",
+            "--output", path("fs_stride_ref_%d.dat" % stride))
+    ref("s4", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+        "--maxframes", "9", "--lag", "1", "--stride", "2", "--dt", "1",
+        "--cutoff", s4_cutoff, "--output-s4", path("s4_round_ref.dat"),
+        "--output-chi4", path("chi4_round_ref.dat"))
+    ref("fsqt", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+        "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
+        "--output", path("fs_ref.dat"))
+    ref("s4", "--input", diff_dump, "--qpoints", "line:" + s4_spec,
+        "--maxframes", "8", "--lag", "3", "--dt", "1", "--cutoff", s4_cutoff,
+        "--output-s4", path("s4_lag_ref.dat"), "--output-chi4", path("chi4_lag_ref.dat"))
+    ref("s4", "--input", diff_dump, "--qpoints", "line:" + long_spec,
+        "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+        "--output-s4", path("s4_long_ref.dat"))
+    ref("fsqt", "--input", diff_dump, "--qpoints", "line:" + long_spec,
+        "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
+        "--output", path("fs_long_ref.dat"))
+    ref("sqw", "--input", diff_dump, "--qpoints", "line:" + long_spec,
+        "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
+        "--norm", "mean", "--output-fqt", path("fq_long_ref.dat"),
+        "--output-sqw", path("sqw_long_ref.dat"))
+    ref("s4", "--input", diff_dump, "--qpoints", "line:20,0,4,1,0,0",
+        "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+        "--output-s4", path("s4_long0_ref.dat"))
+    if have_lebedev:
+        ref("sqw", "--input", diff_dump, "--qpoints", shell_spec,
+            "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
+            "--norm", "mean", "--output-fqt", path("shell_ref_fqt.dat"),
+            "--output-sqw", path("shell_ref_sqw.dat"))
+        ref("s4", "--input", diff_dump, "--qpoints", shell_spec,
+            "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
+            "--output-s4", path("shell_ref_s4.dat"))
+        ref("fsqt", "--input", diff_dump, "--qpoints", shell_spec,
+            "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
+            "--output", path("shell_ref_fs.dat"))
+    flush_refs()
+
     run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "mean",
          "--qpoints", "line:1,2,3,1,0,0", "--dt", "1", "--maxframes", "8",
          "--lag", "1",
@@ -1363,12 +1490,6 @@ def main():
                    "-m", "1:Si,2:O",
                    "--sq", path("dyn_w_%s.dat" % weight),
                    "--sqw", path("dyn_w_%s_sqw.dat" % weight))
-        run([sys.executable, ref_dyn, "--input", dyn_dump,
-             "--qpoints", "line:" + dyn_spec,
-             "--maxframes", "20", "--lag", "1", "--dt", "1", "--weight", weight,
-             "--norm", norm, "--mapping", "1:Si,2:O",
-             "--output-fqt", path("dyn_w_%s_ref_fqt.dat" % weight),
-             "--output-sqw", path("dyn_w_%s_ref_sqw.dat" % weight)])
         compare(read_matrix(path("dyn_w_%s_sqw.dat" % weight)),
                 read_matrix(path("dyn_w_%s_ref_sqw.dat" % weight)),
                 "%s weighted S(q,w) vs reference" % weight, rtol=1.0e-9)
@@ -1378,27 +1499,16 @@ def main():
          "--qpoints", "line:" + dyn_spec, "--dt", "1", "--maxframes", "20",
          "--lag", "3",
          "--fqt", path("dyn_lag_fqt.dat"), "--sq", path("dyn_lag_sq.dat")])
-    run([sys.executable, ref_dyn, "--input", dyn_dump,
-         "--qpoints", "line:" + dyn_spec,
-         "--maxframes", "20", "--lag", "3", "--dt", "1", "--weight", "unit",
-         "--norm", "mean", "--output-fqt", path("dyn_lag_ref_fqt.dat"),
-         "--output-sqw", path("dyn_lag_ref_sqw.dat")])
     compare(read_matrix(path("dyn_lag_fqt.dat")), read_matrix(path("dyn_lag_ref_fqt.dat")),
             "lag stride 3 vs reference", rtol=1.0e-9)
 
     # --- four point structure factor S4(q,t), Q(t) and chi4(t) ------------
     print("four-point structure factor (--s4/--chi4)")
-    ref_four = os.path.join(HERE, "ref_s4.py")
-    s4_spec = "1,2,3,1,0,0"            # 2 q points, |q| = 2 and 3 along x
-    s4_cutoff = "0.5"
     s4_base = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
     s4_q = s4_base + ["--lag", "1"]
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--norm", "mean", *s4_q,
          "--s4-cutoff", s4_cutoff, "--s4", path("s4.dat"),
          "--chi4", path("chi4.dat"), "--sq", path("s4_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
-         "--output-s4", path("s4_ref.dat"), "--output-chi4", path("chi4_ref.dat")])
     s4 = read_matrix(path("s4.dat"))
     chi4 = read_matrix(path("chi4.dat"))
     compare(s4, read_matrix(path("s4_ref.dat")), "S4(q,t) vs numpy reference", rtol=1.0e-9)
@@ -1416,7 +1526,7 @@ def main():
         run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_base, "--lag", "1",
              "--s4-cutoff", s4_cutoff, "--s4", path("s4_scan_t%s.dat" % threads),
              "--sq", path("s4_scan_t%s_sq.dat" % threads)],
-            env={"OMP_NUM_THREADS": threads})
+            env={"OMP_NUM_THREADS": threads}, threads=None)
     compare(read_matrix(path("s4_scan_t1.dat")), read_matrix(path("s4_scan_t2.dat")),
             "S4 is independent of the thread count", rtol=0.0)
 
@@ -1727,7 +1837,7 @@ def main():
                       "powder:%.6f,dq=%.6f" % (2.5, powder_dq), "--dt", "1",
                       "--maxframes", "8", "--lag", "1",
                       "--sq", path("powder_sq.dat"), "--fqt", path("powder_fqt.dat"),
-                      "--fqt-self", path("powder_fs.dat")])
+                      "--fqt-self", path("powder_fs.dat")], threads=THREADS_ALL)
     if "window held no shell of its own" in powder_run.stderr:
         raise SystemExit("FAIL powder: unexpected nearest-shell fallback")
     powder_q = read_matrix(path("powder_sq.dat"))
@@ -1763,13 +1873,14 @@ def main():
     # of an explicit dq at the cap, while the default (M = 50) stays narrower.
     default_run = run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5",
                        "--dt", "1", "--maxframes", "8", "--lag", "1",
-                       "--sq", path("powder_def.dat")])
+                       "--sq", path("powder_def.dat")], threads=THREADS_ALL)
     wide = run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5,500",
-                "--dt", "1", "--maxframes", "8", "--lag", "1", "--sq", path("powder_m.dat")])
+                "--dt", "1", "--maxframes", "8", "--lag", "1", "--sq", path("powder_m.dat")],
+               threads=THREADS_ALL)
     for count, name in ((2000, "powder_cap_a.dat"), (20000, "powder_cap_b.dat")):
         run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints",
              "powder:2.5,%d" % count, "--dt", "1", "--maxframes", "8", "--lag", "1",
-             "--sq", path(name)])
+             "--sq", path(name)], threads=THREADS_ALL)
     compare(read_matrix(path("powder_cap_a.dat")), read_matrix(path("powder_cap_b.dat")),
             "powder: the window width is capped at Q/20", rtol=0.0)
     compare(read_matrix(path("powder_cap_a.dat")), powder_q,
@@ -1846,7 +1957,8 @@ def main():
     # The window is not derivable from the q dataset, so HDF5 records it.
     if args.h5read:
         run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5,dq=0.05",
-             "--dt", "1", "--maxframes", "8", "--lag", "1", "--sqw", path("powder_sqw.h5")])
+             "--dt", "1", "--maxframes", "8", "--lag", "1", "--sqw", path("powder_sqw.h5")],
+            threads=THREADS_ALL)
         for name in ("q_requested", "dq", "n_lattice_vectors"):
             value = run([args.h5read, path("powder_sqw.h5"), "attr", name]).stdout
             if not value.strip():
@@ -1950,23 +2062,17 @@ def main():
              "--s4-cutoff", s4_cutoff, "--stride", str(stride),
              "--s4", path("stride.dat"), "--chi4", path("chi4_stride.dat"), "--sq", 
              path("stride_sq.dat")])
-        run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-             "--maxframes", "8", "--lag", "1", "--stride", str(stride), "--dt", "1",
-             "--cutoff", s4_cutoff, "--output-s4", path("stride_ref.dat"),
-             "--output-chi4", path("chi4_stride_ref.dat")])
-        compare(read_matrix(path("stride.dat")), read_matrix(path("stride_ref.dat")),
+        compare(read_matrix(path("stride.dat")),
+                read_matrix(path("stride_ref_%d.dat" % stride)),
                 "S4 stride %d vs reference" % stride, rtol=1.0e-9)
-        compare(read_matrix(path("chi4_stride.dat")), read_matrix(path("chi4_stride_ref.dat")),
+        compare(read_matrix(path("chi4_stride.dat")),
+                read_matrix(path("chi4_stride_ref_%d.dat" % stride)),
                 "chi4 stride %d vs reference" % stride, rtol=1.0e-9)
 
     s4_round = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "9"]
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_round, "--lag", "1",
          "--s4-cutoff", s4_cutoff, "--stride", "2", "--s4", path("s4_round.dat"),
          "--chi4", path("chi4_round.dat"), "--sq", path("s4_round_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-         "--maxframes", "9", "--lag", "1", "--stride", "2", "--dt", "1",
-         "--cutoff", s4_cutoff, "--output-s4", path("s4_round_ref.dat"),
-         "--output-chi4", path("chi4_round_ref.dat")])
     compare(read_matrix(path("s4_round.dat")), read_matrix(path("s4_round_ref.dat")),
             "S4 stride rounding vs reference", rtol=1.0e-9)
     compare(read_matrix(path("chi4_round.dat")), read_matrix(path("chi4_round_ref.dat")),
@@ -1977,13 +2083,9 @@ def main():
 
     # --- self intermediate scattering function (--fqt-self) ----------------
     print("self intermediate scattering function (--fqt-self)")
-    ref_self = os.path.join(HERE, "ref_fsqt.py")
     fs_base = ["--qpoints", "line:" + s4_spec, "--dt", "1", "--maxframes", "8"]
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "1",
          "--fqt-self", path("fs.dat"), "--sq", path("fs_sq.dat")])
-    run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-         "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
-         "--output", path("fs_ref.dat")])
     fs = read_matrix(path("fs.dat"))
     compare(fs, read_matrix(path("fs_ref.dat")), "F_s(q,t) vs numpy reference", rtol=1.0e-9)
     if abs(fs[0, 4] - 1.0) > 1.0e-12:
@@ -2005,10 +2107,8 @@ def main():
         run([exe, "dyn", "-i", diff_dump, "-w", "unit", *fs_base, "--lag", "3",
              "--stride", str(stride), "--fqt-self", path("fs_stride.dat"), "--sq", 
              path("fs_stride_sq.dat")])
-        run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-             "--maxframes", "8", "--lag", "3", "--stride", str(stride), "--dt", "1",
-             "--output", path("fs_stride_ref.dat")])
-        compare(read_matrix(path("fs_stride.dat")), read_matrix(path("fs_stride_ref.dat")),
+        compare(read_matrix(path("fs_stride.dat")),
+                read_matrix(path("fs_stride_ref_%d.dat" % stride)),
                 "F_s stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
 
     # Diffusive ideal gas: F_s(q,t) = exp(-D q^2 t).
@@ -2086,9 +2186,6 @@ def main():
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
          "--s4", path("s4_lag.dat"), "--chi4", path("chi4_lag.dat"), "--sq", 
          path("s4_lag_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + s4_spec,
-         "--maxframes", "8", "--lag", "3", "--dt", "1", "--cutoff", s4_cutoff,
-         "--output-s4", path("s4_lag_ref.dat"), "--output-chi4", path("chi4_lag_ref.dat")])
     compare(read_matrix(path("s4_lag.dat")), read_matrix(path("s4_lag_ref.dat")),
             "S4 lag stride 3 vs reference", rtol=1.0e-9)
     compare(read_matrix(path("chi4_lag.dat")), read_matrix(path("chi4_lag_ref.dat")),
@@ -2192,13 +2289,12 @@ def main():
 
     # A shell is one |q| averaged over every direction: all the tables hold a
     # single q row, whose value is the Lebedev average.
-    shell_spec = "shell:2.5,medium"
     shell_base = ["--qpoints", shell_spec, "--dt", "1", "--maxframes", "8"]
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
          "--s4-cutoff", s4_cutoff, "--sqw", path("shell_sqw.dat"),
          "--fqt", path("shell_fqt.dat"), "--fqt-self", path("shell_fs.dat"),
          "--s4", path("shell_s4.dat"), "--chi4", path("shell_chi4.dat"), "--sq", 
-         path("shell_sq.dat")])
+         path("shell_sq.dat")], threads=THREADS_ALL)
     shell_q, shell_s = read_table(path("shell_sq.dat"))
     shell_fqt = read_matrix(path("shell_fqt.dat"))
     shell_sqw = read_matrix(path("shell_sqw.dat"))
@@ -2226,7 +2322,7 @@ def main():
         run([exe, "dyn", "-i", diff_dump, "-w", "unit", *shell_base, "--lag", "1",
              "--s4-cutoff", s4_cutoff, "--sqw", path("shell_sqw.h5"),
              "--fqt-self", path("shell_fs.h5"), "--s4", path("shell_s4.h5"), "--sq", 
-             path("shell_h5_sq.dat")])
+             path("shell_h5_sq.dat")], threads=THREADS_ALL)
         with open(path("shell_sqw_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("shell_sqw.h5"), "sqw"]).stdout)
         with open(path("shell_fs_h5.txt"), "w") as handle:
@@ -2256,28 +2352,13 @@ def main():
             raise SystemExit("FAIL plot_sqw.py wrote no figure for a shell table")
         print("  ok   %-42s single q row" % "plot_sqw.py renders a shell")
 
-    try:
-        from scipy.integrate import lebedev_rule  # noqa: F401
-        have_scipy = True
-    except ImportError:
-        have_scipy = False
-    if have_scipy:
-        run([sys.executable, ref_dyn, "--input", diff_dump, "--qpoints", shell_spec,
-             "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
-             "--norm", "mean", "--output-fqt", path("shell_ref_fqt.dat"),
-             "--output-sqw", path("shell_ref_sqw.dat")])
+    if have_lebedev:
         compare(shell_fqt, read_matrix(path("shell_ref_fqt.dat")),
                 "shell F(q,t) vs scipy reference", rtol=1.0e-9)
         compare(shell_sqw, read_matrix(path("shell_ref_sqw.dat")),
                 "shell S(q,w) vs scipy reference", rtol=1.0e-9)
-        run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", shell_spec,
-             "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
-             "--output-s4", path("shell_ref_s4.dat")])
         compare(read_matrix(path("shell_s4.dat")), read_matrix(path("shell_ref_s4.dat")),
                 "shell S4(q,t) vs scipy reference", rtol=1.0e-9)
-        run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", shell_spec,
-             "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
-             "--output", path("shell_ref_fs.dat")])
         compare(shell_fs, read_matrix(path("shell_ref_fs.dat")),
                 "shell F_s(q,t) vs scipy reference", rtol=1.0e-9)
     else:
@@ -2290,7 +2371,6 @@ def main():
     # it from phase_min_modes = 16 points on, which is longer than every other
     # line in this suite, so this is the only coverage of the line tables.
     print("separable q line (--qpoints line, 16 points or more)")
-    long_spec = "20,2,3,1,0,0"         # 21 q points from 2 to 3 along x
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "line:" + long_spec,
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
          "--s4", path("s4_long.dat"), "--chi4", path("chi4_long.dat"),
@@ -2298,16 +2378,6 @@ def main():
          "--sqw", path("sqw_long.dat"), "--sq", path("s4_long_sq.dat")])
     # The references sum the line directly, so they pin the factor tables and
     # the base term of the first axis independently of the recurrence.
-    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:" + long_spec,
-         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
-         "--output-s4", path("s4_long_ref.dat")])
-    run([sys.executable, ref_self, "--input", diff_dump, "--qpoints", "line:" + long_spec,
-         "--maxframes", "8", "--lag", "1", "--stride", "1", "--dt", "1",
-         "--output", path("fs_long_ref.dat")])
-    run([sys.executable, ref_dyn, "--input", diff_dump, "--qpoints", "line:" + long_spec,
-         "--maxframes", "8", "--lag", "1", "--dt", "1", "--weight", "unit",
-         "--norm", "mean", "--output-fqt", path("fq_long_ref.dat"),
-         "--output-sqw", path("sqw_long_ref.dat")])
     compare(read_matrix(path("s4_long.dat")), read_matrix(path("s4_long_ref.dat")),
             "separable line: S4(q,t) vs reference", rtol=1.0e-9)
     compare(read_matrix(path("fs_long.dat")), read_matrix(path("fs_long_ref.dat")),
@@ -2328,9 +2398,6 @@ def main():
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "line:20,0,4,1,0,0",
          "--dt", "1", "--maxframes", "8", "--lag", "1", "--s4-cutoff", s4_cutoff,
          "--s4", path("s4_long0.dat"), "--sq", path("s4_long0_sq.dat")])
-    run([sys.executable, ref_four, "--input", diff_dump, "--qpoints", "line:20,0,4,1,0,0",
-         "--maxframes", "8", "--lag", "1", "--dt", "1", "--cutoff", s4_cutoff,
-         "--output-s4", path("s4_long0_ref.dat")])
     compare(read_matrix(path("s4_long0.dat")), read_matrix(path("s4_long0_ref.dat")),
             "separable line: s0 = 0 vs reference", rtol=1.0e-9)
     print("  ok   %-42s 21 points, base on and off" % "separable q line")
@@ -2471,6 +2538,9 @@ def main():
             raise SystemExit("FAIL %s was accepted" % label)
         print("  ok   %-42s rejected" % label)
 
+    # A queued reference case that nobody flushed would silently drop coverage.
+    if ref_jobs:
+        raise SystemExit("FAIL %d queued reference case(s) never ran" % len(ref_jobs))
     print("all sqcalc tests passed")
 
 
