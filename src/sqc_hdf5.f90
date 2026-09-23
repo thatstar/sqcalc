@@ -217,7 +217,7 @@ contains
    subroutine hdf5_write_dynamics(path, group, axis_name, q, axis, spec, part, labels, count, &
                                   nframes, frame_dt, maxframes, lag, weight, norm, overlap, &
                                   stride, effective_maxframes, sampling, mode_budget, thinned, &
-                                  single_n, ierr, message)
+                                  single_n, shell_q, shell_dq, shell_vectors, ierr, message)
       character(len=*), intent(in) :: path, group, axis_name, weight, norm
       !> q sampling that produced the table: `line`, `shell` or `grid`.
       character(len=*), intent(in) :: sampling
@@ -237,6 +237,10 @@ contains
       !> Miller indices when `sampling` is `single`: |q| alone does not say
       !! which lattice vector was used, so they have to be recorded.
       integer, intent(in) :: single_n(3)
+      !> Requested |q|, the half width and the number of lattice vectors of the
+      !! `powder` window; the q dataset carries the weighted mean |q|.
+      real(rk), intent(in) :: shell_q, shell_dq
+      integer, intent(in) :: shell_vectors
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       integer(hid_t) :: file_id, group_id, subgroup_id
@@ -305,6 +309,16 @@ contains
                                             ierr, message)
          if (ierr == 0) call write_int_attr(file_id, 'single_n3', int(single_n(3), int64), &
                                             ierr, message)
+      end if
+      if (ierr == 0 .and. trim(sampling) == 'powder') then
+         ! The q dataset holds the weighted mean |q| of the window, so the
+         ! requested radius and the width it was averaged over are recorded
+         ! next to it.
+         call write_real_attr(file_id, 'q_requested', real(shell_q, real64), ierr, message)
+         if (ierr == 0) call write_real_attr(file_id, 'dq', real(shell_dq, real64), &
+                                             ierr, message)
+         if (ierr == 0) call write_int_attr(file_id, 'n_lattice_vectors', &
+                                            int(shell_vectors, int64), ierr, message)
       end if
       if (ierr /= 0) then
          call h5fclose_f(file_id, idum)

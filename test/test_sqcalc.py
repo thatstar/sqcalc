@@ -1608,6 +1608,255 @@ def main():
     print("  ok   %-42s weights %s" % ("grid: two-orbit shell weighting",
                                        weights.astype(int)))
 
+    # The partial columns have to add up to the total and to match the static
+    # bin of the same shell.  The grid row divides the weighted partial
+    # numerator by the number of lattice vectors the shell averages; dividing by
+    # the number of modes instead leaves it larger by the mean mode weight (two
+    # after the +- reduction), which is what this checks.
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--qpoints",
+         "grid:%.6f" % (2.0*q1), "--dt", "1", "--maxframes", "8", "--lag", "1",
+         "--sq", path("grid_partials.dat")])
+    grid_part = read_matrix(path("grid_partials.dat"))
+    used = np.abs(grid_part[:, 1]) > 1.0e-12
+    ratio = ((grid_part[used, 2] + 2.0*grid_part[used, 3] + grid_part[used, 4])
+             /grid_part[used, 1])
+    worst = float(np.max(np.abs(ratio - 1.0)))
+    if worst > 1.0e-12:
+        raise SystemExit("FAIL grid: the partial columns are off by a factor of "
+                         "up to %.6f" % (1.0 + worst))
+    run([exe, "static", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit",
+         "--qmin", "%.6f" % (q1 - 1.0e-3), "--qmax", "%.6f" % (q1 + 1.0e-3),
+         "--nq", "1", path("grid_partials_bin.dat")])
+    shell_row = grid_part[np.abs(grid_part[:, 0] - q1) < 1.0e-6]
+    if shell_row.shape[0] != 1:
+        raise SystemExit("FAIL grid: the |n| = 1 shell is missing from the table")
+    compare(shell_row[0:1, 1:5], read_matrix(path("grid_partials_bin.dat"))[0:1, 1:5],
+            "grid: partials match the static bin", rtol=1.0e-9)
+    print("  ok   %-42s %d rows, max |ratio-1| = %.1e"
+          % ("grid partial sum rule", int(np.sum(used)), worst))
+
+    # Under orbit thinning the weights are no longer uniform (one representative
+    # per orbit carries the full multiplicity), so the divisor has to be the
+    # weight sum there too; counting modes instead left a factor of the mean
+    # orbit multiplicity rather than the factor of two seen above.
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--qpoints",
+         "grid:%.6f" % (2.0*q1), "--modes", "10", "--thin", "orbits", "--dt", "1",
+         "--maxframes", "8", "--lag", "1", "--sq", path("grid_partials_thin.dat")])
+    thin = read_matrix(path("grid_partials_thin.dat"))
+    used_thin = np.abs(thin[:, 1]) > 1.0e-12
+    worst_thin = float(np.max(np.abs((thin[used_thin, 2] + 2.0*thin[used_thin, 3]
+                                      + thin[used_thin, 4])/thin[used_thin, 1] - 1.0)))
+    if worst_thin > 1.0e-12:
+        raise SystemExit("FAIL grid: the thinned partial columns are off by a factor of "
+                         "up to %.6f" % (1.0 + worst_thin))
+    print("  ok   %-42s %d rows, max |ratio-1| = %.1e"
+          % ("grid partial sum rule, orbit thinning", int(np.sum(used_thin)), worst_thin))
+
+    # --- skewed triclinic cells (point group search) ------------------------
+    print("skewed triclinic cells")
+    # The point-group search is a bootstrap over Miller indices, and a strongly
+    # sheared cell used to abort the run.  Two cases: one whose operations fit
+    # inside the raised bound (group found, no note) and one that does not
+    # (trivial group, note reported, sum rules unchanged).
+    skew_q1 = 2.0*math.pi/18.0
+    skewed = generate("skew.dump", natoms=400, length=18, frames=12, seed=17,
+                      mode="diffusive", tilt="3 4 2", columns="id type xu yu zu")
+    skew_run = run([exe, "dyn", "-i", skewed, "-w", "unit", "--qpoints",
+                    "grid:%.6f" % (2.0*skew_q1), "--dt", "1", "--maxframes", "8",
+                    "--lag", "1", "--sq", path("skew_sq.dat"),
+                    "--fqt", path("skew_fqt.dat"), "--fqt-self", path("skew_fs.dat")])
+    if "point group order 2" not in skew_run.stderr:
+        raise SystemExit("FAIL skew: the point group of the sheared cell is not reported")
+    if "orbit thinning is off" in skew_run.stderr:
+        raise SystemExit("FAIL skew: fallback reported for a cell inside the bound")
+    skew_q = read_matrix(path("skew_sq.dat"))
+    skew_f = read_matrix(path("skew_fqt.dat"))
+    skew_s = read_matrix(path("skew_fs.dat"))
+    compare(skew_f[skew_f[:, 3] == 0.0, 4].reshape(-1, 1), skew_q[:, 1].reshape(-1, 1),
+            "skew cell: F(q,0) = S(q)", rtol=0.0)
+    compare(skew_s[skew_s[:, 3] == 0.0, 4].reshape(-1, 1),
+            np.ones((skew_q.shape[0], 1)), "skew cell: F_s(q,0) = 1", rtol=0.0)
+
+    # Past the bound the build continues with the trivial group.  This cell has
+    # a 2 A edge, which needs Miller indices beyond the search box.
+    extreme = path("skew_extreme.dump")
+    with open(extreme, "w") as handle:
+        for frame in range(3):
+            handle.write("ITEM: TIMESTEP\n%d\nITEM: NUMBER OF ATOMS\n4\n" % frame)
+            handle.write("ITEM: BOX BOUNDS xy xz yz pp pp pp\n"
+                         "0.0 9.0 3.0\n0.0 17.0 4.0\n0.0 18.0 2.0\n")
+            handle.write("ITEM: ATOMS id type xu yu zu\n")
+            for index, kind, x, y, z in ((1, 1, 0.5, 0.5, 0.5), (2, 1, 1.2, 3.0, 4.0),
+                                         (3, 2, 1.5, 7.0, 9.0), (4, 2, 0.8, 11.0, 14.0)):
+                handle.write("%d %d %.6f %.6f %.6f\n" % (index, kind, x, y, z))
+    extreme_run = run([exe, "dyn", "-i", extreme, "-w", "unit", "--qpoints", "grid:1.0",
+                       "--dt", "1", "--maxframes", "2", "--lag", "1",
+                       "--sq", path("skew_ext_sq.dat"), "--fqt", path("skew_ext_fqt.dat"),
+                       "--fqt-self", path("skew_ext_fs.dat")])
+    if "orbit thinning is off" not in extreme_run.stderr:
+        raise SystemExit("FAIL skew: the point group fallback is not reported")
+    ext_q = read_matrix(path("skew_ext_sq.dat"))
+    ext_f = read_matrix(path("skew_ext_fqt.dat"))
+    ext_s = read_matrix(path("skew_ext_fs.dat"))
+    # Brute force: ten +- reduced vectors below |q| = 1, one per shell, plus the
+    # Gamma row the grid table carries (S4 at q -> 0 is chi4).
+    if ext_q.shape[0] != 11:
+        raise SystemExit("FAIL skew: expected 10 shells plus Gamma, found %d"
+                         % ext_q.shape[0])
+    compare(ext_f[ext_f[:, 3] == 0.0, 4].reshape(-1, 1), ext_q[:, 1].reshape(-1, 1),
+            "skew cell: fallback keeps F(q,0) = S(q)", rtol=0.0)
+    compare(ext_s[ext_s[:, 3] == 0.0, 4].reshape(-1, 1),
+            np.ones((ext_q.shape[0], 1)), "skew cell: fallback keeps F_s(q,0) = 1",
+            rtol=0.0)
+    print("  ok   %-42s %s" % ("point group fallback",
+                               "10 shells, trivial group"))
+
+    # --- lattice-shell window (--qpoints powder) ----------------------------
+    print("lattice-shell window (--qpoints powder)")
+
+    def powder_counts(text):
+        """Lattice vectors and shells of a powder summary, for the checks."""
+        head, _, tail = text.replace("\n", " ").partition(" lattice vectors in ")
+        return int(head.split()[-1]), int(tail.split()[0])
+
+    # The window average uses the same estimator as the static table's bins, so
+    # the two agree in value while their row labels differ by design: the
+    # static table writes the bin centre, the powder row writes <|q|>.
+    powder_dq = 0.125
+    powder_run = run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints",
+                      "powder:%.6f,dq=%.6f" % (2.5, powder_dq), "--dt", "1",
+                      "--maxframes", "8", "--lag", "1",
+                      "--sq", path("powder_sq.dat"), "--fqt", path("powder_fqt.dat"),
+                      "--fqt-self", path("powder_fs.dat")])
+    if "window held no shell of its own" in powder_run.stderr:
+        raise SystemExit("FAIL powder: unexpected nearest-shell fallback")
+    powder_q = read_matrix(path("powder_sq.dat"))
+    powder_f = read_matrix(path("powder_fqt.dat"))
+    powder_s = read_matrix(path("powder_fs.dat"))
+    if powder_q.shape[0] != 1:
+        raise SystemExit("FAIL powder: expected one row, found %d" % powder_q.shape[0])
+    if not 2.5 - powder_dq - 1.0e-9 <= powder_q[0, 0] <= 2.5 + powder_dq + 1.0e-9:
+        raise SystemExit("FAIL powder: the label %.6f is outside the window" % powder_q[0, 0])
+    if abs(powder_q[0, 0] - 2.5) < 1.0e-6:
+        raise SystemExit("FAIL powder: the row is labelled with the requested |q|")
+    compare(powder_f[powder_f[:, 3] == 0.0, 4].reshape(-1, 1),
+            powder_q[:, 1].reshape(-1, 1), "powder: F(q,0) = S(q)", rtol=0.0)
+    compare(powder_s[powder_s[:, 3] == 0.0, 4].reshape(-1, 1), np.ones((1, 1)),
+            "powder: F_s(q,0) = 1", rtol=0.0)
+    run([exe, "static", "-i", diff_dump, "-w", "unit",
+         "--qmin", "%.6f" % (2.5 - powder_dq), "--qmax", "%.6f" % (2.5 + powder_dq),
+         "--nq", "1", path("powder_bin.dat")])
+    compare(powder_q[:, 1].reshape(-1, 1),
+            read_matrix(path("powder_bin.dat"))[:, 1].reshape(-1, 1),
+            "powder: equals the static bin of the same window", rtol=1.0e-9)
+    with open(path("powder_fqt.dat")) as handle:
+        header = "".join(line for line in handle if line.startswith("#"))
+    for needle in ("powder shell", "requested |q|", "mean |q|", "dq"):
+        if needle not in header:
+            raise SystemExit("FAIL powder: %r missing from the table header" % needle)
+    print("  ok   %-42s %s" % ("powder row, header and static bin",
+                               "%.6f, %d vectors in %d shells"
+                               % (powder_q[0, 0], *powder_counts(powder_run.stderr))))
+
+    # M is the number of lattice vectors the window should hold.  The width it
+    # implies is capped at Q/20, so targets past the cap give exactly the window
+    # of an explicit dq at the cap, while the default (M = 50) stays narrower.
+    default_run = run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5",
+                       "--dt", "1", "--maxframes", "8", "--lag", "1",
+                       "--sq", path("powder_def.dat")])
+    wide = run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5,500",
+                "--dt", "1", "--maxframes", "8", "--lag", "1", "--sq", path("powder_m.dat")])
+    for count, name in ((2000, "powder_cap_a.dat"), (20000, "powder_cap_b.dat")):
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints",
+             "powder:2.5,%d" % count, "--dt", "1", "--maxframes", "8", "--lag", "1",
+             "--sq", path(name)])
+    compare(read_matrix(path("powder_cap_a.dat")), read_matrix(path("powder_cap_b.dat")),
+            "powder: the window width is capped at Q/20", rtol=0.0)
+    compare(read_matrix(path("powder_cap_a.dat")), powder_q,
+            "powder: a capped M equals dq at the cap", rtol=0.0)
+    n_big, s_big = powder_counts(wide.stderr)
+    n_def, s_def = powder_counts(default_run.stderr)
+    if n_big <= n_def or s_big < s_def:
+        raise SystemExit("FAIL powder: M = 500 did not widen the window (%d <= %d)"
+                         % (n_big, n_def))
+    if abs(read_matrix(path("powder_def.dat"))[0, 1]
+           - read_matrix(path("powder_m.dat"))[0, 1]) < 1.0e-9:
+        raise SystemExit("FAIL powder: the default and M = 500 windows agree, test is vacuous")
+    if abs(read_matrix(path("powder_m.dat"))[0, 1]
+           - read_matrix(path("powder_cap_a.dat"))[0, 1]) < 1.0e-9:
+        raise SystemExit("FAIL powder: the capped and uncapped windows agree, test is vacuous")
+    print("  ok   %-42s %d vs %d lattice vectors"
+          % ("powder: M sets the window", n_big, n_def))
+
+    # A window that falls between two shells of a coarse lattice is widened to
+    # the nearest one, and the summary says so.
+    nearest_run = run([exe, "dyn", "-i", extreme, "-w", "unit", "--qpoints",
+                       "powder:0.5465", "--dt", "1", "--maxframes", "2", "--lag", "1",
+                       "--sq", path("powder_near.dat"),
+                       "--fqt-self", path("powder_near_fs.dat")])
+    if "window held no shell of its own" not in nearest_run.stderr:
+        raise SystemExit("FAIL powder: the nearest-shell fallback is not reported")
+    near_q = read_matrix(path("powder_near.dat"))
+    if near_q.shape[0] != 1:
+        raise SystemExit("FAIL powder: the fallback wrote %d rows" % near_q.shape[0])
+    # The two bracketing shells are 0.516701 and 0.576164, so the nearest one
+    # is the upper of the pair.
+    if abs(near_q[0, 0] - 0.576164) > 1.0e-5:
+        raise SystemExit("FAIL powder: the fallback label %.6f is not the nearest shell"
+                         % near_q[0, 0])
+    compare(read_matrix(path("powder_near_fs.dat"))[0:1, 4].reshape(-1, 1), np.ones((1, 1)),
+            "powder: fallback keeps F_s(q,0) = 1", rtol=0.0)
+    print("  ok   %-42s %s" % ("powder: nearest-shell fallback",
+                               "|q| = %.6f" % near_q[0, 0]))
+
+    # A box whose shells are coarser than the window, with the nearest shell
+    # *above* the request: finding it means looking past Q + dq, which is what
+    # the enumeration of the first attempt stops at.
+    coarse = path("powder_coarse.dump")
+    with open(coarse, "w") as handle:
+        for frame in range(3):
+            handle.write("ITEM: TIMESTEP\n%d\nITEM: NUMBER OF ATOMS\n4\n" % frame)
+            handle.write("ITEM: BOX BOUNDS pp pp pp\n0.0 4.0\n0.0 4.0\n0.0 4.0\n")
+            handle.write("ITEM: ATOMS id type xu yu zu\n")
+            for index, kind, x, y, z in ((1, 1, 0.5, 0.5, 0.5), (2, 1, 1.5, 1.5, 1.5),
+                                         (3, 2, 2.5, 2.5, 2.5), (4, 2, 3.0, 1.0, 2.0)):
+                handle.write("%d %d %.6f %.6f %.6f\n" % (index, kind, x, y, z))
+    coarse_run = run([exe, "dyn", "-i", coarse, "-w", "unit", "--qpoints", "powder:2.0",
+                      "--dt", "1", "--maxframes", "2", "--lag", "1",
+                      "--sq", path("powder_coarse_sq.dat")])
+    if "window held no shell of its own" not in coarse_run.stderr:
+        raise SystemExit("FAIL powder: the coarse-box fallback is not reported")
+    coarse_q = read_matrix(path("powder_coarse_sq.dat"))
+    # The box has |n|^2 = 1 at 1.5708 and |n|^2 = 2 at 2.2214, so the nearest
+    # shell to 2.0 is the one above it.
+    if abs(coarse_q[0, 0] - 2.221441) > 1.0e-5:
+        raise SystemExit("FAIL powder: the fallback took |q| = %.6f instead of the nearest "
+                         "shell at 2.221441" % coarse_q[0, 0])
+    run([exe, "dyn", "-i", coarse, "-w", "unit", "--qpoints", "grid:3.0", "--dt", "1",
+         "--maxframes", "2", "--lag", "1", "--sq", path("powder_coarse_grid.dat")])
+    coarse_grid = read_matrix(path("powder_coarse_grid.dat"))
+    row = coarse_grid[np.abs(coarse_grid[:, 0] - 2.221441) < 1.0e-5]
+    if row.shape[0] != 1:
+        raise SystemExit("FAIL powder: the coarse grid table has no shell at 2.221441")
+    compare(coarse_q[0:1, 1].reshape(-1, 1), row[0:1, 1].reshape(-1, 1),
+            "powder: the fallback averages the nearest shell", rtol=1.0e-9)
+    print("  ok   %-42s %s" % ("powder: nearest shell above the window",
+                               "|q| = %.6f" % coarse_q[0, 0]))
+
+    # The window is not derivable from the q dataset, so HDF5 records it.
+    if args.h5read:
+        run([exe, "dyn", "-i", diff_dump, "-w", "unit", "--qpoints", "powder:2.5,dq=0.05",
+             "--dt", "1", "--maxframes", "8", "--lag", "1", "--sqw", path("powder_sqw.h5")])
+        for name in ("q_requested", "dq", "n_lattice_vectors"):
+            value = run([args.h5read, path("powder_sqw.h5"), "attr", name]).stdout
+            if not value.strip():
+                raise SystemExit("FAIL powder: HDF5 attribute %s is missing" % name)
+        sampling = run([args.h5read, path("powder_sqw.h5"), "attr", "sampling"]).stdout
+        if "powder" not in sampling:
+            raise SystemExit("FAIL powder: HDF5 does not record the sampling")
+        print("  ok   %-42s %s" % ("powder: HDF5 window metadata",
+                                   "q_requested, dq, n_lattice_vectors"))
+
     # --- one reciprocal-lattice vector (--qpoints single) --------------------
     print("single reciprocal-lattice vector (--qpoints single)")
     single_base = ["--qpoints", "single:1,0,0", "--dt", "1", "--maxframes", "8",
@@ -2159,6 +2408,10 @@ def main():
          "dyn without a q sampling and without --chi4/--msd"),
         (["--qpoints", "grid:0", "--dt", "1", "--maxframes", "8"],
          "--qpoints grid with a zero qmax"),
+        (["--qpoints", "powder:2.5,80,dq=0.03", "--dt", "1", "--maxframes", "8"],
+         "powder with both M and dq"),
+        (["--qpoints", "powder:0", "--dt", "1", "--maxframes", "8"],
+         "powder with a zero radius"),
         (["--qpoints", "line:4,1,4,1,0,0", "--modes", "4",
           "--dt", "1", "--maxframes", "8"],
          "--modes with a q line"),

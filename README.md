@@ -136,7 +136,7 @@ $S(q)$ table of a `--qpoints` run goes to `--sq FILE`.
 
 | dyn option                    | meaning                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `-q, --qpoints SPEC`              | q sampling: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` (without it no q is sampled) |
+| `-q, --qpoints SPEC`              | q sampling: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX`, `powder:Q[,M\|,dq=VALUE]` or `single:N1,N2,N3` (without it no q is sampled) |
 | `--sq FILE`                 | the shell averaged $S(q)$ table of a `--qpoints` run                              |
 | `--modes N`                 | mode budget of `--qpoints grid` (0 = unlimited, the default)                  |
 | `--thin KIND`               | order of the grid thinning: `shells` (default) or `orbits`                  |
@@ -204,7 +204,9 @@ sqcalc dyn -i traj.dump -m 1:Si,2:O --dt 0.005 --maxframes 400 \
 For every frame the reciprocal methods (NUFFT and direct) evaluate the
 scattering amplitude on the reciprocal lattice of the dump box,
 $q = h b_1 + k b_2 + l b_3$ with $a_i \cdot b_j = 2\pi \delta_{ij}$
-(orthogonal and restricted triclinic boxes are supported):
+(orthogonal and triclinic boxes are supported; a strongly sheared cell keeps
+its modes and shells and loses only the orbit thinning, which the run summary
+reports):
 
 $$
 \rho(q) = \sum_j w_j \exp(i\, q \cdot r_j)

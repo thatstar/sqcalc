@@ -60,14 +60,22 @@ module sqc_modes
 
    !> Point group operations we can hold (the cubic group O_h has 48).
    integer, parameter :: max_ops = 48
-   !> Largest |n_i| explored when the lattice point group is looked for.
-   integer, parameter :: max_index = 4
+   !> Largest |n_i| explored when the lattice point group is looked for.  The
+   !! bootstrap box has to hold every lattice vector as long as the longest
+   !! basis vector, which grows with the skew of the cell: 4 covers
+   !! |a_i| <= 3 d_min (d_min the smallest interplanar spacing), 8 covers
+   !! about |a_i| <= 7 d_min.  Beyond that modes_build falls back to the
+   !! trivial group instead of refusing the cell.
+   integer, parameter :: max_index = 8
    !> Size of the Miller index box that is scanned.
    integer, parameter :: max_cand = (2*max_index + 1)**3
    !> Relative tolerance that puts two lattice vectors into one shell.
    real(rk), parameter :: shell_tol = 1.0e-6_rk
    !> Relative tolerance of the metric test M^T G M = G.
    real(rk), parameter :: gram_tol = 1.0e-7_rk
+   !> modes_point_group error code: the bootstrap box is too small for this
+   !! cell, which the caller may answer with the trivial group.
+   integer, parameter :: point_group_unbounded = 2
    !> Guard on the enumerated grid, in the spirit of the static path.
    integer(lk), parameter :: max_grid_points = 400000000_lk
 
@@ -81,6 +89,10 @@ module sqc_modes
       integer :: nshell_kept = 0
       !> Order of the lattice point group.
       integer :: nops = 0
+      !> True when the point group could not be found within `max_index` and
+      !! the trivial group was used instead: the modes are unaffected, but
+      !! orbit thinning cannot reduce anything and the caller should say so.
+      logical :: point_group_fallback = .false.
       !> Requested mode budget (0 = unlimited).
       integer :: budget = 0
       !> Thinning policy that was applied.
@@ -130,6 +142,7 @@ contains
       self%nshell = 0
       self%nops = 0
       self%nshell_kept = 0
+      self%point_group_fallback = .false.
       self%thinned = .false.
       self%budget_met = .true.
    end subroutine modes_finalize
@@ -141,6 +154,12 @@ contains
    !! with v_i . v_j = G_ij.  Only integer index vectors are ever combined, so
    !! the operations are integer by construction; the metric test is the only
    !! floating point comparison involved.
+   !!
+   !! The Miller index box that is scanned is a bootstrap, not a property of
+   !! the cell: a very skewed cell needs large indices before the search is
+   !! exhaustive.  When that happens the routine returns
+   !! `point_group_unbounded` so the caller can continue with the trivial
+   !! group, which costs only the orbit reduction.
    subroutine modes_point_group(cell, ops, nops, ierr, message)
       type(cell_t), intent(in) :: cell
       integer, intent(out) :: ops(3, 3, max_ops)
@@ -176,7 +195,7 @@ contains
       do i = 1, 3
          bound(i) = int(ceiling(blen*sqrt(sum(cell%a(:, i)**2))/two_pi)) + 1
          if (bound(i) > max_index) then
-            ierr = 1
+            ierr = point_group_unbounded
             write (message, '(a,i0,a)') 'the cell needs Miller indices up to ', &
                bound(i), ' to find its point group; the cell is too skewed'
             return
@@ -254,6 +273,10 @@ contains
    !! not fit (together with Gamma), they are kept anyway and `nmodes` comes
    !! out larger than `budget`.  The caller is expected to compare the two and
    !! say so in its summary.
+   !!
+   !! A cell too skewed for the point-group search is not an error here: the
+   !! build continues with the trivial group and sets
+   !! `point_group_fallback`, so only the orbit reduction is lost.
    subroutine modes_build(self, cell, qmax, include_gamma, budget, thin_kind, ierr, message)
       class(modes_t), intent(inout) :: self
       type(cell_t), intent(in) :: cell
@@ -284,7 +307,28 @@ contains
 
       allocate (self%ops(3, 3, max_ops))
       call modes_point_group(cell, self%ops, nops_local, ierr, message)
-      if (ierr /= 0) return
+      if (ierr == point_group_unbounded) then
+         ! The search box is a bootstrap for finding the symmetry operations,
+         ! not a requirement of the sampling: the mode set, the shells and the
+         ! +- reduction do not use the group at all.  Fall back to {E, -1}, the
+         ! group of a generic triclinic cell: inversion is always a symmetry of
+         ! the reciprocal lattice, so a +- pair keeps its multiplicity of two,
+         ! and every other orbit is a single vector.  The caller reports that
+         ! orbit thinning is off.
+         ierr = 0
+         message = ''
+         nops_local = 2
+         self%ops = 0
+         self%ops(1, 1, 1) = 1
+         self%ops(2, 2, 1) = 1
+         self%ops(3, 3, 1) = 1
+         self%ops(1, 1, 2) = -1
+         self%ops(2, 2, 2) = -1
+         self%ops(3, 3, 2) = -1
+         self%point_group_fallback = .true.
+      else if (ierr /= 0) then
+         return
+      end if
       self%nops = nops_local
 
       call modes_grid_count(cell, qmax, nfound, ierr, message)

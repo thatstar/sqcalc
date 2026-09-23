@@ -19,8 +19,11 @@ The `dyn` subcommand (`sqcalc dyn`) instead keeps the time axis, and its `--qpoi
 chooses the reciprocal space sampling: `line:NINT,S0,S1,DX,DY,DZ` for a q line,
 `shell:Q,low|medium|high` for the isotropic average over the sphere $|q| = Q$,
 `grid:QMAX` for every reciprocal-lattice vector up to $|q| = Q_{\max}$, or
-`single:N1,N2,N3` for one lattice vector of the box; leaving `--qpoints` out samples
-no q points.  Any of the q samplings supports the dynamic
+`powder:Q[,M|,dq=VALUE]` for the lattice vectors inside $Q \pm \Delta Q$
+averaged into one row, or `single:N1,N2,N3` for one lattice vector of the box;
+leaving `--qpoints` out samples no q points.  Use `powder:` (or `grid:`) for
+the coherent quantities: the `shell:` sphere converges only for $F_s$ and the
+other displacement based outputs.  Any of the q samplings supports the dynamic
 structure factor $S(q,\omega)$ (`--sqw`), the coherent intermediate scattering
 function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
 the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q
@@ -101,6 +104,10 @@ and `--dr` instead of the box sets the usable q range.
 * The reciprocal methods sample $q$ on the lattice of the dump box, so the box
   must be constant and the grid costs $(q_{\max} L)^3$; the Debye method needs
   no periodic box and wins for large, sparse systems.
+* A triclinic box is fine, including a strongly sheared one: the point group
+  of the lattice is searched inside a bootstrap box of Miller indices, and a
+  cell that needs larger indices keeps running with the trivial group (the
+  modes and shells stay exact, orbit thinning is off and the summary says so).
 * Choose that sampling from the box: `--qmin` is the smallest accessible $|q|$
   ($2\pi/L$ for a cubic box) and $\Delta q = (q_{\max}-q_{\min})/n_q$ must not
   undercut the spacing of the lattice, or shells come out empty and sqcalc

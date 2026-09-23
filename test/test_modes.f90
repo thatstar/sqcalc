@@ -30,6 +30,7 @@ program test_modes
    nfail = 0
    call check_cubic(nfail)
    call check_point_groups(nfail)
+   call check_skewed(nfail)
    call check_budget(nfail)
    call check_multi_orbit(nfail)
 
@@ -123,6 +124,68 @@ contains
       call check(m%nops == 2, 'triclinic: point group order is 2', nfail)
       call m%finalize()
    end subroutine check_point_groups
+
+   !> Cells too skewed for the point-group bootstrap box.
+   !!
+   !! The Miller index box of the symmetry search is a bootstrap, not a
+   !! property of the cell: the mode set, the shells and the +- reduction
+   !! never use the group.  A cell whose operations fit inside the box has to
+   !! find its {E, -1}; one that does not has to fall back to the trivial
+   !! group instead of failing, losing only the orbit reduction.
+   subroutine check_skewed(nfail)
+      integer, intent(inout) :: nfail
+      type(cell_t) :: cell
+      type(modes_t) :: m
+      real(rk) :: a(3, 3)
+      integer :: i, ierr
+      logical :: all_singletons
+      character(len=256) :: message
+
+      ! 4.0 x 14.3 x 18.6 A: the search needs Miller indices up to 6, which the
+      ! raised bound covers, so the cell keeps its point group.
+      a = 0.0_rk
+      a(:, 1) = [4.0_rk, 0.0_rk, 0.0_rk]
+      a(:, 2) = [3.0_rk, 14.0_rk, 0.0_rk]
+      a(:, 3) = [4.0_rk, 2.0_rk, 18.0_rk]
+      call cell%set_vectors(a)
+      call modes_build(m, cell, 1.0_rk, .true., 0, thin_none, ierr, message)
+      call check(ierr == 0, 'skewed: the raised bound accepts the cell ('// &
+                 trim(message)//')', nfail)
+      call check(.not. m%point_group_fallback, &
+                 'skewed: no fallback while the search box is wide enough', nfail)
+      call check(m%nops == 2, 'skewed: the cell keeps its {E, -1} group', nfail)
+      call m%finalize()
+
+      ! 2.0 x 15.3 x 18.6 A: the search would need indices past the box, so the
+      ! build continues with the trivial group.  The modes themselves stay
+      ! exact: 10 +- reduced vectors below |q| = 1 in 10 shells, plus Gamma.
+      a(:, 1) = [2.0_rk, 0.0_rk, 0.0_rk]
+      a(:, 2) = [3.0_rk, 15.0_rk, 0.0_rk]
+      a(:, 3) = [4.0_rk, 2.0_rk, 18.0_rk]
+      call cell%set_vectors(a)
+      call modes_build(m, cell, 1.0_rk, .true., 0, thin_none, ierr, message)
+      call check(ierr == 0, 'skewed: the fallback build succeeds ('// &
+                 trim(message)//')', nfail)
+      call check(m%point_group_fallback, 'skewed: the fallback is reported', nfail)
+      call check(m%nops == 2, 'skewed: the generic {E, -1} group is used', nfail)
+      call check(m%nmodes == 11, 'skewed: 10 +- modes plus Gamma', nfail)
+      call check(m%nshell == 10, 'skewed: 10 shells below qmax = 1', nfail)
+      ! Inversion is still a symmetry, so each +- pair keeps its multiplicity
+      ! of two and no other vector shares its orbit.  The Gamma point is not
+      ! part of a pair, so it is skipped.
+      all_singletons = .true.
+      do i = merge(2, 1, m%has_gamma), m%nmodes
+         if (m%orbit_mult(i) /= 2) all_singletons = .false.
+      end do
+      call check(all_singletons, 'skewed: every +- pair is one orbit of two', nfail)
+      ! The shells are still the distinct |q| of the lattice, so a shell holds
+      ! exactly the vectors of that radius.
+      do i = 1, m%nshell
+         call check(count(m%shell == i) >= 1, &
+                    'skewed: every shell holds at least one mode', nfail)
+      end do
+      call m%finalize()
+   end subroutine check_skewed
 
    !> The budget drops whole shells, keeps the ends and stays deterministic.
    subroutine check_budget(nfail)

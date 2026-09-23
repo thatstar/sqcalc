@@ -116,7 +116,9 @@ module sqc_structure_factor
       real(rk), allocatable :: partial_num(:, :, :)
       !> Human readable label of each type pair (for the partial columns).
       character(len=18), allocatable :: pair_label(:, :)
-      !> Number of (frame, mode) contributions per shell.
+      !> Number of lattice vectors each shell averages: the mode weights of the
+      !! dynamic grid sum up to it, and it is the divisor of the partial
+      !! columns (`sf_shell_vectors`).
       integer(lk), allocatable :: shell_count(:)
       !> Accumulated numerator and denominator per grid point.
       real(rk), allocatable :: gnum(:), gden(:)
@@ -700,11 +702,13 @@ contains
       frames = real(max(self%nframes, 1_lk), rk)
       value = 0.0_rk
       if (.not. allocated(self%partial_num)) return
-      ! The grid method sums over the modes of the shell, so the mode count must
-      ! be divided out (the total gets that from `den`).  Methods that evaluate
-      ! S(q) directly (Debye) leave shell_count at zero.
+      ! The grid and the dynamic lattice samplings sum the modes of the shell
+      ! weighted by their multiplicities, so the divisor is the number of
+      ! lattice vectors those modes stand for (the total gets its normalization
+      ! from `den`).  Methods that evaluate S(q) directly (Debye) leave
+      ! shell_count at zero.
       value = self%partial_num(ia, ib, shell) &
-              /(frames*real(self%natoms, rk)*real(max(sf_shell_modes(self, shell), 1), rk))
+              /(frames*real(self%natoms, rk)*real(max(sf_shell_vectors(self, shell), 1), rk))
       if (.not. self%faber_ziman) return
       xa = real(sf_count_type_of(self, ia), rk)/real(self%natoms, rk)
       xb = real(sf_count_type_of(self, ib), rk)/real(self%natoms, rk)
@@ -715,16 +719,16 @@ contains
       value = (value - merge(xa, 0.0_rk, ia == ib))/(xa*xb) + 1.0_rk
    end function sf_partial_value
 
-   !> Number of reciprocal lattice modes that contributed to a shell (0 when the
+   !> Number of reciprocal-lattice vectors a shell average covers (0 when the
    !! method does not use the reciprocal grid).
-   pure integer function sf_shell_modes(self, shell) result(n)
+   pure integer function sf_shell_vectors(self, shell) result(n)
       class(structure_factor_t), intent(in) :: self
       integer, intent(in) :: shell
       n = 0
       if (allocated(self%shell_count)) then
          if (shell >= 1 .and. shell <= size(self%shell_count)) n = int(self%shell_count(shell))
       end if
-   end function sf_shell_modes
+   end function sf_shell_vectors
 
    !> Number of atoms of a type id (helper for the partial normalization).
    pure integer function sf_count_type_of(self, type_id) result(n)

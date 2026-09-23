@@ -61,7 +61,7 @@ followed by the options of the subcommand that was asked about.
 
 | option | meaning |
 | --- | --- |
-| `-q, --qpoints SPEC` | $q$ sampling; without it no $q$ is sampled: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX` or `single:N1,N2,N3` |
+| `-q, --qpoints SPEC` | $q$ sampling; without it no $q$ is sampled: `line:NINT,S0,S1,DX,DY,DZ`, `shell:Q,ACC`, `grid:QMAX`, `powder:Q[,M\|,dq=VALUE]` or `single:N1,N2,N3` |
 | `--sq FILE` | the shell averaged $S(q)$ table of a `--qpoints` run |
 | `--dt VALUE` | time step of the trajectory (the LAMMPS `timestep`), required |
 | `--maxframes L` | correlation window in frames (the largest lag kept), required |
@@ -423,6 +423,13 @@ The modes are reduced in three steps, in this order:
   survive.  The kept shells are spread evenly over the q range and always
   include its two ends.
 
+The point group is found from the metric of the cell by searching integer
+operations inside a bootstrap box of Miller indices.  A cell sheared far
+enough to need indices outside that box is not refused: the search falls back
+to the trivial group, the modes and their shells stay exact, and the run
+summary says that orbit thinning is off.  A very skewed triclinic box is
+therefore usable, at the price of the orbit reduction.
+
 The tables are already the isotropic average: one row per lattice shell, at
 $q = (0,0,|q|)$, taken over the reciprocal-lattice vectors of that $|q|$ and
 weighted by their orbit multiplicities.  That is the object an
@@ -452,6 +459,57 @@ trajectory is not equilibrated or the system is not isotropic, and then
 neither the orbit reduction nor an isotropic correlation length may be
 trusted.  The per-mode numbers behind it are in the `S4` table of a
 `--keep-modes` run.
+
+#### A lattice-shell window (`powder:`)
+
+`powder:Q` averages every reciprocal-lattice vector with $|q|$ inside
+$Q \pm \Delta Q$ into one row, weighted by the multiplicity of each vector.
+That is the same estimator as the static table's bins, and it is the sampling
+the coherent quantities need: only a lattice vector carries a density
+amplitude that is independent of the periodic-image convention, whereas the
+Lebedev average of `shell:` converges only for quantities whose phase carries
+the displacement ($F_s$, MSD, $\chi_4$) and not for $S(q)$, $F(q,t)$ or
+$S(q,\omega)$.
+
+The half width follows from the number of lattice vectors the window should
+hold, $M$ (50 by default): with the reciprocal-lattice density $V/(2\pi)^3$ a
+window of half width $\Delta Q$ holds about $V Q^2 \Delta Q/\pi^2$ of them, so
+
+$$\Delta Q = \min\left(\frac{Q}{20}, \frac{\pi^2 M}{V Q^2}\right),$$
+
+and one of the two may be given: `powder:Q,M` sets $M$ while `powder:Q,dq=VALUE`
+fixes the half width instead (a line that carries both is refused, since each
+determines the other).  Writing $\Delta Q$ by hand is the natural way to match the $q$
+resolution of an experiment or of an analysis bin.
+
+```sh
+# the coherent dynamics at |q| = 2.5 1/A, averaged over the lattice shells
+sqcalc dyn -i traj.dump -w unit -q powder:2.5 --dt 0.005 --maxframes 400 \
+       --sq S_q.dat --fqt F_qt.dat --sqw S_qw.dat
+# the same, with an explicit window and a wider statistics
+sqcalc dyn -i traj.dump -w unit -q powder:2.5,dq=0.05 --dt 0.005 --maxframes 400 \
+       --sq S_q.dat
+```
+
+The row is labelled with the multiplicity weighted mean $\langle|q|\rangle$ of
+its vectors rather than with the requested $Q$, and the header names the
+window, the number of lattice vectors and shells it holds, and the offset
+$\langle|q|\rangle - Q$.  The static table bins the same vectors but labels
+its rows with the bin centre, so a static run with `--qmin Q-\Delta Q --qmax
+Q+\Delta Q --nq 1` gives the same numbers under a slightly different label.
+When the window falls between two shells of a coarse lattice it is widened to
+the nearest shell, which the summary reports; a $Q$ below the first lattice
+vector of the box is an error, since the box cannot resolve it.
+
+The run builds every lattice vector below $Q + \Delta Q$ and only zeroes the
+weight of the ones outside the window, so it pays for that whole enumeration:
+the cost is that of a `grid:` run up to $Q + \Delta Q$.  In an 18 A box at
+$|q| = 2.5$ the 48 vectors of the window still allocate 776 modes, and the
+enumeration grows with the box even though the window itself holds about $M$
+vectors; a band enumeration that touched only the window would remove that
+overhead.  `--modes`, `--thin` and `--keep-modes` belong to `grid:` and are
+refused here; use `--qpoints grid:QMAX --keep-modes` when the individual
+vectors are wanted.
 
 #### One lattice vector
 

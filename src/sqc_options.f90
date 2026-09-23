@@ -12,7 +12,8 @@ module sqc_options
    use sqc_structure_factor, only: method_nufft, method_direct, method_debye, norm_mean, &
                             norm_self, norm_natom
    use sqc_debye, only: debye_default_dr, debye_default_skin
-   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
+   use sqc_dynamics, only: dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single, &
+                           dyn_q_powder
    use sqc_modes, only: thin_none, thin_shells, thin_orbits
    use sqc_lebedev, only: lebedev_points, lebedev_order_from_name, &
                           lebedev_low, lebedev_medium, lebedev_high
@@ -119,6 +120,12 @@ module sqc_options
       integer :: shell_order = 0
       !> grid: the upper bound of |q|, the mode budget and the thinning policy.
       real(rk) :: grid_qmax = 0.0_rk
+      !> powder: the requested |q|, the target number of lattice vectors in
+      !! the window, and the half width when one was given.
+      real(rk) :: powder_q = 0.0_rk
+      integer :: powder_modes = 50
+      real(rk) :: powder_dq = 0.0_rk
+      logical :: powder_dq_given = .false.
       !> single: the Miller indices of the one lattice vector to sample.
       integer :: single_index(3) = 0
       integer :: modes = 0
@@ -857,13 +864,17 @@ contains
       else if (starts_with(spec, 'grid:')) then
          call parse_q_grid(self, spec(6:), ierr, message)
          if (ierr /= 0) return
+      else if (starts_with(spec, 'powder:')) then
+         call parse_q_powder(self, spec(8:), ierr, message)
+         if (ierr /= 0) return
       else if (starts_with(spec, 'single:')) then
          call parse_q_single(self, spec(8:), ierr, message)
          if (ierr /= 0) return
       else
          ierr = 1
          message = '--qpoints wants "line:NINT,S0,S1,DX,DY,DZ", '// &
-            '"shell:Q,low|medium|high", "grid:QMAX" or "single:N1,N2,N3"'
+            '"shell:Q,low|medium|high", "grid:QMAX", "powder:Q[,M|,dq=VALUE]" '// &
+            'or "single:N1,N2,N3"'
          return
       end if
    end subroutine parse_q_sampling
@@ -999,6 +1010,80 @@ contains
       self%grid_qmax = qmax
       self%q_mode = dyn_q_grid
    end subroutine parse_q_grid
+
+   !> Parse "Q[,M][,dq=VALUE]" of `--qpoints powder`.
+   !!
+   !! Q is the radius of the shell in 1/A.  Every reciprocal-lattice vector
+   !! with |q| inside Q +- dq is averaged into one row with its multiplicity,
+   !! which is the sampling the coherent quantities need: only lattice vectors
+   !! carry amplitudes that are independent of the periodic-image convention.
+   !! M is the target number of lattice vectors in the window (50 by default)
+   !! and `dq=VALUE` fixes the half width instead, in 1/A.
+   subroutine parse_q_powder(self, spec, ierr, message)
+      type(options_t), intent(inout) :: self
+      character(len=*), intent(in) :: spec
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=48) :: fields(3)
+      real(rk) :: radius, dq
+      integer :: n, j, nmodes
+      logical :: modes_given
+
+      ierr = 0
+      message = ''
+      fields = ' '
+      modes_given = .false.
+      call split_fields(spec, fields, n)
+      if (n < 1 .or. n > 3) then
+         ierr = 1
+         message = '--qpoints powder wants Q, or Q,M, or Q,dq=VALUE, e.g. '// &
+            '--qpoints powder:2.5,80'
+         return
+      end if
+      read (fields(1), *, iostat=ierr) radius
+      if (ierr /= 0) then
+         ierr = 1
+         message = 'cannot read "'//trim(fields(1))//'" as the |q| of --qpoints powder'
+         return
+      end if
+      if (radius <= 0.0_rk) then
+         ierr = 1
+         message = '--qpoints powder needs a positive |q| radius'
+         return
+      end if
+      do j = 2, n
+         if (starts_with(trim(fields(j)), 'dq=')) then
+            read (fields(j)(4:), *, iostat=ierr) dq
+            if (ierr /= 0 .or. dq <= 0.0_rk) then
+               ierr = 1
+               message = '--qpoints powder needs a positive dq= window half width'
+               return
+            end if
+            self%powder_dq = dq
+            self%powder_dq_given = .true.
+         else
+            read (fields(j), *, iostat=ierr) nmodes
+            if (ierr /= 0 .or. nmodes < 1) then
+               ierr = 1
+               message = '--qpoints powder wants a positive number of lattice '// &
+                  'vectors, e.g. powder:2.5,80'
+               return
+            end if
+            self%powder_modes = nmodes
+            modes_given = .true.
+         end if
+      end do
+      ! M and dq= describe the same knob from two sides, so a line that carries
+      ! both would silently drop one of them.
+      if (modes_given .and. self%powder_dq_given) then
+         ierr = 1
+         message = '--qpoints powder takes either a number of lattice vectors '// &
+            'or dq=, not both (M sets the width, dq= fixes it)'
+         return
+      end if
+      self%powder_q = radius
+      self%q_mode = dyn_q_powder
+   end subroutine parse_q_powder
 
    !> Parse "N1,N2,N3" of `--qpoints single`.
    !!
@@ -1261,6 +1346,9 @@ contains
             lebedev_points(lebedev_low), ', ', lebedev_points(lebedev_medium), ' and ', &
             lebedev_points(lebedev_high), ' point rules)'
          write (unit, '(a)') '                      grid:QMAX  every reciprocal lattice vector |q| <= QMAX'
+         write (unit, '(a)') '                      powder:Q[,M|,dq=VALUE]  the lattice vectors with'
+         write (unit, '(a)') '                      |q| = Q +- dq, averaged into one row (M, default'
+         write (unit, '(a)') '                      50, sets dq; dq=VALUE fixes the half width)'
          write (unit, '(a)') '                      single:N1,N2,N3  one lattice vector of the box'
          write (unit, '(a)') '      --sq FILE       the shell averaged S(q) table of a --qpoints run'
          write (unit, '(a)') '      --dt VALUE      MD time step of the trajectory (required)'

@@ -33,6 +33,7 @@
 module sqc_dynamics
    use sqc_kinds
    use sqc_output, only: format_text, format_hdf5
+   use sqc_cell, only: cell_t
    use sqc_dump, only: frame_t
    use sqc_weights, only: weight_scheme_t
    use sqc_structure_factor, only: structure_factor_t, sf_shared_setup, sf_alloc_partials, &
@@ -52,7 +53,8 @@ module sqc_dynamics
    private
 
    public :: dynamics_structure_factor_t, &
-             dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
+             dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single, &
+             dyn_q_powder
 
    !> q sampling modes of a dynamic run (`--qpoints`).
    integer, parameter :: dyn_q_none = 0
@@ -60,6 +62,8 @@ module sqc_dynamics
    integer, parameter :: dyn_q_shell = 2
    integer, parameter :: dyn_q_grid = 3
    integer, parameter :: dyn_q_single = 4
+   !> A window of lattice shells around a requested |q|, averaged into one row.
+   integer, parameter :: dyn_q_powder = 5
 
    !> Which quantity a writer is asked for.
    integer, parameter :: dyn_sqw = 1
@@ -91,6 +95,9 @@ module sqc_dynamics
       integer :: grid_thin = thin_none
       integer :: grid_nops = 0
       integer :: grid_nshell = 0
+      !> True when the skew of the cell exceeded the point-group search box,
+      !! so the modes are exact but the orbit reduction is unavailable.
+      logical :: grid_group_fallback = .false.
       integer :: grid_nshell_kept = 0
       logical :: grid_thinned = .false.
       logical :: grid_budget_met = .true.
@@ -126,6 +133,22 @@ module sqc_dynamics
       !> Modes of the grid before the rows were collapsed onto the shells, and
       !! whether the per-mode rows were kept instead.
       integer :: grid_nmodes = 0
+      !> Lattice-shell window (`dyn_q_powder`): the requested |q|, the target
+      !! number of lattice vectors in the window, and the half width when the
+      !! caller fixed one instead.
+      real(rk) :: powder_q = 0.0_rk
+      integer :: powder_modes = 0
+      real(rk) :: powder_dq = 0.0_rk
+      logical :: powder_dq_given = .false.
+      !> What the window came out to be, for the header and the summary: the
+      !! multiplicity weighted mean |q| of its vectors, the half width that
+      !! was used, how many lattice vectors and shells it holds, and whether
+      !! it had to be widened to the nearest shell.
+      real(rk) :: powder_qmean = 0.0_rk
+      real(rk) :: powder_dq_used = 0.0_rk
+      integer :: powder_vectors = 0
+      integer :: powder_nshell = 0
+      logical :: powder_nearest = .false.
       logical :: keep_modes = .false.
       !> Isotropy probe of a grid run: at the lag of the chi4 peak, the S4
       !! values of the modes that share the smallest lattice shell.  Their
@@ -240,6 +263,9 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk) :: u(3), norm_u, s_i
+      !! Lattice-shell window bookkeeping (dyn_q_powder).
+      real(rk) :: qmax_use, dq_use, pi
+      integer :: budget_use, thin_use
       real(rk), allocatable :: kept_q(:, :), kept_w(:)
       integer(lk) :: npts
       integer :: i
@@ -247,6 +273,7 @@ contains
 
       ierr = 0
       message = ''
+      pi = acos(-1.0_rk)
       call sf_shared_setup(self, frame, scheme, ierr, message)
       if (ierr /= 0) return
 
@@ -335,54 +362,56 @@ contains
          self%shell_dq = 0.0_rk
          self%qmin = self%shell_q
          self%qmax = self%shell_q
-      case (dyn_q_grid)
+      case (dyn_q_grid, dyn_q_powder)
          ! Reciprocal-lattice sampling.  Only a lattice vector carries a
          ! density amplitude that is independent of how the periodic images
          ! are chosen, so this is the sampling the OZ fit of S4(q,t) needs;
-         ! the modes are one output row each, exactly like the q line.
-         call modes_build(grid, frame%cell, self%grid_qmax, .true., self%grid_budget, &
-                          self%grid_thin, ierr, message)
-         if (ierr /= 0) return
+         ! the modes are one output row each, exactly like the q line.  The
+         ! `powder` variant averages a window of shells around the requested
+         ! |q| into a single row instead (see below).
+         qmax_use = self%grid_qmax
+         dq_use = 0.0_rk
+         budget_use = self%grid_budget
+         thin_use = self%grid_thin
+         if (self%q_mode == dyn_q_powder) then
+            ! The window half width follows from the target number of lattice
+            ! vectors: the reciprocal-lattice density is V/(2 pi)^3 and a
+            ! window of half width dQ at |q| = Q holds about
+            ! V Q^2 dQ / pi^2 of them.  The cap keeps the q resolution from
+            ! collapsing in a small box; a caller who fixed dq gets it as is.
+            dq_use = self%powder_dq
+            if (.not. self%powder_dq_given) then
+               dq_use = min(self%powder_q/20.0_rk, &
+                            pi**2*real(max(self%powder_modes, 1), rk)/ &
+                            (frame%cell%volume*self%powder_q**2))
+            end if
+            qmax_use = self%powder_q + dq_use
+            ! Thinning would bias the average the window is meant to take, and
+            ! the window width is the knob that controls the cost.
+            budget_use = 0
+            thin_use = thin_none
+         end if
+         call modes_build(grid, frame%cell, qmax_use, self%q_mode == dyn_q_grid, &
+                          budget_use, thin_use, ierr, message)
+         if (ierr /= 0) then
+            if (self%q_mode == dyn_q_powder .and. &
+                index(message, 'no reciprocal lattice points') > 0) then
+               write (message, '(a,f0.4,a,f0.4,a)') 'no reciprocal-lattice vector within |q| = ', &
+                  self%powder_q - dq_use, ' .. ', self%powder_q + dq_use, &
+                  ' 1/A; the box cannot resolve that shell'
+            end if
+            return
+         end if
          if (grid%nmodes < 1) then
             ierr = 1
             message = 'the reciprocal-lattice grid came out empty'
             return
          end if
-         self%nmodes = int(grid%nmodes, lk)
-         allocate (self%qvec(3, self%nmodes), self%qlen(self%nmodes), &
-                   self%shell(self%nmodes), self%gidx(self%nmodes), &
-                   self%shell_radii(self%nmodes), self%orbit_mult(self%nmodes), &
-                   self%grid_shell(self%nmodes), self%grid_orbit(self%nmodes))
-         do i = 1, int(self%nmodes)
-            self%qvec(:, i) = grid%qvec(:, i)
-            self%qlen(i) = grid%qlen(i)
-            self%shell_radii(i) = grid%qlen(i)
-            self%shell(i) = i
-            self%gidx(i) = int(i, lk)
-            self%orbit_mult(i) = grid%orbit_mult(i)
-            self%grid_shell(i) = grid%shell(i)
-            self%grid_orbit(i) = grid%orbit(i)
-         end do
-         ! The lattice shells are not evenly spaced, so the rows carry their
-         ! own |q| instead of the qmin + (s-1/2) dq formula.
-         self%label_by_shell_radius = .true.
-         self%shell_dq = 0.0_rk
-         self%qmin = minval(self%qlen)
-         self%qmax = maxval(self%qlen)
-         self%grid_nops = grid%nops
-         self%grid_nshell = grid%nshell
-         self%grid_nshell_kept = grid%nshell_kept
-         self%grid_thinned = grid%thinned
-         self%grid_budget_met = grid%budget_met
-         self%grid_nmodes = int(self%nmodes)
-         ! The separable phase evaluation needs the Miller indices and the
-         ! reciprocal basis, both of which the grid builder already has.
-         allocate (self%mode_index(3, self%nmodes))
-         self%mode_index = grid%hkl
-         do i = 1, 3
-            self%index_max(i) = maxval(abs(grid%hkl(i, :)))
-         end do
-         self%recip = frame%cell%b
+         call dyn_adopt_modes(self, grid, frame%cell)
+         if (self%q_mode == dyn_q_powder) then
+            call dyn_powder_select(self, grid, frame%cell, dq_use, ierr, message)
+            if (ierr /= 0) return
+         end if
          call grid%finalize()
       case (dyn_q_single)
          ! One reciprocal-lattice vector, built from its Miller indices so that
@@ -422,6 +451,160 @@ contains
 
       call self%method_setup(frame, scheme, ierr, message)
    end subroutine dyn_configure
+
+   !> Copy a reciprocal-lattice mode set into the run.
+   !!
+   !! The modes, their shells and orbits, the Miller indices and the reciprocal
+   !! basis all come from the grid builder, so every lattice sampling (grid,
+   !! powder, single) shares this one adoption step.  The caller finalizes the
+   !! builder afterwards; a sampling that has to re-enumerate calls this again
+   !! with the new set.
+   subroutine dyn_adopt_modes(self, grid, cell)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      type(modes_t), intent(in) :: grid
+      type(cell_t), intent(in) :: cell
+      integer :: i
+
+      self%nmodes = int(grid%nmodes, lk)
+      self%qvec = grid%qvec
+      self%qlen = grid%qlen
+      self%shell_radii = grid%qlen
+      self%orbit_mult = grid%orbit_mult
+      self%grid_shell = grid%shell
+      self%grid_orbit = grid%orbit
+      self%shell = [(i, i = 1, int(self%nmodes))]
+      self%gidx = [(int(i, lk), i = 1, int(self%nmodes))]
+      ! The lattice shells are not evenly spaced, so the rows carry their own
+      ! |q| instead of the qmin + (s-1/2) dq formula.
+      self%label_by_shell_radius = .true.
+      self%shell_dq = 0.0_rk
+      self%qmin = minval(self%qlen)
+      self%qmax = maxval(self%qlen)
+      self%grid_nops = grid%nops
+      self%grid_nshell = grid%nshell
+      self%grid_group_fallback = grid%point_group_fallback
+      self%grid_nshell_kept = grid%nshell_kept
+      self%grid_thinned = grid%thinned
+      self%grid_budget_met = grid%budget_met
+      self%grid_nmodes = int(self%nmodes)
+      ! The separable phase evaluation needs the Miller indices and the
+      ! reciprocal basis, both of which the grid builder already has.
+      self%mode_index = grid%hkl
+      do i = 1, 3
+         self%index_max(i) = maxval(abs(grid%hkl(i, :)))
+      end do
+      self%recip = cell%b
+   end subroutine dyn_adopt_modes
+
+   !> Weight the modes of a powder window and fill its report fields.
+   !!
+   !! `grid` holds the lattice vectors within `dq` of the requested |q|, which
+   !! is the band the run pays for.  Only whole shells can be averaged, so a
+   !! window that falls between two of them has to fall back on the nearest
+   !! one.  That search re-enumerates the lattice up to `2 Q`: the shell above
+   !! the request is not part of the window build, and without it the nearest
+   !! shell below the request would win even when a closer one sits just above.
+   subroutine dyn_powder_select(self, grid, cell, dq, ierr, message)
+      class(dynamics_structure_factor_t), intent(inout) :: self
+      type(modes_t), intent(inout) :: grid
+      type(cell_t), intent(in) :: cell
+      real(rk), intent(inout) :: dq
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      real(rk) :: stol, dnear, wsum, qsum
+      integer :: i, s, sbest, nkeep_o, nshell_used
+      logical :: averaged
+
+      ierr = 0
+      message = ''
+      stol = 1.0e-6_rk*max(self%powder_q, 1.0_rk)
+      sbest = 0
+      dnear = huge(1.0_rk)
+      do s = 1, grid%nshell
+         if (abs(grid%shell_q(s) - self%powder_q) < dnear) then
+            dnear = abs(grid%shell_q(s) - self%powder_q)
+            sbest = s
+         end if
+      end do
+      self%powder_nearest = dnear > dq + stol
+      if (self%powder_nearest) then
+         ! The window held no shell of its own: widen the search and average
+         ! exactly the nearest shell, rather than a band that would also take
+         ! in whatever else lies between it and the request.
+         call modes_build(grid, cell, 2.0_rk*self%powder_q, .false., 0, &
+                          thin_none, ierr, message)
+         ! The first build already found a vector within `Q + dq` and this bound
+         ! is wider, so the enumeration cannot come back empty here: whatever
+         ! failure arrives (the grid size limit, say) is its own and keeps its
+         ! own message.
+         if (ierr /= 0) return
+         call dyn_adopt_modes(self, grid, cell)
+         dnear = huge(1.0_rk)
+         sbest = 0
+         do s = 1, grid%nshell
+            if (abs(grid%shell_q(s) - self%powder_q) < dnear) then
+               dnear = abs(grid%shell_q(s) - self%powder_q)
+               sbest = s
+            end if
+         end do
+         dq = dnear + stol
+      end if
+      if (sbest < 1) then
+         ierr = 1
+         message = 'the lattice shell window came out empty'
+         return
+      end if
+
+      ! Keep every mode but weight only the ones the row averages: the
+      ! single-row collapse of dyn_shell_average then averages exactly them,
+      ! and the sum rules stay exact because numerator and denominator carry
+      ! the same weights.  The weight of a mode is its share of the orbit it
+      ! stands for (an orbit lies in one shell, so its shares add up to the
+      ! multiplicity of the vector), which makes the row an average over the
+      ! lattice vectors of the window rather than over the modes.
+      allocate (self%mode_weight(self%nmodes))
+      self%mode_weight = 0.0_rk
+      do i = 1, int(self%nmodes)
+         s = self%grid_shell(i)
+         if (s < 1) cycle
+         if (self%powder_nearest) then
+            averaged = s == sbest
+         else
+            averaged = abs(grid%shell_q(s) - self%powder_q) <= dq + stol
+         end if
+         if (.not. averaged) cycle
+         nkeep_o = count(self%grid_orbit == self%grid_orbit(i))
+         self%mode_weight(i) = real(self%orbit_mult(i), rk)/real(max(nkeep_o, 1), rk)
+      end do
+      wsum = sum(self%mode_weight)
+      if (wsum <= 0.0_rk) then
+         ierr = 1
+         message = 'the lattice shell window came out empty'
+         return
+      end if
+      qsum = 0.0_rk
+      do i = 1, int(self%nmodes)
+         qsum = qsum + self%mode_weight(i)*self%qlen(i)
+      end do
+      self%powder_qmean = qsum/wsum
+      self%powder_dq_used = dq
+      self%powder_vectors = nint(wsum)
+      nshell_used = 0
+      do s = 1, grid%nshell
+         if (any(self%mode_weight > 0.0_rk .and. self%grid_shell == s)) &
+            nshell_used = nshell_used + 1
+      end do
+      self%powder_nshell = nshell_used
+      ! The row carries the weighted mean |q|.  The writers label a row as
+      ! qmin + (s - 1/2) dq when the shells are evenly spaced (what the Lebedev
+      ! shell does), so the mean goes there; the window itself is reported
+      ! through the powder fields.
+      self%shell_q = self%powder_qmean
+      self%shell_dq = 0.0_rk
+      self%qmin = self%powder_qmean
+      self%qmax = self%powder_qmean
+      self%label_by_shell_radius = .false.
+   end subroutine dyn_powder_select
 
    !> Species bookkeeping, weights per q and the correlation buffers.
    subroutine dyn_setup(self, frame, scheme, ierr, message)
@@ -1138,9 +1321,11 @@ contains
         end do
       end if
 
-      ! A shell has one |q| and many directions, so its modes collapse into the
-      ! single row that every writer expects.
-      if (self%q_mode == dyn_q_shell) call dyn_shell_average(self)
+      ! A shell has one |q| and many directions, and a lattice window averages
+      ! a set of shells: both collapse into the single row every writer
+      ! expects, weighted by the mode weights the setup left behind.
+      if (self%q_mode == dyn_q_shell .or. self%q_mode == dyn_q_powder) &
+         call dyn_shell_average(self)
       if (self%q_mode == dyn_q_grid .and. self%s4_enabled) call dyn_isotropy_probe(self)
       ! Every downstream use of a grid wants the isotropic average: the OZ fit
       ! of S4(q,t), the powder average of F(q,t), the isotropic S(q,w).  A run
@@ -1260,7 +1445,12 @@ contains
          allocate (v1(nrow))
          v1 = 0.0_rk
          do im = 1, int(self%nmodes)
-            v1(row_of(im)) = v1(row_of(im)) + 1.0_rk
+            ! The partial columns divide by this count, so it has to be the
+            ! number of lattice vectors the row averages: the weighted sum of
+            ! the modes, not their number.  A +- reduced mode stands for two or
+            ! more vectors (its `weight` is the orbit share), and the partial
+            ! numerator carries the same weights.
+            v1(row_of(im)) = v1(row_of(im)) + weight(im)
          end do
          deallocate (self%shell_count)
          allocate (self%shell_count(nrow))
@@ -1423,6 +1613,13 @@ contains
    !! Every mode of the shell has the same |q|, so each output is the average
    !! `sum_k w_k X(q_k) / sum_k w_k` over the Lebedev directions and the shell
    !! can share the single-row layout of a one point q line.
+   !!
+   !! The same collapse serves the lattice-shell window (`dyn_q_powder`), where
+   !! the modes are the reciprocal-lattice vectors of a band of shells and
+   !! `w_k` is the orbit multiplicity of each of them: the modes the window
+   !! excludes carry a zero weight, so the sum is the multiplicity weighted
+   !! average over the lattice vectors inside the window.  The row is labelled
+   !! with `shell_q`, which the setup sets to the weighted mean |q|.
    !!
    !! The static table is stored as the unnormalized `num(q)` over a per-mode
    !! `den(q)`, but the average is taken over the *normalized* S(q) of every
@@ -1606,6 +1803,14 @@ contains
          allocate (self%fqt_self_partial(1, 0:self%nsteps, self%nspecies))
          self%fqt_self_partial(1, :, :) = keep3(1, :, :)
       end if
+      ! The per-mode bookkeeping of a lattice sampling does not describe a
+      ! single row: drop it rather than leave arrays whose length the type no
+      ! longer agrees on.  Both are unallocated on the Lebedev path, so this
+      ! is a no-op there.
+      if (allocated(self%shell_radii)) deallocate (self%shell_radii)
+      if (allocated(self%grid_shell)) deallocate (self%grid_shell)
+      if (allocated(self%grid_orbit)) deallocate (self%grid_orbit)
+      if (allocated(self%orbit_mult)) deallocate (self%orbit_mult)
    end subroutine dyn_shell_average
 
    !> One-sided spectrum of a real, even correlation function.
@@ -2083,6 +2288,19 @@ contains
             ' after the +- reduction)'
          return
       end if
+      if (self%q_mode == dyn_q_powder) then
+         write (unit, '(a,f0.6,a,f0.6,a,i0,a,i0,a)') '# q powder shell: window ', &
+            self%powder_q - self%powder_dq_used, ' ~ ', self%powder_q + self%powder_dq_used, &
+            ' 1/A holds ', self%powder_vectors, ' lattice vectors in ', &
+            self%powder_nshell, ' shells'
+         write (unit, '(a,f0.6,a,f0.6,a,f0.6,a,f0.6,a)') '# requested |q| ', self%powder_q, &
+            ', mean |q| ', self%powder_qmean, ', dq ', self%powder_dq_used, ', offset ', &
+            self%powder_qmean - self%powder_q, ' 1/A'
+         if (self%powder_nearest) then
+            write (unit, '(a)') '# the window held no shell of its own; the nearest one was used'
+         end if
+         return
+      end if
       if (self%q_mode == dyn_q_grid) then
          if (self%keep_modes) then
             write (unit, '(a,f10.6,a,i0,a,i0,a,i0,a)') '# q grid |q| <= ', self%grid_qmax, &
@@ -2136,6 +2354,8 @@ contains
       select case (self%q_mode)
       case (dyn_q_grid)
          sampling = 'grid'
+      case (dyn_q_powder)
+         sampling = 'powder'
       case (dyn_q_single)
          sampling = 'single'
       case (dyn_q_shell)
@@ -2190,7 +2410,8 @@ contains
                                self%nframes, self%frame_dt, maxframes_use, self%lag_stride, &
                                trim(wlabel), trim(nlabel), overlap, stride_use, &
                                effective_maxframes_use, trim(sampling), self%grid_budget, &
-                               self%grid_thinned, self%single_index, ierr, message)
+                               self%grid_thinned, self%single_index, self%powder_q, &
+                               self%powder_dq_used, self%powder_vectors, ierr, message)
       deallocate (q4, labels, count_use)
    end subroutine dyn_write_hdf5
 #endif

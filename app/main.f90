@@ -14,7 +14,8 @@ program sqcalc
    use sqc_elements, only: element_table
    use sqc_structure_factor
    use sqc_dynamics, only: dynamics_structure_factor_t, &
-                           dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single
+                           dyn_q_none, dyn_q_line, dyn_q_shell, dyn_q_grid, dyn_q_single, &
+                           dyn_q_powder
    use sqc_debye, only: debye_structure_factor_t
    use sqc_finufft, only: finufft_opts_is_consistent
 #ifdef SQC_ENABLE_CUDA
@@ -103,6 +104,10 @@ program sqcalc
          method%grid_qmax = opts%grid_qmax
          method%grid_budget = opts%modes
          method%grid_thin = opts%thin
+         method%powder_q = opts%powder_q
+         method%powder_modes = opts%powder_modes
+         method%powder_dq = opts%powder_dq
+         method%powder_dq_given = opts%powder_dq_given
          method%keep_modes = opts%keep_modes
          method%single_index = opts%single_index
          method%maxframes = opts%maxframes
@@ -333,6 +338,16 @@ program sqcalc
          type is (dynamics_structure_factor_t)
             write (shell_unit, '(a,f12.6,a)') '# shell average over |q| = ', &
                method%shell_q, ' 1/A (Lebedev quadrature, one row)'
+         end select
+      end if
+      if (opts%command == cmd_dyn .and. opts%q_mode == dyn_q_powder) then
+         select type (method)
+         type is (dynamics_structure_factor_t)
+            write (shell_unit, '(a,f0.6,a,f0.6,a,i0,a,i0,a,f0.6,a)') &
+               '# powder shell average: window ', method%powder_q - method%powder_dq_used, &
+               ' ~ ', method%powder_q + method%powder_dq_used, ' 1/A, ', &
+               method%powder_vectors, ' lattice vectors in ', method%powder_nshell, &
+               ' shells, mean |q| = ', method%powder_qmean, ' 1/A'
          end select
       end if
       if (opts%command == cmd_dyn .and. opts%q_mode == dyn_q_grid) then
@@ -579,6 +594,15 @@ contains
             write (error_unit, '(a,f0.4,a,i0,a,i0,a)') '  q shell    : |q| = ', m%shell_q, &
                ' 1/A, Lebedev order ', m%shell_order, ' (', m%nmodes, &
                ' directions, +- pairs merged)'
+         case (dyn_q_powder)
+            write (error_unit, '(a,f0.4,a,f0.4,a,i0,a,i0,a,f0.4,a)') '  q powder   : |q| = ', &
+               m%powder_q, ' 1/A +- ', m%powder_dq_used, ', ', m%powder_vectors, &
+               ' lattice vectors in ', m%powder_nshell, ' shells, mean |q| = ', &
+               m%powder_qmean, ' 1/A'
+            if (m%powder_nearest) then
+               write (error_unit, '(a)') '  note       : the window held no shell of its '// &
+                  'own; the nearest one was used'
+            end if
          case (dyn_q_grid)
             if (m%grid_nshell_kept < m%grid_nshell) then
                write (error_unit, '(a,f0.4,a,i0,a,i0,a,i0,a,i0,a)') '  q grid     : |q| <= ', &
@@ -592,6 +616,11 @@ contains
             if (m%grid_thinned .and. .not. m%grid_budget_met) then
                write (error_unit, '(a,i0,a,i0,a)') '  note       : --modes ', m%grid_budget, &
                   ' could not be met; the two end shells alone need ', m%nmodes, ' modes'
+            end if
+            if (m%grid_group_fallback) then
+               write (error_unit, '(a)') '  note       : the lattice point group needs '// &
+                  'larger Miller indices than the search box; the modes are exact, '// &
+                  'but orbit thinning is off'
             end if
          case (dyn_q_single)
             write (error_unit, '(a,3(i0,1x),a,f0.4,a)') '  q single   : n = (', &
@@ -680,6 +709,8 @@ contains
             text = 'dynamic structure factor on the reciprocal grid'
          case (dyn_q_single)
             text = 'dynamic structure factor at one lattice vector'
+         case (dyn_q_powder)
+            text = 'dynamic structure factor averaged over a window of lattice shells'
          case default
             text = 'overlap dynamics (average overlap and chi4)'
          end select
