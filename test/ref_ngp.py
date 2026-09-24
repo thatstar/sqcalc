@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ref_sqw import read_dump, unwrap_frames  # noqa: E402
+from ref_sqw import load_frames  # noqa: E402
 
 
 def non_gaussian(frames, maxframes, lag, stride):
@@ -84,7 +84,7 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    frames = unwrap_frames(list(read_dump(args.input)))
+    frames = load_frames(args.input)
     total, partial, species, _ = non_gaussian(
         frames, args.maxframes, args.lag, args.stride)
     nsteps = args.maxframes // args.stride

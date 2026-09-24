@@ -656,7 +656,7 @@ contains
                ' dump frames, effective maxframes ', m%effective_maxframes, ' (requested ', &
                m%maxframes, ')'
             if (m%effective_maxframes /= m%maxframes) then
-               write (error_unit, '(a)') '  note       : the S4/chi4/F_s window was reduced to a '// &
+               write (error_unit, '(a)') '  note       : the S4/chi4/F_s/MSD/NGP window was reduced to a '// &
                   'multiple of --stride; the coherent F(q,t)/S(q,w) window is unchanged'
             end if
             write (error_unit, '(a,f0.4,a,f0.4,a)') '  buffer     : ', &

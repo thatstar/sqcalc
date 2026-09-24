@@ -2183,11 +2183,23 @@ def main():
 
     # --- non-Gaussian parameter (--ngp) ------------------------------------
     print("non-Gaussian parameter (--ngp)")
-    ref_ngp = os.path.join(HERE, "ref_ngp.py")
+    # The reference cases ride the batched runner, so the 1000-frame dump is
+    # parsed once instead of once per case.
     run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
          "--ngp", path("ngp.dat"), "--sq", path("ngp_sq.dat")])
-    run([sys.executable, ref_ngp, "--input", diff_dump, "--maxframes", "8",
-         "--lag", "1", "--stride", "1", "--dt", "1", "--output", path("ngp_ref.dat")])
+    ref("ngp", "--input", diff_dump, "--maxframes", "8", "--lag", "1",
+        "--stride", "1", "--dt", "1", "--output", path("ngp_ref.dat"))
+    # stride and origin lag against the reference, queued with the lag 1 case.
+    ngp_strides = (2, 3)
+    for stride in ngp_strides:
+        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
+             "--stride", str(stride), "--ngp", path("ngp_stride_%d.dat" % stride),
+             "--sq", path("ngp_stride_sq.dat")])
+        ref("ngp", "--input", diff_dump, "--maxframes", "8", "--lag", "3",
+            "--stride", str(stride), "--dt", "1",
+            "--output", path("ngp_stride_ref_%d.dat" % stride))
+    flush_refs()
+
     ngp = read_matrix(path("ngp.dat"))
     compare(ngp, read_matrix(path("ngp_ref.dat")), "alpha2(t) vs numpy reference", rtol=1.0e-9)
     if float(np.max(np.abs(ngp[0, 1:]))) > 1.0e-12:
@@ -2201,6 +2213,10 @@ def main():
     if worst_ngp > 0.02:
         raise SystemExit("FAIL Gaussian alpha2 reached %.4f" % worst_ngp)
     print("  ok   %-42s max |alpha2| %.4f" % ("Gaussian limit", worst_ngp))
+    for stride in ngp_strides:
+        compare(read_matrix(path("ngp_stride_%d.dat" % stride)),
+                read_matrix(path("ngp_stride_ref_%d.dat" % stride)),
+                "NGP stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
 
     # The NGP shares the MSD position buffer: its value is the same with and
     # without --msd, and unit weighted like MSD, so -w/--norm do not touch it.
@@ -2211,17 +2227,6 @@ def main():
     run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
          *msd_base, "--lag", "1", "--ngp", path("ngp_norm.dat"), "--sq", path("ngp_norm_sq.dat")])
     compare(read_matrix(path("ngp_norm.dat")), ngp, "NGP --norm n invariance", rtol=1.0e-12)
-
-    # stride and origin lag against the reference.
-    for stride in (2, 3):
-        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
-             "--stride", str(stride), "--ngp", path("ngp_stride.dat"),
-             "--sq", path("ngp_stride_sq.dat")])
-        run([sys.executable, ref_ngp, "--input", diff_dump, "--maxframes", "8",
-             "--lag", "3", "--stride", str(stride), "--dt", "1",
-             "--output", path("ngp_stride_ref.dat")])
-        compare(read_matrix(path("ngp_stride.dat")), read_matrix(path("ngp_stride_ref.dat")),
-                "NGP stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
 
     # Without --qpoints the NGP is a valid standalone output; --no-partials
     # leaves only the total column.

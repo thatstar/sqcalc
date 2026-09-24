@@ -25,10 +25,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ref_fsqt  # noqa: E402  (sibling modules)
+import ref_ngp  # noqa: E402
 import ref_s4  # noqa: E402
 import ref_sqw  # noqa: E402
 
-CASES = {"sqw": ref_sqw, "s4": ref_s4, "fsqt": ref_fsqt}
+CASES = {"sqw": ref_sqw, "s4": ref_s4, "fsqt": ref_fsqt, "ngp": ref_ngp}
 
 
 def main():
