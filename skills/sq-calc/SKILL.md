@@ -29,8 +29,9 @@ function $F(q,t)$ (`--fqt`), the self/incoherent $F_s(q,t)$ (`--fqt-self`) and
 the total four-point structure factor $S_4(q,t)$ (`--s4`); a run without q
 points computes only the average overlap and dynamic susceptibility $Q(t)$,
 $\chi_4(t)$ (`--chi4`) and the mean squared displacement $\text{MSD}(t)$
-(`--msd`), and writes no `--sq` table.  `--s4` and `--chi4` need the overlap
-cutoff `--s4-cutoff`; `--msd` needs none.
+(`--msd`) together with the non-Gaussian parameter $\alpha_2(t)$ (`--ngp`), and
+writes no `--sq` table.  `--s4` and `--chi4` need the overlap
+cutoff `--s4-cutoff`; `--msd` and `--ngp` need none.
 
 It is one self-contained binary with no data files, plugins or environment
 variables, so it belongs on `PATH` and is called as `sqcalc`; `command -v
@@ -138,15 +139,16 @@ and `--dr` instead of the box sets the usable q range.
   full $S_4$ calculation is the most expensive dynamic output; use a large
   `--lag` and a short low-$q$ line when needed.  The position buffer is
   limited to 2 GB by default (`--buffer-limit GB` raises it), and
-  `--stride N` subsamples the S4/chi4 trajectory to reduce both the buffer
+  `--stride N` subsamples the S4/chi4/F_s/MSD/NGP trajectory to reduce both the buffer
   and the work.  A run with only `--s4`/`--chi4` skips the coherent
   $F(q,t)/S(q,\omega)$ buffers.  `--fqt-self` shares the position buffer but
   always includes every atom and never applies `--s4-cutoff`.  `--msd` shares
-  the same buffer and schedule and also uses unit weights.
-* Without `--qpoints` no q is sampled, so `--chi4` and `--msd` are
+  the same buffer and schedule and also uses unit weights; `--ngp` rides along
+  in the same pass for the fourth displacement moment.
+* Without `--qpoints` no q is sampled, so `--chi4`, `--msd` and `--ngp` are
   the only outputs it accepts, no `--sq` table is written, and `--s4` needs
-  a line or a shell.  `--msd` writes one species column per type unless
-  `--no-partials` is given.
+  a line or a shell.  `--msd` and `--ngp` write one species column per type
+  unless `--no-partials` is given.
   A shell costs half the rule's directions per frame - 25, 55 or 97 modes once
   the `+-` pairs are merged - comparable to a line scan, and is written as a
   single row at `q = (0,0,Q)`.

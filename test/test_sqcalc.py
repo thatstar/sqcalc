@@ -2181,6 +2181,59 @@ def main():
         raise SystemExit("FAIL --no-partials still wrote MSD species columns")
     print("  ok   %-42s total only" % "--no-partials MSD columns")
 
+    # --- non-Gaussian parameter (--ngp) ------------------------------------
+    print("non-Gaussian parameter (--ngp)")
+    ref_ngp = os.path.join(HERE, "ref_ngp.py")
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+         "--ngp", path("ngp.dat"), "--sq", path("ngp_sq.dat")])
+    run([sys.executable, ref_ngp, "--input", diff_dump, "--maxframes", "8",
+         "--lag", "1", "--stride", "1", "--dt", "1", "--output", path("ngp_ref.dat")])
+    ngp = read_matrix(path("ngp.dat"))
+    compare(ngp, read_matrix(path("ngp_ref.dat")), "alpha2(t) vs numpy reference", rtol=1.0e-9)
+    if float(np.max(np.abs(ngp[0, 1:]))) > 1.0e-12:
+        raise SystemExit("FAIL alpha2(0) != 0")
+    print("  ok   %-42s alpha2(0)=0" % "NGP normalization")
+
+    # The diffusive increments are Gaussian, so the moments are Gaussian up to
+    # the finite-sample noise of this window; a much larger value would mean
+    # the fourth moment is misnormalized.
+    worst_ngp = float(np.max(np.abs(ngp[:, 1])))
+    if worst_ngp > 0.02:
+        raise SystemExit("FAIL Gaussian alpha2 reached %.4f" % worst_ngp)
+    print("  ok   %-42s max |alpha2| %.4f" % ("Gaussian limit", worst_ngp))
+
+    # The NGP shares the MSD position buffer: its value is the same with and
+    # without --msd, and unit weighted like MSD, so -w/--norm do not touch it.
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+         "--msd", path("ngp_msd.dat"), "--ngp", path("ngp_with_msd.dat"),
+         "--sq", path("ngp_msd_sq.dat")])
+    compare(read_matrix(path("ngp_with_msd.dat")), ngp, "NGP shared with --msd", rtol=1.0e-12)
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "-w", "unit", "--norm", "n",
+         *msd_base, "--lag", "1", "--ngp", path("ngp_norm.dat"), "--sq", path("ngp_norm_sq.dat")])
+    compare(read_matrix(path("ngp_norm.dat")), ngp, "NGP --norm n invariance", rtol=1.0e-12)
+
+    # stride and origin lag against the reference.
+    for stride in (2, 3):
+        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "3",
+             "--stride", str(stride), "--ngp", path("ngp_stride.dat"),
+             "--sq", path("ngp_stride_sq.dat")])
+        run([sys.executable, ref_ngp, "--input", diff_dump, "--maxframes", "8",
+             "--lag", "3", "--stride", str(stride), "--dt", "1",
+             "--output", path("ngp_stride_ref.dat")])
+        compare(read_matrix(path("ngp_stride.dat")), read_matrix(path("ngp_stride_ref.dat")),
+                "NGP stride %d lag 3 vs reference" % stride, rtol=1.0e-9)
+
+    # Without --qpoints the NGP is a valid standalone output; --no-partials
+    # leaves only the total column.
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "--dt", "1",
+         "--maxframes", "8", "--ngp", path("ngp_none.dat")])
+    compare(read_matrix(path("ngp_none.dat")), ngp, "NGP without q points", rtol=1.0e-9)
+    run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", "--no-partials", *msd_base, "--lag", "1",
+         "--ngp", path("ngp_total.dat"), "--sq", path("ngp_total_sq.dat")])
+    if read_matrix(path("ngp_total.dat")).shape[1] != 2:
+        raise SystemExit("FAIL --no-partials still wrote NGP species columns")
+    print("  ok   %-42s total only" % "--no-partials NGP columns")
+
     # The origin stride is shared with the coherent correlations.
     s4_lag = s4_base + ["--lag", "3"]
     run([exe, "dyn", "-i", diff_dump, "-w", "unit", *s4_lag, "--s4-cutoff", s4_cutoff,
@@ -2270,6 +2323,11 @@ def main():
         with open(path("msd_h5.txt"), "w") as handle:
             handle.write(run([args.h5read, path("msd.h5"), "msd"]).stdout)
         compare(read_matrix(path("msd_h5.txt")), msd, "HDF5 MSD vs text", rtol=1.0e-9)
+        run([exe, "dyn", "-i", diff_dump, "-m", "1:Si,2:O", *msd_base, "--lag", "1",
+             "--ngp", path("ngp.h5"), "--sq", path("ngp_h5_sq.dat")])
+        with open(path("ngp_h5.txt"), "w") as handle:
+            handle.write(run([args.h5read, path("ngp.h5"), "ngp"]).stdout)
+        compare(read_matrix(path("ngp_h5.txt")), ngp, "HDF5 NGP vs text", rtol=1.0e-9)
 
     # --- the q sampling modes of --qpoints --------------------------------------
     print("--qpoints sampling modes")
@@ -2419,6 +2477,7 @@ def main():
         (["--sqw", "w.dat"], "--sqw in static"),
         (["--fqt-self", "f.dat"], "--fqt-self in static"),
         (["--msd", "m.dat"], "--msd in static"),
+        (["--ngp", "n.dat"], "--ngp in static"),
         (["--s4", "s.dat", "--s4-cutoff", "0.5"], "--s4 in static"),
         (["--pair-entropy", "s.dat"], "--pair-entropy without --method debye"),
         (["--method", "debye", "--s2-accum", "a.dat"],

@@ -34,7 +34,7 @@ module sqc_hdf5
    private
 
    public :: hdf5_write_results, hdf5_support, hdf5_write_rdf, hdf5_write_dynamics, &
-             hdf5_write_chi4, hdf5_write_fqt_self, hdf5_write_msd, &
+             hdf5_write_chi4, hdf5_write_fqt_self, hdf5_write_msd, hdf5_write_ngp, &
              hdf5_write_pair_entropy, hdf5_write_xrd
 
    !> HDF5 was compiled into this binary.
@@ -560,6 +560,107 @@ contains
       call h5close_f(hdferr)
       deallocate (buf, cbuf)
    end subroutine hdf5_write_msd
+
+   !> Non-Gaussian parameter alpha2(t): the total plus one dataset per species
+   !! under /ngp/alpha2_partial when the partials are written.  The layout
+   !! mirrors /msd, with 'tau', 'alpha2' and 'count'.
+   subroutine hdf5_write_ngp(path, axis, total, partial, labels, count, partials, nframes, &
+                             frame_dt, maxframes, lag, stride, effective_maxframes, ierr, message)
+      character(len=*), intent(in) :: path
+      real(rk), intent(in) :: axis(0:), total(0:)
+      real(rk), intent(in) :: partial(:, 0:)
+      character(len=*), intent(in) :: labels(:)
+      integer(lk), intent(in) :: count(0:)
+      logical, intent(in) :: partials
+      integer(lk), intent(in) :: nframes
+      real(rk), intent(in) :: frame_dt
+      integer, intent(in) :: maxframes, lag, stride, effective_maxframes
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      integer(hid_t) :: file_id, group_id, subgroup_id
+      integer(hsize_t) :: dims1(1), dims2(2)
+      integer :: hdferr, idum, p, naxis, nspecies
+      real(real64), allocatable :: buf(:)
+      integer(int64), allocatable :: cbuf(:)
+      character(len=18), allocatable :: label_buf(:)
+
+      ierr = 0
+      message = ''
+      naxis = size(axis)
+      nspecies = size(labels)
+      call h5open_f(hdferr)
+      call h5fcreate_f(trim(path), H5F_ACC_TRUNC_F, file_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create "'//trim(path)//'"'
+         call h5close_f(idum)
+         return
+      end if
+      call write_int_attr(file_id, 'nframes', int(nframes, int64), ierr, message)
+      if (ierr == 0) call write_real_attr(file_id, 'frame_dt', real(frame_dt, real64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'maxframes', int(maxframes, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'lag', int(lag, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'stride', int(stride, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'effective_maxframes', &
+                                          int(effective_maxframes, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'naxis', int(naxis, int64), ierr, message)
+      if (ierr == 0) call write_int_attr(file_id, 'n_species', int(nspecies, int64), ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'quantity', 'alpha2', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'axis', 'tau', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'weight', 'unit', ierr, message)
+      if (ierr == 0) call write_string_attr(file_id, 'norm', 'unit', ierr, message)
+      if (ierr /= 0) then
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+
+      call h5gcreate_f(file_id, 'ngp', group_id, hdferr)
+      if (hdferr /= 0) then
+         ierr = 1
+         message = 'HDF5: cannot create the /ngp group'
+         call h5fclose_f(file_id, idum)
+         call h5close_f(idum)
+         return
+      end if
+      dims1 = [int(naxis, hsize_t)]
+      allocate (buf(naxis), cbuf(naxis))
+      buf = real(axis, real64)
+      call write_dataset_f(group_id, 'tau', H5T_NATIVE_DOUBLE, dims1, buf, ierr, message)
+      if (ierr == 0) then
+         buf = real(total, real64)
+         call write_dataset_f(group_id, 'alpha2', H5T_NATIVE_DOUBLE, dims1, buf, ierr, message)
+      end if
+      if (ierr == 0) then
+         cbuf = int(count, int64)
+         call write_dataset_i8_f(group_id, 'count', dims1, cbuf, ierr, message)
+      end if
+      if (partials .and. nspecies > 0) then
+         dims2 = [1_hsize_t, int(naxis, hsize_t)]
+         allocate (label_buf(nspecies))
+         do p = 1, nspecies
+            label_buf(p) = labels(p)
+         end do
+         if (ierr == 0) call write_string_dataset(group_id, 'pairs', label_buf, ierr, message)
+         if (ierr == 0) call h5gcreate_f(group_id, 'alpha2_partial', subgroup_id, hdferr)
+         if (ierr == 0 .and. hdferr /= 0) then
+            ierr = 1
+            message = 'HDF5: cannot create the /ngp/alpha2_partial group'
+         end if
+         do p = 1, nspecies
+            if (ierr /= 0) exit
+            buf = real(partial(p, :), real64)
+            call write_dataset_f(subgroup_id, trim(label_buf(p)), H5T_NATIVE_DOUBLE, dims2, &
+                                 buf, ierr, message)
+         end do
+         if (ierr == 0) call h5gclose_f(subgroup_id, hdferr)
+         deallocate (label_buf)
+      end if
+      call h5gclose_f(group_id, hdferr)
+      call h5fclose_f(file_id, hdferr)
+      call h5close_f(hdferr)
+      deallocate (buf, cbuf)
+   end subroutine hdf5_write_ngp
 
    !> Self intermediate scattering function F_s(q,t): the total plus one
    !! dataset per species under /fqt_self/F_s_partial.

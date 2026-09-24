@@ -128,6 +128,7 @@ program sqcalc
          method%s4_format = opts%s4_format
          method%chi4_format = opts%chi4_format
          method%msd_format = opts%msd_format
+         method%ngp_format = opts%ngp_format
          if (allocated(opts%s4_output)) then
             method%s4_path = opts%s4_output
             method%s4_enabled = .true.
@@ -139,6 +140,10 @@ program sqcalc
          if (allocated(opts%msd_output)) then
             method%msd_path = opts%msd_output
             method%msd_enabled = .true.
+         end if
+         if (allocated(opts%ngp_output)) then
+            method%ngp_path = opts%ngp_output
+            method%ngp_enabled = .true.
          end if
       end select
    case (cmd_static)
@@ -461,6 +466,14 @@ program sqcalc
                stop 31
             end if
          end if
+         if (allocated(method%ngp_path)) then
+            call method%write_ngp(method%ngp_path, method%ngp_format, opts%scheme, &
+                                  opts%input, ierr, message)
+            if (ierr /= 0) then
+               write (error_unit, '(a)') 'sqcalc: '//trim(message)
+               stop 32
+            end if
+         end if
       end select
    end if
    if (opts%want_grid .and. opts%grid_format == format_hdf5) then
@@ -626,14 +639,15 @@ contains
             write (error_unit, '(a,3(i0,1x),a,f0.4,a)') '  q single   : n = (', &
                m%single_index, ') -> |q| = ', m%qlen(1), ' 1/A'
          case (dyn_q_none)
-            write (error_unit, '(a)') '  q sampling : none (only the overlap and MSD outputs)'
+            write (error_unit, '(a)') '  q sampling : none (only the overlap, MSD and NGP outputs)'
          case default
             write (error_unit, '(a,i0,a,f0.4,a,f0.4,a)') '  q line     : ', &
                m%nintervals + 1, ' points from ', m%s0, ' to ', m%s1, ' 1/A'
          end select
          write (error_unit, '(a,i0,a,i0)') '  window     : ', m%maxframes, &
             ' frames, origin lag ', m%lag_stride
-         if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled .or. m%msd_enabled) then
+         if (m%s4_enabled .or. m%chi4_enabled .or. m%fqt_self_enabled .or. &
+             m%msd_enabled .or. m%ngp_enabled) then
             if (m%s4_enabled .or. m%chi4_enabled) then
                write (error_unit, '(a,f0.4,a)') '  overlap    : cutoff ', m%s4_cutoff, &
                   ' (S4/chi4 use unit weights)'
@@ -655,6 +669,9 @@ contains
          end if
          if (m%msd_enabled) then
             write (error_unit, '(a)') '  MSD        : mean squared displacement (unit weights)'
+         end if
+         if (m%ngp_enabled) then
+            write (error_unit, '(a)') '  NGP        : non-Gaussian parameter alpha2 (unit weights)'
          end if
       class default
          write (error_unit, '(a,3(i0,1x))') '  grid modes : ', m%modes

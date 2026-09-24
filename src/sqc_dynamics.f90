@@ -47,7 +47,7 @@ module sqc_dynamics
    use omp_lib, only: omp_get_max_threads, omp_get_thread_num
 #ifdef SQC_HAVE_HDF5
    use sqc_hdf5, only: hdf5_write_dynamics, hdf5_write_chi4, hdf5_write_fqt_self, &
-                       hdf5_write_msd
+                       hdf5_write_msd, hdf5_write_ngp
 #endif
    implicit none
    private
@@ -182,6 +182,12 @@ module sqc_dynamics
       logical :: msd_enabled = .false.
       character(len=:), allocatable :: msd_path
       integer :: msd_format = format_text
+      !> Non-Gaussian parameter alpha2(tau) and its per-species split.  It
+      !! shares the MSD position buffer, origin schedule and second moment, so
+      !! it only adds a fourth-moment accumulator.
+      logical :: ngp_enabled = .false.
+      character(len=:), allocatable :: ngp_path
+      integer :: ngp_format = format_text
       !> True when F(q,t)/S(q,w) buffers and transforms are needed.
       logical :: coherent_enabled = .true.
       !> Position buffer limit [GB, 10^9 bytes] for --s4/--chi4.
@@ -209,6 +215,9 @@ module sqc_dynamics
       real(rk), allocatable :: chi4_asum(:), chi4_bsum(:)
       !> MSD accumulator: sum |r_i(t0+tau) - r_i(t0)|^2 per (species, lag).
       real(rk), allocatable :: msd_sum(:, :)
+      !> Non-Gaussian accumulator: sum |r_i(t0+tau) - r_i(t0)|^4 per
+      !! (species, lag), the numerator of alpha2.
+      real(rk), allocatable :: msd4_sum(:, :)
       !> Time origins per S4 lag and the S4 time axis.
       integer(lk), allocatable :: sample_cnt(:, :)
       real(rk), allocatable :: sample_tau(:)
@@ -217,6 +226,8 @@ module sqc_dynamics
       real(rk), allocatable :: overlap(:), chi4(:)
       !> Results: total and per-species mean squared displacement.
       real(rk), allocatable :: msd_total(:), msd_partial(:, :)
+      !> Results: total and per-species non-Gaussian parameter.
+      real(rk), allocatable :: alpha2_total(:), alpha2_partial(:, :)
       !> Results: total and per-species F_s(q,t).
       real(rk), allocatable :: fqt_self_total(:, :)
       real(rk), allocatable :: fqt_self_partial(:, :, :)
@@ -251,6 +262,7 @@ module sqc_dynamics
       procedure :: write_s4 => dyn_write_s4
       procedure :: write_chi4 => dyn_write_chi4
       procedure :: write_msd => dyn_write_msd
+      procedure :: write_ngp => dyn_write_ngp
    end type dynamics_structure_factor_t
 
 contains
@@ -624,7 +636,7 @@ contains
       ! allocated, so an oversized --maxframes fails with the S4 message
       ! instead of exhausting memory in the unrelated F(q,t) accumulators.
       if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
-          self%msd_enabled) then
+          self%msd_enabled .or. self%ngp_enabled) then
          if (self%s4_enabled .or. self%chi4_enabled) then
             if (self%s4_cutoff <= 0.0_rk) then
                ierr = 1
@@ -650,7 +662,7 @@ contains
          if (need_bytes > limit_bytes) then
             ierr = 1
             write (message, '(a,f0.4,a,i0,a,f0.4,a,i0,a)') &
-               'the S4/chi4/F_s/MSD position buffer needs ', real(need_bytes, rk)/1.0e9_rk, &
+               'the S4/chi4/F_s/MSD/NGP position buffer needs ', real(need_bytes, rk)/1.0e9_rk, &
                ' GB (', need_bytes, ' bytes), above the ', self%buffer_limit_gb, &
                ' GB (', limit_bytes, ' bytes) limit; raise --buffer-limit, '// &
                'increase --stride or reduce --maxframes'
@@ -718,12 +730,12 @@ contains
       ! frames that are still inside the correlation window.  The list of
       ! overlapping atoms is built once per lag and reused by every q mode.
       if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
-          self%msd_enabled) then
+          self%msd_enabled .or. self%ngp_enabled) then
          allocate (self%pos_buffer(3, int(self%natoms), 0:self%nsteps), &
                    stat=astat, errmsg=amsg)
          if (astat /= 0) then
             ierr = 1
-            message = 'cannot allocate the position buffer for S4/chi4/F_s/MSD: '//trim(amsg)
+            message = 'cannot allocate the position buffer for S4/chi4/F_s/MSD/NGP: '//trim(amsg)
             return
          end if
          self%pos_buffer = 0.0_rk
@@ -742,9 +754,13 @@ contains
          self%chi4_asum = 0.0_rk
          self%chi4_bsum = 0.0_rk
       end if
-      if (self%msd_enabled) then
+      if (self%msd_enabled .or. self%ngp_enabled) then
          allocate (self%msd_sum(self%nspecies, 0:self%nsteps))
          self%msd_sum = 0.0_rk
+      end if
+      if (self%ngp_enabled) then
+         allocate (self%msd4_sum(self%nspecies, 0:self%nsteps))
+         self%msd4_sum = 0.0_rk
       end if
       if (self%s4_enabled) then
          allocate (self%acc_thread(self%nmodes, self%phase_threads))
@@ -780,7 +796,7 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       complex(c_double_complex) :: acc
-      real(rk) :: qx, qy, qz, phase, dx, dy, dz, rr(3)
+      real(rk) :: qx, qy, qz, phase, dx, dy, dz, s2, rr(3)
       integer :: t_frame, slot, sample_slot, sample, l, j, oslot, im, isp, jsp, i, k, nover
       integer :: tid
 
@@ -899,7 +915,7 @@ contains
       ! still uses every dump frame.  F_s always includes every atom; the
       ! overlap cutoff is only used by S4/chi4.
       if ((self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
-           self%msd_enabled) .and. mod(t_frame, self%stride) == 0) then
+           self%msd_enabled .or. self%ngp_enabled) .and. mod(t_frame, self%stride) == 0) then
          sample = t_frame/self%stride
          sample_slot = mod(sample, self%nsteps + 1)
          self%pos_buffer(:, :, sample_slot) = frame%pos
@@ -922,7 +938,7 @@ contains
          !$omp parallel do if(self%s4_enabled .or. self%fqt_self_enabled) &
          !$omp& schedule(dynamic, 1) &
          !$omp& private(oslot, nover, k, i, im, isp, tid, dx, dy, dz, rr, &
-         !$omp&         qx, qy, qz, phase, acc)
+         !$omp&         qx, qy, qz, phase, s2, acc)
          do j = 0, min(sample, self%nsteps)
             if (mod(t_frame - j*self%stride, self%lag_stride) /= 0) cycle
             oslot = mod(sample - j, self%nsteps + 1)
@@ -1044,14 +1060,19 @@ contains
 
             ! MSD(tau): the squared displacement of every atom, split by
             ! species.  It never uses the cutoff and, like chi4, is a plain
-            ! streaming pass, so the lag that owns it does the whole sum.
-            if (self%msd_enabled) then
+            ! streaming pass, so the lag that owns it does the whole sum.  The
+            ! non-Gaussian parameter rides along: the same squared displacement
+            ! is squared once more into the fourth moment, so --ngp costs one
+            ! extra multiply per atom and nothing else.
+            if (self%msd_enabled .or. self%ngp_enabled) then
                do i = 1, int(self%natoms)
                   dx = frame%pos(1, i) - self%pos_buffer(1, i, oslot)
                   dy = frame%pos(2, i) - self%pos_buffer(2, i, oslot)
                   dz = frame%pos(3, i) - self%pos_buffer(3, i, oslot)
                   isp = int(self%species_of(i))
-                  self%msd_sum(isp, j) = self%msd_sum(isp, j) + dx*dx + dy*dy + dz*dz
+                  s2 = dx*dx + dy*dy + dz*dz
+                  self%msd_sum(isp, j) = self%msd_sum(isp, j) + s2
+                  if (self%ngp_enabled) self%msd4_sum(isp, j) = self%msd4_sum(isp, j) + s2*s2
                end do
             end if
             self%sample_cnt(:, j) = self%sample_cnt(:, j) + 1
@@ -1100,8 +1121,8 @@ contains
       integer, intent(out) :: ierr
       character(len=*), intent(out) :: message
       real(rk), allocatable :: f(:)
-      real(rk) :: frames, value
-      integer :: im, l, j, isp, jsp, t, u, p, n_pairs, n
+      real(rk) :: frames, value, m2, m4, m2a, m4a
+      integer :: im, l, j, isp, jsp, t, u, p, n_pairs, n, na
 
       ierr = 0
       message = ''
@@ -1297,7 +1318,7 @@ contains
       ! MSD(tau): the origin count is the same at every q mode, so the first
       ! row of sample_cnt carries it.  The per-species columns use the same
       ! 1/N normalization as F_s, so they add up to the total.
-      if (self%msd_enabled) then
+      if (self%msd_enabled .or. self%ngp_enabled) then
          allocate (self%msd_partial(self%nspecies, 0:self%nsteps))
          allocate (self%msd_total(0:self%nsteps))
          self%msd_partial = 0.0_rk
@@ -1313,8 +1334,37 @@ contains
             end if
          end do
       end if
+      ! alpha2(tau) = 3<r^4>/(5<r^2>^2) - 1 from the same time-origin averaged
+      ! moments MSD uses, as a ratio of averages (not an average of ratios).
+      ! Each species column divides its restricted moment sums by the species
+      ! count N_a rather than the total N, so <r^2>_a and <r^4>_a stay
+      ! intensive and the ratio is the species value.  N_a does not cancel:
+      ! the MSD 1/N partials cannot be reused, because they carry an extra
+      ! N/N_a that would scale the leading 3<r^4> term by N/N_a.
+      ! At tau = 0 the displacement is zero for every atom, so the ratio is
+      ! 0/0 and the parameter is left at 0.
+      if (self%ngp_enabled) then
+         allocate (self%alpha2_partial(self%nspecies, 0:self%nsteps))
+         allocate (self%alpha2_total(0:self%nsteps))
+         self%alpha2_partial = 0.0_rk
+         self%alpha2_total = 0.0_rk
+         do j = 0, self%nsteps
+            n = int(self%sample_cnt(1, j))
+            if (n <= 0) cycle
+            m2 = sum(self%msd_sum(:, j))/real(n, rk)/real(self%natoms, rk)
+            m4 = sum(self%msd4_sum(:, j))/real(n, rk)/real(self%natoms, rk)
+            if (m2 > 0.0_rk) self%alpha2_total(j) = 3.0_rk*m4/(5.0_rk*m2*m2) - 1.0_rk
+            do isp = 1, self%nspecies
+               na = int(self%species_first(isp + 1) - self%species_first(isp))
+               if (na <= 0) cycle
+               m2a = self%msd_sum(isp, j)/real(n, rk)/real(na, rk)
+               m4a = self%msd4_sum(isp, j)/real(n, rk)/real(na, rk)
+               if (m2a > 0.0_rk) self%alpha2_partial(isp, j) = 3.0_rk*m4a/(5.0_rk*m2a*m2a) - 1.0_rk
+            end do
+         end do
+      end if
       if (self%s4_enabled .or. self%chi4_enabled .or. self%fqt_self_enabled .or. &
-          self%msd_enabled) then
+          self%msd_enabled .or. self%ngp_enabled) then
          allocate (self%sample_tau(0:self%nsteps))
          do j = 0, self%nsteps
            self%sample_tau(j) = real(j*self%stride, rk)*self%frame_dt
@@ -2146,6 +2196,87 @@ contains
       end do
       if (unit /= output_unit) close (unit)
    end subroutine dyn_write_msd
+
+   !> Non-Gaussian parameter alpha2(tau) and its per-species split.
+   !!
+   !! alpha2(tau) = 3<r^4>/(5<r^2>^2) - 1, with the moments of the MSD
+   !! definition (unit weights, the same time origins and the same
+   !! --lag/--stride schedule).  It shares the MSD position buffer, so it can
+   !! be requested alone or together with --msd; at tau = 0 the displacement
+   !! vanishes, the ratio is 0/0, and the parameter is written as 0.
+   subroutine dyn_write_ngp(self, path, format, scheme, input, ierr, message)
+      class(dynamics_structure_factor_t), intent(in) :: self
+      character(len=*), intent(in) :: path, input
+      integer, intent(in) :: format
+      type(weight_scheme_t), intent(in) :: scheme
+      integer, intent(out) :: ierr
+      character(len=*), intent(out) :: message
+      character(len=18), allocatable :: labels(:)
+      character(len=18) :: slabel
+      integer :: unit, j, isp
+
+      ierr = 0
+      message = ''
+      if (format == format_hdf5) then
+#ifdef SQC_HAVE_HDF5
+         allocate (labels(self%nspecies))
+         do isp = 1, self%nspecies
+            call species_label(scheme, int(self%species_type(isp)), labels(isp), 'alpha2')
+         end do
+         call hdf5_write_ngp(path, self%sample_tau, self%alpha2_total, self%alpha2_partial, &
+                             labels, self%sample_cnt(1, :), self%partials, self%nframes, &
+                             self%frame_dt, self%maxframes, self%lag_stride, self%stride, &
+                             self%effective_maxframes, ierr, message)
+         deallocate (labels)
+#else
+         ierr = 1
+         message = 'this build has no HDF5 support; use --format text'
+#endif
+         return
+      end if
+
+      if (trim(path) == '-') then
+         unit = output_unit
+      else
+         open (newunit=unit, file=trim(path), status='replace', action='write', iostat=ierr)
+         if (ierr /= 0) then
+            message = 'cannot write the NGP output "'//trim(path)//'"'
+            return
+         end if
+      end if
+
+      write (unit, '(a)') '# sqcalc 0.1.0 non-Gaussian parameter alpha2(t)'
+      write (unit, '(a)') '# input '//trim(input)//'  weight unit (self)  norm unit'
+      write (unit, '(a,f12.6,a,i0,a,i0,a,i0)') '# frame_dt ', self%frame_dt, &
+         '  maxframes ', self%maxframes, '  lag ', self%lag_stride, '  nframes ', self%nframes
+      write (unit, '(a,i0,a,f0.6,a)') '# nlag ', self%nsteps + 1, &
+         '  tau 0 .. ', real(self%effective_maxframes, rk)*self%frame_dt, ' (time unit of dt)'
+      write (unit, '(a,i0,a,i0,a,i0,a)') '# stride ', self%stride, &
+         ' dump frames; effective maxframes ', self%effective_maxframes, ' (requested ', &
+         self%maxframes, ')'
+      write (unit, '(a)') '# alpha2(t) = 3<r^4> / (5<r^2>^2) - 1, moments of the MSD '// &
+         'definition (unit weights, same time origins); alpha2(0) = 0'
+      write (unit, '(a)') '# r^2, r^4 averaged over time origins, then the ratio; '// &
+         'one species column per type from the species-restricted moments'
+      write (unit, '(a)', advance='no') '# tau alpha2(t)'
+      if (self%partials) then
+         do isp = 1, self%nspecies
+            call species_label(scheme, int(self%species_type(isp)), slabel, 'alpha2')
+            write (unit, '(a)', advance='no') ' '//trim(slabel)
+         end do
+      end if
+      write (unit, '(a)') ''
+      do j = 0, self%nsteps
+         write (unit, '(f16.8,2x,es20.12)', advance='no') self%sample_tau(j), self%alpha2_total(j)
+         if (self%partials) then
+            do isp = 1, self%nspecies
+               write (unit, '(2x,es20.12)', advance='no') self%alpha2_partial(isp, j)
+            end do
+         end if
+         write (unit, '(a)') ''
+      end do
+      if (unit /= output_unit) close (unit)
+   end subroutine dyn_write_ngp
 
    !> Text or HDF5 writer shared by the spectra and F(q,tau).
    subroutine dyn_write_table(self, path, format, scheme, input, kind, axis_name, &

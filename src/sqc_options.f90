@@ -154,6 +154,8 @@ module sqc_options
       character(len=:), allocatable :: s4_output, chi4_output
       !> Mean squared displacement output (--msd).
       character(len=:), allocatable :: msd_output
+      !> Non-Gaussian parameter output (--ngp), which shares the MSD buffer.
+      character(len=:), allocatable :: ngp_output
       real(rk) :: s4_cutoff = 0.0_rk
       logical :: s4_cutoff_given = .false.
       real(rk) :: buffer_limit_gb = 2.0_rk
@@ -163,6 +165,7 @@ module sqc_options
       integer :: s4_format = format_text
       integer :: chi4_format = format_text
       integer :: msd_format = format_text
+      integer :: ngp_format = format_text
       type(weight_scheme_t) :: scheme
    end type options_t
 
@@ -290,7 +293,7 @@ contains
                   '--pair-entropy', '--s2-accum', &
                   '-q', '--qpoints', '--dt', '--maxframes', '--lag', '--sqw', '--fqt', '--format', &
                   '--fqt-self', '--s4', '--chi4', '--msd', '--s4-cutoff', '--buffer-limit', &
-                  '--stride', &
+                  '--ngp', '--stride', &
                   '--modes', '--thin', '--sq')
                if (.not. has_inline) then
                   if (i + 1 > nargs) then
@@ -490,6 +493,8 @@ contains
                   self%chi4_output = trim(value)
                case ('--msd')
                   self%msd_output = trim(value)
+               case ('--ngp')
+                  self%ngp_output = trim(value)
                case ('--s4-cutoff')
                   read (value, *, iostat=ierr) self%s4_cutoff
                   if (ierr /= 0 .or. self%s4_cutoff <= 0.0_rk) then
@@ -678,7 +683,8 @@ contains
             return
          end if
          if (allocated(self%s4_output) .or. allocated(self%chi4_output) .or. &
-             allocated(self%fqt_self_output) .or. allocated(self%msd_output)) then
+             allocated(self%fqt_self_output) .or. allocated(self%msd_output) .or. &
+             allocated(self%ngp_output)) then
             if ((allocated(self%s4_output) .or. allocated(self%chi4_output)) .and. &
                 .not. self%s4_cutoff_given) then
                ierr = 1
@@ -699,7 +705,7 @@ contains
          else if (self%s4_cutoff_given .or. self%buffer_limit_given .or. self%stride_given) then
             ierr = 1
             message = '--s4-cutoff, --buffer-limit and --stride need --s4, --chi4, '// &
-               '--fqt-self or --msd'
+               '--fqt-self, --msd or --ngp'
             return
          end if
          if ((self%modes_given .or. self%thin_given) .and. &
@@ -760,10 +766,11 @@ contains
                message = '--sq needs a q sampling; add --qpoints line:... or --qpoints shell:...'
                return
             end if
-            if (.not. allocated(self%chi4_output) .and. .not. allocated(self%msd_output)) then
+            if (.not. allocated(self%chi4_output) .and. .not. allocated(self%msd_output) .and. &
+                .not. allocated(self%ngp_output)) then
                ierr = 1
-               message = 'a run without a q sampling computes only --chi4 and --msd; '// &
-                  'add --chi4 or --msd FILE, or a q sampling'
+               message = 'a run without a q sampling computes only --chi4, --msd and --ngp; '// &
+                  'add --chi4, --msd or --ngp FILE, or a q sampling'
                return
             end if
          end if
@@ -804,6 +811,7 @@ contains
          self%s4_format = self%output_format
          self%chi4_format = self%output_format
          self%msd_format = self%output_format
+         self%ngp_format = self%output_format
       else
          if (self%want_grid) then
             if (ends_with(self%grid_output, '.h5') .or. ends_with(self%grid_output, '.hdf5')) &
@@ -836,6 +844,10 @@ contains
          if (allocated(self%msd_output)) then
             if (ends_with(self%msd_output, '.h5') .or. ends_with(self%msd_output, '.hdf5')) &
                self%msd_format = format_hdf5
+         end if
+         if (allocated(self%ngp_output)) then
+            if (ends_with(self%ngp_output, '.h5') .or. ends_with(self%ngp_output, '.hdf5')) &
+               self%ngp_format = format_hdf5
          end if
       end if
    end subroutine parse_options
@@ -1211,7 +1223,7 @@ contains
          scope = scope_static
       case ('-q', '--qpoints', '--dt', '--maxframes', '--lag', '--modes', '--thin', &
             '--keep-modes', '--sq', '--sqw', '--fqt', '--fqt-self', &
-            '--s4', '--chi4', '--msd', '--s4-cutoff', '--buffer-limit', '--stride')
+            '--s4', '--chi4', '--msd', '--ngp', '--s4-cutoff', '--buffer-limit', '--stride')
          scope = scope_dyn
       case default
          scope = scope_both
@@ -1364,9 +1376,10 @@ contains
          write (unit, '(a)') '      --s4 FILE       S4(q,t) four-point structure factor (.h5 = HDF5)'
          write (unit, '(a)') '      --chi4 FILE     Q(t) and chi4(t) average overlap / susceptibility'
          write (unit, '(a)') '      --msd FILE      MSD(t) mean squared displacement (.h5 = HDF5)'
+         write (unit, '(a)') '      --ngp FILE      alpha2(t) non-Gaussian parameter (.h5 = HDF5)'
          write (unit, '(a)') '      --s4-cutoff A   overlap cutoff for --s4 and --chi4 [dump length unit]'
-         write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s/MSD (default 2.0)'
-         write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s/MSD (default 1)'
+         write (unit, '(a)') '      --buffer-limit GB  position buffer limit for S4/chi4/F_s/MSD/NGP (default 2.0)'
+         write (unit, '(a)') '      --stride N      use every N-th frame for S4/chi4/F_s/MSD/NGP (default 1)'
       end if
    end subroutine print_usage
 

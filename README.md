@@ -150,9 +150,10 @@ $S(q)$ table of a `--qpoints` run goes to `--sq FILE`.
 | `--s4 FILE`                 | the total four-point structure factor$S_4(q,t)$                           |
 | `--chi4 FILE`               | the average overlap$Q(t)$ and the susceptibility $\chi_4(t)$            |
 | `--msd FILE`                | the mean squared displacement $\text{MSD}(t)$ and its species columns      |
+| `--ngp FILE`                | the non-Gaussian parameter $\alpha_2(t)$ from the same MSD buffer          |
 | `--s4-cutoff A`             | overlap cutoff$a$, required by `--s4` and `--chi4`                    |
-| `--buffer-limit GB`         | position buffer limit for S4/chi4/F_s/MSD (default 2.0 GB)                  |
-| `--stride N`                | use every N-th dump frame for S4/chi4/F_s/MSD (default 1)                   |
+| `--buffer-limit GB`         | position buffer limit for S4/chi4/F_s/MSD/NGP (default 2.0 GB)              |
+| `--stride N`                | use every N-th dump frame for S4/chi4/F_s/MSD/NGP (default 1)               |
 
 The HDF5 output needs HDF5 to have been found at configure time
 (`-DSQC_ENABLE_HDF5=OFF` disables it); its attributes record the run metadata
@@ -307,7 +308,7 @@ reciprocal space sampling is a separate choice, `-q`/`--qpoints`:
 
 | `-q, --qpoints` | q points | outputs |
 | --- | --- | --- |
-| left out | none | `--chi4`: the overlap $Q(t)$, $\chi_4(t)$; `--msd` |
+| left out | none | `--chi4`: the overlap $Q(t)$, $\chi_4(t)$; `--msd`; `--ngp` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through $\Gamma$ | all |
 | `shell:Q,ACC` | every direction of the shell $\|q\| = Q$ | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
@@ -506,17 +507,17 @@ sets its limit (default 2.0 GB, where GB is $10^9$ bytes).  The estimated size
 is printed in the run summary, and an oversized request is rejected before any
 large allocation.
 
-`--stride N` subsamples the S4/chi4/F_s/MSD trajectory: only every N-th dump frame
+`--stride N` subsamples the S4/chi4/F_s/MSD/NGP trajectory: only every N-th dump frame
 contributes, the lag axis becomes $0, N, 2N, \ldots$ in dump frames, and the
 position buffer stores only those frames.  This reduces both the buffer and
 that work by roughly a factor $N$, at the cost of a coarser time axis.
 The coherent $F(q,t)/S(q,\omega)$ outputs still use every dump frame and the
-full `--maxframes`; only the S4/chi4/F_s/MSD window is reduced to the largest
+full `--maxframes`; only the S4/chi4/F_s/MSD/NGP window is reduced to the largest
 multiple of $N$ that does not exceed `--maxframes`.  The run summary prints
 the effective window and a note when it is shorter than the requested one.
 `--lag` keeps its meaning in dump frames: an origin is used when its original
 frame index is a multiple of `--lag`, so with stride $N$, `--lag m` gives an
-origin every $m$ dump frames, not every $m$ S4 samples.
+origin every $m$ dump frames, not every $m$ of the subsampled frames.
 
 `--fqt-self` writes the self intermediate scattering function
 
@@ -566,15 +567,57 @@ tends to $6 D_a t$,
 `--format hdf5` selects HDF5, with `/msd/tau`, `/msd/MSD`, `/msd/count`
 and, with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`.
 
+### Non-Gaussian parameter
+
+`--ngp` writes the non-Gaussian parameter of the same trajectory,
+
+$$
+\alpha_2(t) = \frac{3\,\langle r^4\rangle}{5\,\langle r^2\rangle^2} - 1,
+$$
+
+with the displacement moments of the MSD definition,
+
+$$
+\langle r^n\rangle = \frac{1}{N}\left\langle \sum_i
+  \left|\mathbf r_i(t_0+t) - \mathbf r_i(t_0)\right|^n\right\rangle_{t_0},
+$$
+
+so $\langle r^2\rangle$ is exactly the `--msd` value of the same run.  The
+moments are averaged over the time origins and the ratio is taken afterwards,
+a ratio of averages rather than an average of ratios, which is what makes
+$\alpha_2$ vanish for a Gaussian process; the $3/5$ is the Gaussian value in
+three dimensions, so $\alpha_2 = 0$ for a Gaussian walk and a positive peak
+marks dynamic heterogeneity.  Like MSD it uses unit weights and no overlap
+cutoff, and it shares the position buffer and the `--lag`/`--stride`
+schedule, so `--ngp` and `--msd` can be requested together (the fourth moment
+then costs one extra multiply per atom) or on their own, and `--ngp` works
+without any q sampling.
+
+At $t = 0$ the displacement is zero for every atom and the ratio is $0/0$, so
+$\alpha_2(0)$ is written as 0.  With `--partials` (the default) the table also
+carries one column per species, from the species-restricted moments; unlike
+the MSD columns they do not add up to the total, because the ratio is
+nonlinear,
+
+```
+# tau alpha2(t) alpha2(Si) alpha2(O)
+      0.00000000    0.000000000000E+00    0.000000000000E+00    0.000000000000E+00
+      1.00000000    2.967512879453E-04   -2.060095437272E-03    2.660050299622E-03
+```
+
+`--no-partials` leaves only the total column.  A `.h5`/`.hdf5` name or
+`--format hdf5` selects HDF5, with `/ngp/tau`, `/ngp/alpha2`, `/ngp/count`
+and, with `--partials`, `/ngp/pairs` and `/ngp/alpha2_partial/<species>`.
+
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
 multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 `--sq` table is still written.  Conversely, a run with only
-`--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`
-and `--msd` allocate that shared buffer but not the coherent
+`--sqw`/`--fqt` does not allocate the S4 position buffer, while `--fqt-self`,
+`--msd` and `--ngp` allocate that shared buffer but not the coherent
 $F(q,t)/S(q,\omega)$ buffers.  Without `--qpoints` there are no density amplitudes
-at all, so `--chi4` and `--msd` are the only outputs and no `--sq` table is
-written.
+at all, so `--chi4`, `--msd` and `--ngp` are the only outputs and no `--sq` table
+is written.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units

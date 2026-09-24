@@ -8,7 +8,8 @@ sqcalc dyn    [global options] [options]
 `sqcalc static` averages the frames: `OUTPUT` is the shell averaged $S(q)$
 table and `-` writes it to stdout, and the run can add $g(r)$ and a powder XRD
 pattern.  `sqcalc dyn` keeps the time axis and writes $S(q,\omega)$, $F(q,t)$,
-$S_4(q,t)$, the mean squared displacement and the overlap into the files named
+$S_4(q,t)$, the mean squared displacement, the non-Gaussian parameter and the
+overlap into the files named
 by its options; it takes **no positional argument**, so the $S(q)$ table of a
 `--qpoints` run goes to `--sq FILE`.  `-i` is required in either case, and progress
 goes to stderr, so `--quiet` keeps logs clean.
@@ -75,9 +76,10 @@ followed by the options of the subcommand that was asked about.
 | `--s4 FILE` | the total four-point structure factor $S_4(q,t)$ |
 | `--chi4 FILE` | the average overlap $Q(t)$ and dynamic susceptibility $\chi_4(t)$ |
 | `--msd FILE` | the mean squared displacement $\text{MSD}(t)$, plus per-species columns with `--partials` |
+| `--ngp FILE` | the non-Gaussian parameter $\alpha_2(t)$, computed from the same MSD buffer, plus per-species columns with `--partials` |
 | `--s4-cutoff A` | overlap cutoff $a$ for `--s4` and `--chi4`, in dump length units |
-| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s/MSD (default 2.0; GB = $10^9$ bytes) |
-| `--stride N` | use every N-th dump frame for S4/chi4/F_s/MSD (default 1) |
+| `--buffer-limit GB` | position buffer limit for S4/chi4/F_s/MSD/NGP (default 2.0; GB = $10^9$ bytes) |
+| `--stride N` | use every N-th dump frame for S4/chi4/F_s/MSD/NGP (default 1) |
 
 ## What the options mean
 
@@ -345,7 +347,7 @@ space is sampled,
 
 | `-q, --qpoints` | q points | outputs |
 | --- | --- | --- |
-| left out | none | only `--chi4` ($Q(t)$, $\chi_4(t)$) and `--msd` |
+| left out | none | only `--chi4` ($Q(t)$, $\chi_4(t)$), `--msd` and `--ngp` |
 | `line:NINT,S0,S1,DX,DY,DZ` | `NINT+1` points on a line through Gamma | all |
 | `shell:Q,ACC` | one shell $\|q\| = Q$, averaged over every direction | all |
 | `grid:QMAX` | every reciprocal-lattice vector with $\|q\| \le Q_{\max}$ | all |
@@ -353,8 +355,8 @@ space is sampled,
 
 Without `--qpoints` there is no $S(q)$ at all: the run writes no `--sq` table and
 `--sqw`, `--fqt`, `--fqt-self` and `--s4` are rejected.  That is the cheapest
-way to get $Q(t)$, $\chi_4(t)$ and $\text{MSD}(t)$, which only need the
-displaced positions.
+way to get $Q(t)$, $\chi_4(t)$, $\text{MSD}(t)$ and $\alpha_2(t)$, which only
+need the displaced positions.
 
 #### A q line
 
@@ -468,7 +470,7 @@ That is the same estimator as the static table's bins, and it is the sampling
 the coherent quantities need: only a lattice vector carries a density
 amplitude that is independent of the periodic-image convention, whereas the
 Lebedev average of `shell:` converges only for quantities whose phase carries
-the displacement ($F_s$, MSD, $\chi_4$) and not for $S(q)$, $F(q,t)$ or
+the displacement ($F_s$, MSD, $\alpha_2$, $\chi_4$) and not for $S(q)$, $F(q,t)$ or
 $S(q,\omega)$.
 
 The half width follows from the number of lattice vectors the window should
@@ -639,15 +641,15 @@ window (`--maxframes` divided by `--stride`, rounded down);
 `--buffer-limit GB` sets its limit (default 2.0, GB = $10^9$ bytes) and an
 oversized request is rejected before any large allocation.
 
-`--stride N` subsamples the S4/chi4 trajectory: only every N-th dump frame
+`--stride N` subsamples the S4/chi4/F_s/MSD/NGP trajectory: only every N-th dump frame
 contributes, the lag axis is $0, N, 2N, \ldots$ dump frames, and the position
-buffer stores only those frames.  This reduces the buffer and the S4/chi4
+buffer stores only those frames.  This reduces the buffer and the S4/chi4/F_s/MSD/NGP
 work by roughly a factor $N$, at the cost of a coarser time axis.  The
 coherent $F(q,t)/S(q,\omega)$ outputs still use every dump frame and the full
-`--maxframes`; the S4/chi4 window is reduced to the largest multiple of $N$
+`--maxframes`; the S4/chi4/F_s/MSD/NGP window is reduced to the largest multiple of $N$
 that does not exceed `--maxframes`, and the run summary prints a note when
 that happens.  `--lag` is still counted in dump frames, so with stride $N$,
-`--lag m` selects origins every $m$ dump frames, not every $m$ S4 samples.
+`--lag m` selects origins every $m$ dump frames, not every $m$ of the subsampled frames.
 
 The dynamic method allocates only what the requested outputs need.  A run with
 only `--s4`/`--chi4` does not allocate the coherent ring buffer, the
@@ -655,8 +657,9 @@ multi-origin correlation, or the $S(q,\omega)$/Fourier transform buffers; the
 `--sq` table is still written.  A run with only `--sqw`/`--fqt` does
 not allocate the S4 position buffer.  `--fqt-self` allocates that shared
 position buffer but not the coherent $F(q,t)/S(q,\omega)$ buffers, and
-`--msd` does the same.  Without `--qpoints` there are no density amplitudes at
-all, so only `--chi4` and `--msd` are left and no `--sq` table is written.
+`--msd` and `--ngp` do the same.  Without `--qpoints` there are no density
+amplitudes at all, so only `--chi4`, `--msd` and `--ngp` are left and no `--sq`
+table is written.
 
 ```sh
 # low-q S4(q,t) and chi4(t), overlap cutoff a = 1.0 in dump length units
@@ -764,6 +767,45 @@ single total column.  HDF5 writes `/msd/tau`, `/msd/MSD`, `/msd/count` and,
 with `--partials`, `/msd/pairs` and `/msd/MSD_partial/<species>`, with the
 `stride` and `effective_maxframes` attributes.
 
+### Non-Gaussian parameter (`--ngp`)
+
+`--ngp` writes the non-Gaussian parameter of the same trajectory,
+
+$$
+\alpha_2(t)=\frac{3\,\langle r^4\rangle}{5\,\langle r^2\rangle^2}-1,
+$$
+
+with the displacement moments of the MSD definition,
+
+$$
+\langle r^n\rangle=\frac{1}{N}\left\langle\sum_i
+  \left|\mathbf r_i(t_0+t)-\mathbf r_i(t_0)\right|^n\right\rangle_{t_0},
+$$
+
+so $\langle r^2\rangle$ is the `--msd` value of the same run.  The moments are
+averaged over the time origins and the ratio is formed afterwards (a ratio of
+averages, not an average of ratios), which makes $\alpha_2$ vanish for a
+Gaussian process; the $3/5$ is the Gaussian value in three dimensions, so
+$\alpha_2=0$ for a Gaussian walk and a positive peak marks dynamic
+heterogeneity.  Like MSD it uses unit weights and needs no overlap cutoff, and
+it shares the position buffer and the `--lag`/`--stride` schedule, so `--ngp`
+can be requested with or without `--msd` and works without any q points.
+
+At $t=0$ the displacement is zero for every atom and the ratio is $0/0$, so
+$\alpha_2(0)$ is written as 0.  With `--partials` (the default) the table
+carries one column per species from the species-restricted moments; unlike the
+MSD columns they do not add up to the total, because the ratio is nonlinear,
+
+```
+# tau alpha2(t) alpha2(Si) alpha2(O)
+      0.00000000    0.000000000000E+00    0.000000000000E+00    0.000000000000E+00
+      1.00000000    2.967512879453E-04   -2.060095437272E-03    2.660050299622E-03
+```
+
+`--no-partials` leaves only the total column.  HDF5 writes `/ngp/tau`,
+`/ngp/alpha2`, `/ngp/count` and, with `--partials`, `/ngp/pairs` and
+`/ngp/alpha2_partial/<species>`.
+
 ## Output
 
 The shell table is text:
@@ -826,6 +868,12 @@ column per type when `--partials` is on.  It accepts a `.h5`/`.hdf5` name (or
 `--format hdf5`) for HDF5, where the datasets are `/msd/tau`, `/msd/MSD`,
 `/msd/count` and, with `--partials`, `/msd/pairs` and
 `/msd/MSD_partial/<species>`.
+
+`--ngp FILE` (dynamic method) is the time series `# tau alpha2(t)` with the
+same species columns under `--partials`.  It accepts a `.h5`/`.hdf5` name (or
+`--format hdf5`) for HDF5, where the datasets are `/ngp/tau`, `/ngp/alpha2`,
+`/ngp/count` and, with `--partials`, `/ngp/pairs` and
+`/ngp/alpha2_partial/<species>`.
 
 The shell, `g(r)` and grid tables are plain text, with the column names in the
 header line, so any plotting tool reads them as they are.  The skill ships
