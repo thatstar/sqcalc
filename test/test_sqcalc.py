@@ -440,13 +440,14 @@ def main():
 
             # The powder XRD pattern accumulates through the shared per-mode
             # reduction and carries the pair columns as well, so every column
-            # has to match.
+            # has to match.  --xrd takes its q range from --xrd-range, so only
+            # the --nq and --eps part of gpu_common may be passed here.
             xrd_gpu = ["--xrd-lambda", "1.5406", "--xrd-range", "10", "60",
-                       "--xrd-step", "1"]
+                       "--xrd-step", "1", "--nq", "40", "--eps", "1e-10"]
             run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--xrd",
-                 path("cpu.xrd"), *xrd_gpu, *gpu_common, path("cpu_xrd_sq.dat")])
+                 path("cpu.xrd"), *xrd_gpu, path("cpu_xrd_sq.dat")])
             run([exe, "static", "-i", dump, "-m", "1:Si,2:O", "-w", "xray", "--device", "gpu",
-                 "--xrd", path("gpu.xrd"), *xrd_gpu, *gpu_common, path("gpu_xrd_sq.dat")])
+                 "--xrd", path("gpu.xrd"), *xrd_gpu, path("gpu_xrd_sq.dat")])
             cpu_xrd = read_matrix(path("cpu.xrd"))
             gpu_xrd = read_matrix(path("gpu.xrd"))
             if cpu_xrd.shape != gpu_xrd.shape:
