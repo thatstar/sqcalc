@@ -144,7 +144,10 @@ def integrate_s2(r, g_partial, meta, bias_correction=True):
             bias = volume / (2.0 * nframes * counts[ia] * counts[ib])
             contrib = contrib - bias
         cum = np.cumsum(contrib)
-        curves[:, p] = -2.0 * math.pi * rho * (counts[ia] / natoms) * (counts[ib] / natoms) * cum
+        # `contrib` is the bin integral of 4 pi r^2 [g ln g - g + 1], so the
+        # prefactor is -rho/2 * x_a x_b (the 2 pi of the r^2 form).
+        curves[:, p] = (-0.5 * rho * (counts[ia] / natoms)
+                        * (counts[ib] / natoms) * cum)
         final[p] = curves[-1, p]
     total_curve = np.zeros(len(r))
     total = 0.0

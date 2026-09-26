@@ -291,8 +291,10 @@ $$
 with the total following the partial sum rule
 $S_2 = \sum_a S_2^{aa} + 2\sum_{a \lt b} S_2^{ab}$.  `--pair-entropy FILE` writes
 the final total and partial values; `--s2-accum FILE` writes the $S_2(r)$
-accumulation curve.  The integral uses the exact shell volume of each bin, the
-$g\to0$ limit of the integrand and a leading-order Poisson bias correction;
+accumulation curve.  The $r^2\,dr$ integral is done with the exact volume of
+each bin, $\frac{1}{3}(r_{\text{hi}}^3 - r_{\text{lo}}^3)$, i.e. the equivalent
+prefactor of the $4\pi r^2$ form is $-\rho x_a x_b/2$; the integral also takes
+the $g\to0$ limit of the integrand and a leading-order Poisson bias correction;
 no smoothing is applied by default and no statistical error is estimated.  A
 single Debye run cannot make a rigorous tail correction (the $g(r)$ stops at
 half the periodic box, and the Debye $S(q)$ has truncation ripples), so the

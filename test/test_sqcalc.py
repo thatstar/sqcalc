@@ -617,9 +617,11 @@ def main():
         g = rdf[:, 2 + p]*(4.0*math.pi*r**2*dr)/dv
         integrand = np.where(g > 0.0,
                              g*np.log(np.maximum(g, 1.0e-300)) - g + 1.0, 1.0)
+        # The documented S2^ab = -2 pi rho x_a x_b * integral r^2 [...] dr;
+        # `dv` is the 4 pi r^2 measure, so the prefactor is -rho/2 * x_a x_b.
         contrib = dv*integrand
         bias = volume/(2.0*nframes*counts[a]*counts[b])
-        curves[:, p] = -2.0*math.pi*rho*(counts[a]/natoms)*(counts[b]/natoms) \
+        curves[:, p] = -0.5*rho*(counts[a]/natoms)*(counts[b]/natoms) \
             * np.cumsum(contrib - bias)
     total_curve = np.zeros(len(r))
     for p, (a, b) in enumerate(pairs):
@@ -640,6 +642,54 @@ def main():
         raise SystemExit("FAIL ideal gas S2 = %.3f is too large" % text_final[0])
     print("  ok   %-42s total %.4f, partials %d" %
           ("ideal gas S2 and partial curves", text_final[0], npairs))
+
+    # An ideal gas is blind to a global normalization error (g = 1 makes the
+    # integrand vanish), so pin the absolute value on a perfect simple-cubic
+    # lattice with rmax between the first two shells and an exact multiple of
+    # dr: every bin below rmax is either empty (integrand 1, the excluded
+    # volume) or holds the six nearest neighbours at r = a, where
+    # g = 6/(rho*S) exactly, so
+    #   S2 = -rho/2 [4 pi/3 rmax^3 + S (g ln g - g) - nbins V/(2 f N^2)]
+    # follows in closed form.  A 4 pi slip in the prefactor is a factor 4 pi.
+    print("pair entropy (absolute normalization, simple-cubic lattice)")
+    sc_dr, sc_rmax = 0.05, 2.5
+    sc_dump = generate("s2_sc.dump", natoms=64, length=8.1, frames=1, seed=1,
+                       mode="lattice", fractions="1")
+    sqcalc(sc_dump, "s2_sc_sq.dat", "-w", "unit", "--method", "debye",
+           "--rmax", str(sc_rmax), "--dr", str(sc_dr),
+           "--pair-entropy", path("s2_sc.dat"))
+    sc_atoms = sc_volume = sc_frames = sc_value = None
+    with open(path("s2_sc.dat")) as handle:
+        for line in handle:
+            tokens = line.split()
+            if not tokens:
+                continue
+            if tokens[0] == "#":
+                for i, token in enumerate(tokens):
+                    if token == "natoms":
+                        sc_atoms = float(tokens[i + 1])
+                    elif token == "volume":
+                        sc_volume = float(tokens[i + 1])
+                    elif token == "nframes":
+                        sc_frames = float(tokens[i + 1])
+            elif tokens[0] == "total":
+                sc_value = float(tokens[1])
+    if sc_value is None or sc_volume is None or sc_atoms is None:
+        raise SystemExit("FAIL lattice S2 output has no total line")
+    sc_a = 8.1/4.0
+    sc_rho = sc_atoms/sc_volume
+    sc_nbins = int(round(sc_rmax/sc_dr))
+    sc_shell = 4.0*math.pi/3.0*((sc_a + 0.5*sc_dr)**3 - (sc_a - 0.5*sc_dr)**3)
+    sc_g = 6.0/(sc_shell*sc_rho)
+    sc_bias = sc_volume/(2.0*sc_frames*sc_atoms**2)
+    sc_cum = (4.0*math.pi/3.0*sc_rmax**3
+              + sc_shell*(sc_g*math.log(sc_g) - sc_g) - sc_nbins*sc_bias)
+    sc_exact = -0.5*sc_rho*sc_cum
+    if abs(sc_value - sc_exact) > 1.0e-11*abs(sc_exact):
+        raise SystemExit("FAIL lattice S2 = %.6f, expected %.6f (factor %.4f)"
+                         % (sc_value, sc_exact, sc_value/sc_exact))
+    print("  ok   %-42s S2 = %.4f (exact)"
+          % ("simple-cubic lattice normalization", sc_value))
 
     if args.h5read:
         run([exe, "static", "-i", s2_dump, "-m", "1:Si,2:O", "-w", "unit", "--method", "debye",

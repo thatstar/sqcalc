@@ -300,9 +300,11 @@ $$
 S_2 = \sum_a S_2^{aa} + 2\sum_{a \lt b}S_2^{ab}.
 $$
 
-The integration uses the exact shell volume of each radial bin (not
-$4\pi r^2 dr$), takes the $g\to0$ limit of the integrand as 1, and symmetrizes
-the cross partials before taking the logarithm.  A leading-order Poisson bias
+The $r^2\,dr$ integral uses the exact volume of each radial bin,
+$\frac{1}{3}(r_{\text{hi}}^3 - r_{\text{lo}}^3)$, equivalently the prefactor of
+the $4\pi r^2$ form is $-\rho x_a x_b/2$; the integration takes the $g\to0$
+limit of the integrand as 1 and symmetrizes the cross partials before taking
+the logarithm.  A leading-order Poisson bias
 correction removes the noise-induced offset of the nonlinear integrand, so
 even a noisy ideal gas stays close to $S_2=0$; no smoothing is applied by
 default.  No statistical error is estimated: $S_2$ is used as a

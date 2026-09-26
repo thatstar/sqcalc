@@ -521,7 +521,12 @@ contains
                bias = self%volume/(2.0_rk*real(self%nhist, rk) &
                       *real(self%count_type(ia), rk)*real(self%count_type(ib), rk))
                cum = cum + shell*integrand - bias
-               s2_curve(k, p) = -2.0_rk*acos(-1.0_rk)*rho*xa*xb*cum
+               ! cum is the exact shell-volume integral, i.e. the bin integral
+               ! of 4 pi r^2 [g ln g - g + 1].  The matching prefactor of
+               ! S2^ab = -2 pi rho x_a x_b int r^2 [...] dr is -rho x_a x_b / 2
+               ! (the 2 pi over the 4 pi of the shell measure), so cum must not
+               ! be multiplied by 2 pi here.
+               s2_curve(k, p) = -0.5_rk*rho*xa*xb*cum
             end do
             s2_partial(p) = s2_curve(self%nbins, p)
          end do
